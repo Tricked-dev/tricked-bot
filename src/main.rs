@@ -1,4 +1,3 @@
-use chrono::{NaiveDateTime, Utc};
 use futures::stream::StreamExt;
 use rand::{
     prelude::{IteratorRandom, ThreadRng},
@@ -16,7 +15,6 @@ use std::{
 };
 use tokio::sync::Mutex;
 use twilight_bucket::{Bucket, Limit};
-use twilight_cache_inmemory::{InMemoryCache, ResourceType};
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::{
@@ -34,12 +32,6 @@ struct State {
     channel_bucket: Bucket,
     db: Connection,
     invites: Vec<BotInvite>,
-}
-#[derive(Debug)]
-struct InvitedUser {
-    pub user_id: u64,
-    pub left: bool,
-    pub invite_used: String,
 }
 
 impl State {
@@ -141,7 +133,7 @@ impl From<Box<InviteCreate>> for BotInvite {
 async fn handle_event(
     event: Event,
     http: Arc<HttpClient>,
-    shard: Arc<Shard>,
+    _shard: Arc<Shard>,
     state: Arc<Mutex<State>>,
     config: Arc<Config>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -158,7 +150,7 @@ async fn handle_event(
                 if let Some(invite) = invites_iter.find(|x| x.code == old_invite.code) {
                     if old_invite.uses < invite.uses {
                         let name = config.invites.iter().find_map(|(key, value)| {
-                            if (value == &old_invite.code) {
+                            if value == &old_invite.code {
                                 Some(key.to_owned())
                             } else {
                                 None
