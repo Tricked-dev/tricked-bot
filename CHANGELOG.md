@@ -1,3 +1,7 @@
+# 1.1.1
+
+* remove surf replaced by reqwest
+
 # 1.1.0
 
 * invite tracker

@@ -4,6 +4,7 @@ use rand::{
     prelude::{IteratorRandom, ThreadRng},
     Rng,
 };
+use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,7 +14,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use surf::{Client, Config as SurfConfig};
 use tokio::sync::Mutex;
 use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::{InMemoryCache, ResourceType};
@@ -72,10 +72,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt().init();
     let config = Arc::new(init_config());
 
-    let client: Client = SurfConfig::new()
-        .add_header("user-agent", "tricked-bot/1.0")?
-        .set_timeout(Some(Duration::from_secs(5)))
-        .try_into()?;
+    let client: Client = Client::builder().user_agent("tricked-bot/1.0").build()?;
 
     let (shard, mut events) = Shard::builder(config.token.to_owned(), Intents::all()).build();
     let shard = Arc::new(shard);
@@ -270,8 +267,9 @@ async fn handle_event(
                         let res = locked_state
                             .client
                             .get("https://www.reddit.com/r/shitposting/.json")
+                            .send()
                             .await?
-                            .body_json::<List>()
+                            .json::<List>()
                             .await?
                             .data
                             .children
