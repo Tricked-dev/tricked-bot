@@ -1,10 +1,13 @@
+use chrono::{NaiveDateTime, Utc};
 use futures::stream::StreamExt;
 use rand::{
     prelude::{IteratorRandom, ThreadRng},
     Rng,
 };
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     error::Error,
     fs::{canonicalize, read_to_string},
     sync::Arc,
@@ -16,47 +19,52 @@ use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::{InMemoryCache, ResourceType};
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::{channel::message::AllowedMentions, gateway::Intents, id::Id};
+use twilight_model::{
+    channel::message::AllowedMentions,
+    gateway::{payload::incoming::InviteCreate, Intents},
+    id::Id,
+    invite::Invite,
+};
 
-#[derive(Clone)]
 struct State {
     last_redesc: Instant,
     rng: ThreadRng,
     client: Client,
     user_bucket: Bucket,
     channel_bucket: Bucket,
+    db: Connection,
+    invites: Vec<BotInvite>,
+}
+#[derive(Debug)]
+struct InvitedUser {
+    pub user_id: u64,
+    pub left: bool,
+    pub invite_used: String,
+}
+
+impl State {
+    fn new(rng: ThreadRng, client: Client, db: Connection) -> Self {
+        let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
+        let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
+        Self {
+            db,
+            rng,
+            client,
+            last_redesc: Instant::now(),
+            user_bucket,
+            channel_bucket,
+            invites: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct Config {
     token: String,
     discord: u64,
+    join_channel: u64,
     rename_channels: Vec<u64>,
-}
-
-impl State {
-    fn new(rng: ThreadRng, client: Client) -> Self {
-        Self {
-            rng,
-            client,
-            ..Self::default()
-        }
-    }
-}
-
-impl Default for State {
-    fn default() -> Self {
-        let rng = rand::thread_rng();
-        let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
-        let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
-        Self {
-            last_redesc: Instant::now(),
-            client: Client::default(),
-            user_bucket,
-            channel_bucket,
-            rng,
-        }
-    }
+    invites: HashMap<String, String>,
 }
 
 #[tokio::main]
@@ -80,15 +88,11 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .default_allowed_mentions(AllowedMentions::builder().build())
             .build(),
     );
+    let conn = Connection::open(".trickedbot/database.sqlite")?;
 
-    let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client)));
-
-    let cache = InMemoryCache::builder()
-        .resource_types(ResourceType::MESSAGE | ResourceType::PRESENCE | ResourceType::MEMBER)
-        .build();
+    let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client, conn)));
 
     while let Some(event) = events.next().await {
-        cache.update(&event);
         let res = handle_event(
             event,
             Arc::clone(&http),
@@ -107,21 +111,90 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 #[derive(PartialEq, Clone)]
 enum Command {
-    AddToBucket,
     Text(String),
     React(char),
     Reply(String),
     Nothing,
 }
+/// This struct is needed to deal with the invite create event.
+#[derive(Clone)]
+struct BotInvite {
+    code: String,
+    uses: Option<u64>,
+}
+
+impl From<Invite> for BotInvite {
+    fn from(invite: Invite) -> Self {
+        Self {
+            code: invite.code.to_owned(),
+            uses: invite.uses,
+        }
+    }
+}
+
+impl From<Box<InviteCreate>> for BotInvite {
+    fn from(invite: Box<InviteCreate>) -> Self {
+        Self {
+            code: invite.code.to_owned(),
+            uses: Some(invite.uses as u64),
+        }
+    }
+}
 
 async fn handle_event(
     event: Event,
     http: Arc<HttpClient>,
-    _shard: Arc<Shard>,
+    shard: Arc<Shard>,
     state: Arc<Mutex<State>>,
     config: Arc<Config>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut locked_state = state.lock().await;
     match event {
+        Event::InviteCreate(inv) => {
+            locked_state.invites.push(BotInvite::from(inv));
+        }
+        Event::MemberAdd(member) => {
+            let invites_response = http.guild_invites(member.guild_id).exec().await?;
+            let invites = invites_response.models().await?;
+            let mut invites_iter = invites.iter();
+            for old_invite in locked_state.invites.iter() {
+                if let Some(invite) = invites_iter.find(|x| x.code == old_invite.code) {
+                    if old_invite.uses < invite.uses {
+                        let name = config.invites.iter().find_map(|(key, value)| {
+                            if (value == &old_invite.code) {
+                                Some(key.to_owned())
+                            } else {
+                                None
+                            }
+                        });
+                        http.create_message(Id::new(config.join_channel))
+                            .content(&format!(
+                                "{} Joined invite used {}",
+                                member.user.name,
+                                if let Some(name) = name {
+                                    format!("{name} ({})", invite.code)
+                                } else {
+                                    invite.code.to_owned()
+                                }
+                            ))?
+                            .exec()
+                            .await?;
+                        locked_state.db.execute(
+                            "INSERT INTO users(discord_id,invite_used) VALUES(?1, ?2)",
+                            params![member.user.id.get(), invite.code],
+                        )?;
+                        break;
+                    }
+                }
+            }
+            locked_state.invites = invites
+                .into_iter()
+                .map(|invite| BotInvite {
+                    code: invite.code.to_owned(),
+                    uses: invite.uses,
+                })
+                .collect()
+        }
         Event::MessageCreate(msg) => {
             tracing::info!("Message received {}", &msg.content,);
 
@@ -133,8 +206,6 @@ async fn handle_event(
                     http.leave_guild(guild_id).exec().await?;
                 }
             }
-
-            let mut locked_state = state.lock().await;
 
             if let Some(channel_limit_duration) = locked_state
                 .channel_bucket
@@ -225,7 +296,6 @@ async fn handle_event(
                 }
 
                 match res {
-                    Command::AddToBucket => {}
                     Command::Text(text) => {
                         http.create_message(msg.channel_id)
                             .content(&text)?
@@ -256,6 +326,19 @@ async fn handle_event(
         }
         Event::Ready(_) => {
             tracing::info!("Connected",);
+        }
+        Event::GuildCreate(guild) => {
+            tracing::info!("Active in guild {}", guild.name);
+            let invites_response = http.guild_invites(guild.id).exec().await?;
+            locked_state.invites = invites_response
+                .models()
+                .await?
+                .into_iter()
+                .map(|invite| BotInvite {
+                    code: invite.code.to_owned(),
+                    uses: invite.uses,
+                })
+                .collect()
         }
 
         _ => {}
