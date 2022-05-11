@@ -12,16 +12,19 @@ use std::{
 };
 use surf::{Client, Config as SurfConfig};
 use tokio::sync::Mutex;
+use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::{InMemoryCache, ResourceType};
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::{channel::message::AllowedMentions, gateway::Intents, id::Id};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct State {
     last_redesc: Instant,
     rng: ThreadRng,
     client: Client,
+    user_bucket: Bucket,
+    channel_bucket: Bucket,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -44,9 +47,13 @@ impl State {
 impl Default for State {
     fn default() -> Self {
         let rng = rand::thread_rng();
+        let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
+        let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         Self {
             last_redesc: Instant::now(),
             client: Client::default(),
+            user_bucket,
+            channel_bucket,
             rng,
         }
     }
@@ -94,9 +101,17 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             tracing::error!("{}", res);
         }
     }
-    log::error!("Reached end of events ?");
+    tracing::error!("Reached end of events ?");
 
     Ok(())
+}
+#[derive(PartialEq, Clone)]
+enum Command {
+    AddToBucket,
+    Text(String),
+    React(char),
+    Reply(String),
+    Nothing,
 }
 
 async fn handle_event(
@@ -108,7 +123,7 @@ async fn handle_event(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     match event {
         Event::MessageCreate(msg) => {
-            log::info!("Message received {}", &msg.content,);
+            tracing::info!("Message received {}", &msg.content,);
 
             if msg.guild_id.is_none() || msg.author.bot {
                 return Ok(());
@@ -120,117 +135,129 @@ async fn handle_event(
             }
 
             let mut locked_state = state.lock().await;
-            if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(300)
-                && config
-                    .rename_channels
-                    .to_vec()
-                    .contains(&msg.channel_id.get())
+
+            if let Some(channel_limit_duration) = locked_state
+                .channel_bucket
+                .limit_duration(msg.channel_id.get())
             {
-                log::info!("Channel renamed");
-                match http.update_channel(msg.channel_id).topic(&msg.content) {
-                    Ok(req) => {
-                        req.exec().await?;
+                tracing::info!("Channel limit reached {}", channel_limit_duration.as_secs());
+                return Ok(());
+            }
+            if let Some(user_limit_duration) =
+                locked_state.user_bucket.limit_duration(msg.author.id.get())
+            {
+                tracing::info!("User limit reached {}", user_limit_duration.as_secs());
+                if Duration::from_secs(5) > user_limit_duration {
+                    tokio::time::sleep(user_limit_duration).await;
+                } else {
+                    return Ok(());
+                }
+            }
 
-                        locked_state.last_redesc = Instant::now();
+            let r: Result<Command, Box<dyn Error + Send + Sync>> =
+                match msg.content.to_lowercase().as_str() {
+                    "l" => Ok(Command::Text("+ ratio".to_string())),
+                    "f" => Ok(Command::React('🇫')),
+                    "gn" => Ok(Command::Text(
+                        "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
+                    )),
+                    x if x.contains("skull") => Ok(Command::React('💀')),
+                    content
+                        if locked_state.last_redesc.elapsed()
+                            > std::time::Duration::from_secs(150)
+                            && config
+                                .rename_channels
+                                .to_vec()
+                                .contains(&msg.channel_id.get())
+                            && locked_state.rng.gen_range(0..10) == 2 =>
+                    {
+                        if content.to_lowercase().contains("uwu")
+                            || content.to_lowercase().contains("owo")
+                        {
+                            http.create_message(msg.channel_id)
+                                .content("No furry shit!!!!!")?
+                                .exec()
+                                .await?;
+                            Ok(Command::Text("No furry shit!!!!!".into()))
+                        } else {
+                            tracing::info!("Channel renamed");
+                            match http.update_channel(msg.channel_id).topic(content) {
+                                Ok(req) => {
+                                    req.exec().await?;
+                                    locked_state.last_redesc = Instant::now();
+                                }
+                                Err(err) => tracing::error!("{:?}", err),
+                            }
+                            Ok(Command::Nothing)
+                        }
                     }
-                    Err(err) => log::error!("{:?}", err),
-                }
-            }
-            if locked_state.rng.gen_range(0..45) == 2 {
-                let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
-                match http
-                    .create_message(msg.channel_id)
-                    .reply(msg.id)
-                    .content(&content)?
-                    .exec()
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(e) => log::error!("Failed to send message {e:?}"),
-                }
-            }
+                    x if locked_state.rng.gen_range(0..45) == 2 => {
+                        let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
+                        Ok(Command::Reply(content))
+                    }
+                    _ if locked_state.rng.gen_range(0..20) == 2 => {
+                        let res = locked_state
+                            .client
+                            .get("https://www.reddit.com/r/shitposting/.json")
+                            .await?
+                            .body_json::<List>()
+                            .await?
+                            .data
+                            .children
+                            .into_iter()
+                            .filter(|x| !x.data.over_18)
+                            .filter(|x| x.data.url_overridden_by_dest.contains("i."))
+                            .choose(&mut locked_state.rng)
+                            .map(|x| x.data.url_overridden_by_dest);
+                        if let Some(pic) = res {
+                            Ok(Command::Text(pic))
+                        } else {
+                            Ok(Command::Nothing)
+                        }
+                    }
+                    _ => Ok(Command::Nothing),
+                };
 
-            if locked_state.rng.gen_range(0..20) == 2 {
-                let res = locked_state
-                    .client
-                    .get("https://www.reddit.com/r/shitposting/.json")
-                    .await?
-                    .body_json::<List>()
-                    .await?
-                    .data
-                    .children
-                    .into_iter()
-                    .filter(|x| !x.data.over_18)
-                    .filter(|x| x.data.url_overridden_by_dest.contains("i."))
-                    .choose(&mut locked_state.rng)
-                    .map(|x| x.data.url_overridden_by_dest);
-                if let Some(pic) = res {
-                    http.create_message(msg.channel_id)
-                        .content(&pic)?
+            if let Ok(res) = r {
+                if res != Command::Nothing {
+                    locked_state.channel_bucket.register(msg.channel_id.get());
+                    locked_state.user_bucket.register(msg.author.id.get());
+                }
+
+                match res {
+                    Command::AddToBucket => {}
+                    Command::Text(text) => {
+                        http.create_message(msg.channel_id)
+                            .content(&text)?
+                            .exec()
+                            .await?;
+                    }
+                    Command::Reply(text) => {
+                        http.create_message(msg.channel_id)
+                            .content(&text)?
+                            .reply(msg.id)
+                            .exec()
+                            .await?;
+                    }
+                    Command::React(emoji) => {
+                        http.create_reaction(
+                            msg.channel_id,
+                            msg.id,
+                            &RequestReactionType::Unicode {
+                                name: &emoji.to_string(),
+                            },
+                        )
                         .exec()
                         .await?;
+                    }
+                    _ => {}
                 }
-            }
-            if msg.content.to_lowercase() == "l" {
-                http.create_message(msg.channel_id)
-                    .content("+ ratio")?
-                    .exec()
-                    .await?;
-            }
-            if msg.content.to_lowercase().contains("skull") {
-                http.create_reaction(
-                    msg.channel_id,
-                    msg.id,
-                    &RequestReactionType::Unicode { name: "💀" },
-                )
-                .exec()
-                .await?;
             }
         }
         Event::Ready(_) => {
-            log::info!("Connected",);
+            tracing::info!("Connected",);
         }
-        // #[cfg(feature = "lol-trolling")]
-        // Event::GuildCreate(guild) => {
-        //     use twilight_model::gateway::payload::outgoing::RequestGuildMembers;
-        //     if guild.id == Id::new(config.discord) {
-        //         shard
-        //             .command(
-        //                 &RequestGuildMembers::builder(guild.id)
-        //                     .presences(true)
-        //                     .query("", None),
-        //             )
-        //             .await?;
-        //     }
-        // }
-        // #[cfg(feature = "lol-trolling")]
-        // Event::PresenceUpdate(_) => {
-        //     use chrono::prelude::*;
-        //     cache.iter().presences().for_each(|presence| {
-        //         if presence.guild_id() != Id::new(config.discord) {
-        //             return;
-        //         }
-        //         presence.activities().iter().for_each(|activity| {
-        //             if let Some(timestamps) = &activity.created_at {
-        //                 if activity.name == "League of Legends" {
-        //                     let timestamp: i64 = (*timestamps).try_into().unwrap();
-        //                     let ts = DateTime::<Utc>::from_utc(
-        //                         NaiveDateTime::from_timestamp(timestamp / 1000, 0),
-        //                         Utc,
-        //                     );
-        //                     let time = Utc::now().signed_duration_since(ts);
-        //                     if time.num_seconds() > 1800 {
-        //                         log::info!(
-        //                             "{} has been playing LoL for over 30 minutes",
-        //                             presence.user_id()
-        //                         );
-        //                     }
-        //                 }
-        //                 return;
-        //             }
-        //         })
-        //     });
-        // }
+
         _ => {}
     }
     Ok(())

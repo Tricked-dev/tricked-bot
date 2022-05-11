@@ -1,26 +1,37 @@
 [package]
+edition = "2021"
 name = "tricked-bot"
 version = "1.0.0"
-edition = "2021"
 
-
-[features]
-lol-trolling = ["chrono"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrono = { version = "0.4.19", optional = true }
 futures = "0.3.21"
 log = "0.4.17"
-rand ={ version = "0.8.5", features = ["log", "serde" ] }
-serde = { version = "1.0.137", features = ["derive"] }
+openssl = {version = "0.10.40", features = ["vendored"]}
+rand = {version = "0.8.5", features = ["log", "serde"]}
+serde = {version = "1.0.137", features = ["derive"]}
 serde_json = "1.0.81"
-surf ={ version = "2.3.2" }
-tokio = { version = "1.18.2", features = ["rt-multi-thread", 'macros'] }
+surf = {version = "2.3.2", features = [
+  "h1-client-rustls",
+  "middleware-logger",
+  "encoding",
+], default_features = false}
+tokio = {version = "1.18.2", features = ["rt-multi-thread", 'macros']}
+toml = "0.5.9"
 tracing = "0.1.34"
 tracing-subscriber = "0.3.11"
+twilight-bucket = "0.2.1"
 twilight-cache-inmemory = "0.10.2"
-twilight-gateway = { version = "0.10.1", features = ["simd-json","native","zlib-simd","tracing"] }
-twilight-http = { version = "0.10.2", features = ["simd-json","trust-dns","native"] }
+twilight-gateway = {version = "0.10.1", features = [
+  "simd-json",
+  "native",
+  "zlib-simd",
+  "tracing",
+]}
+twilight-http = {version = "0.10.2", features = [
+  "simd-json",
+  "trust-dns",
+  "native",
+]}
 twilight-model = "0.10.2"
-toml = "0.5.9"
