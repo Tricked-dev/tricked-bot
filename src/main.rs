@@ -19,7 +19,11 @@ use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::{
     channel::message::AllowedMentions,
-    gateway::{payload::incoming::InviteCreate, Intents},
+    gateway::{
+        payload::{incoming::InviteCreate, outgoing::update_presence::UpdatePresencePayload},
+        presence::{ActivityType, MinimalActivity, Status},
+        Intents,
+    },
     id::Id,
     invite::Invite,
 };
@@ -57,6 +61,7 @@ struct Config {
     join_channel: u64,
     rename_channels: Vec<u64>,
     invites: HashMap<String, String>,
+    shit_reddits: Vec<String>,
 }
 
 #[tokio::main]
@@ -66,7 +71,22 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let client: Client = Client::builder().user_agent("tricked-bot/1.0").build()?;
 
-    let (shard, mut events) = Shard::builder(config.token.to_owned(), Intents::all()).build();
+    let (shard, mut events) = Shard::builder(config.token.to_owned(), Intents::all())
+        .presence(
+            UpdatePresencePayload::new(
+                vec![MinimalActivity {
+                    kind: ActivityType::Competing,
+                    name: "The perfect bot to ruin your Discord server.".to_string(),
+                    url: None,
+                }
+                .into()],
+                false,
+                None,
+                Status::Idle,
+            )
+            .unwrap(),
+        )
+        .build();
     let shard = Arc::new(shard);
     shard.start().await?;
 

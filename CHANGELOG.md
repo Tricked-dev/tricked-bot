@@ -1,3 +1,8 @@
+# 1.1.2
+
+* fixes for compiling on pi
+* set bot status
+
 # 1.1.1
 
 * remove surf replaced by reqwest
