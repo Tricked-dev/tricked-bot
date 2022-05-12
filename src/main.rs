@@ -1,32 +1,26 @@
 use futures::stream::StreamExt;
 use rand::{
-    prelude::{IteratorRandom, ThreadRng},
+    prelude::{IteratorRandom, SliceRandom, ThreadRng},
     Rng,
 };
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    error::Error,
-    fs::{canonicalize, read_to_string},
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::Mutex;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fs;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, MutexGuard};
 use twilight_bucket::{Bucket, Limit};
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::{
-    channel::message::AllowedMentions,
-    gateway::{
-        payload::{incoming::InviteCreate, outgoing::update_presence::UpdatePresencePayload},
-        presence::{ActivityType, MinimalActivity, Status},
-        Intents,
-    },
-    id::Id,
-    invite::Invite,
-};
+use twilight_model::channel::message::AllowedMentions;
+use twilight_model::gateway::payload::incoming::InviteCreate;
+use twilight_model::gateway::payload::incoming::MessageCreate;
+use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
+use twilight_model::gateway::presence::{ActivityType, MinimalActivity, Status};
+use twilight_model::{gateway::Intents, id::Id, invite::Invite};
 
 struct State {
     last_redesc: Instant,
@@ -114,8 +108,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             tracing::error!("{}", res);
         }
     }
-    tracing::error!("Reached end of events ?");
-
     Ok(())
 }
 #[derive(PartialEq, Clone)]
@@ -234,71 +226,9 @@ async fn handle_event(
                 }
             }
 
-            let r: Result<Command, Box<dyn Error + Send + Sync>> =
-                match msg.content.to_lowercase().as_str() {
-                    "l" => Ok(Command::Text("+ ratio".to_string())),
-                    "f" => Ok(Command::React('🇫')),
-                    "gn" => Ok(Command::Text(
-                        "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
-                    )),
-                    x if x.contains("skull") => Ok(Command::React('💀')),
-                    content
-                        if locked_state.last_redesc.elapsed()
-                            > std::time::Duration::from_secs(150)
-                            && config
-                                .rename_channels
-                                .to_vec()
-                                .contains(&msg.channel_id.get())
-                            && locked_state.rng.gen_range(0..10) == 2 =>
-                    {
-                        if content.to_lowercase().contains("uwu")
-                            || content.to_lowercase().contains("owo")
-                        {
-                            http.create_message(msg.channel_id)
-                                .content("No furry shit!!!!!")?
-                                .exec()
-                                .await?;
-                            Ok(Command::Text("No furry shit!!!!!".into()))
-                        } else {
-                            tracing::info!("Channel renamed");
-                            match http.update_channel(msg.channel_id).topic(content) {
-                                Ok(req) => {
-                                    req.exec().await?;
-                                    locked_state.last_redesc = Instant::now();
-                                }
-                                Err(err) => tracing::error!("{:?}", err),
-                            }
-                            Ok(Command::Nothing)
-                        }
-                    }
-                    x if locked_state.rng.gen_range(0..45) == 2 => {
-                        let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
-                        Ok(Command::Reply(content))
-                    }
-                    _ if locked_state.rng.gen_range(0..20) == 2 => {
-                        let res = locked_state
-                            .client
-                            .get("https://www.reddit.com/r/shitposting/.json")
-                            .send()
-                            .await?
-                            .json::<List>()
-                            .await?
-                            .data
-                            .children
-                            .into_iter()
-                            .filter(|x| !x.data.over_18)
-                            .filter(|x| x.data.url_overridden_by_dest.contains("i."))
-                            .choose(&mut locked_state.rng)
-                            .map(|x| x.data.url_overridden_by_dest);
-                        if let Some(pic) = res {
-                            Ok(Command::Text(pic))
-                        } else {
-                            Ok(Command::Nothing)
-                        }
-                    }
-                    _ => Ok(Command::Nothing),
-                };
+            let r = handle_message(&msg, locked_state, &config, &http).await;
 
+            let locked_state = state.lock().await;
             if let Ok(res) = r {
                 if res != Command::Nothing {
                     locked_state.channel_bucket.register(msg.channel_id.get());
@@ -356,8 +286,75 @@ async fn handle_event(
     Ok(())
 }
 
+async fn handle_message(
+    msg: &Box<MessageCreate>,
+    mut locked_state: MutexGuard<'_, State>,
+    config: &Arc<Config>,
+    http: &Arc<HttpClient>,
+) -> Result<Command, Box<dyn Error + Send + Sync>> {
+    match msg.content.to_lowercase().as_str() {
+        "l" => Ok(Command::Text("+ ratio".to_string())),
+        "f" => Ok(Command::React('🇫')),
+        "gn" => Ok(Command::Text(
+            "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
+        )),
+        x if x.contains("skull") => Ok(Command::React('💀')),
+        content
+            if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
+                && config
+                    .rename_channels
+                    .to_vec()
+                    .contains(&msg.channel_id.get())
+                && locked_state.rng.gen_range(0..10) == 2 =>
+        {
+            if content.to_lowercase().contains("uwu") || content.to_lowercase().contains("owo") {
+                Ok(Command::Text("No furry shit!!!!!".into()))
+            } else {
+                tracing::info!("Channel renamed");
+                match http.update_channel(msg.channel_id).topic(content) {
+                    Ok(req) => {
+                        req.exec().await?;
+                        locked_state.last_redesc = Instant::now();
+                    }
+                    Err(err) => tracing::error!("{:?}", err),
+                }
+                Ok(Command::Nothing)
+            }
+        }
+        x if locked_state.rng.gen_range(0..45) == 2 => {
+            let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
+            Ok(Command::Reply(content))
+        }
+        _ if locked_state.rng.gen_range(0..20) == 2 => {
+            let res = (&locked_state)
+                .client
+                .get(format!(
+                    "https://www.reddit.com/r/{}/.json",
+                    config.shit_reddits.choose(&mut rand::thread_rng()).unwrap()
+                ))
+                .send()
+                .await?
+                .json::<List>()
+                .await?
+                .data
+                .children
+                .into_iter()
+                .filter(|x| !x.data.over_18)
+                .filter(|x| x.data.url_overridden_by_dest.contains("i."))
+                .choose(&mut locked_state.rng)
+                .map(|x| x.data.url_overridden_by_dest);
+            if let Some(pic) = res {
+                Ok(Command::Text(pic))
+            } else {
+                Ok(Command::Nothing)
+            }
+        }
+        _ => Ok(Command::Nothing),
+    }
+}
+
 fn init_config() -> Config {
-    let config_str = read_to_string(canonicalize("trickedbot.toml").unwrap()).unwrap();
+    let config_str = fs::read_to_string(fs::canonicalize("trickedbot.toml").unwrap()).unwrap();
     toml::from_str(&config_str).unwrap_or_default()
 }
 

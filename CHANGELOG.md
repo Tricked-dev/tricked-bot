@@ -1,3 +1,9 @@
+# 1.2.0 
+
+* custom subreddit support
+* unmerge imports
+* make sep function for message handler
+
 # 1.1.2
 
 * fixes for compiling on pi

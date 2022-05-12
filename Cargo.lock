@@ -122,19 +122,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
-name = "chrono"
-version = "0.4.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "670ad68c9088c2a963aaa298cb369688cf3f9465ce5e2d4ca10e6e0098a1ce73"
-dependencies = [
- "libc",
- "num-integer",
- "num-traits",
- "time 0.1.44",
- "winapi",
-]
-
-[[package]]
 name = "cmake"
 version = "0.1.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -701,16 +688,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-integer"
-version = "0.1.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "225d3389fb3509a24c93f5c29eb6bde2586b98d9f016636dff58d7c6f7569cd9"
-dependencies = [
- "autocfg",
- "num-traits",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1228,17 +1205,6 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.1.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db9e6914ab8b1ae1c260a4ae7a49b6c5611b40328a735b21862567685e73255"
-dependencies = [
- "libc",
- "wasi 0.10.0+wasi-snapshot-preview1",
- "winapi",
-]
-
-[[package]]
-name = "time"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2702e08a7a860f005826c6815dcac101b19b5eb330c27fe4a5928fec1d20ddd"
@@ -1419,9 +1385,8 @@ dependencies = [
 
 [[package]]
 name = "tricked-bot"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
- "chrono",
  "futures",
  "log",
  "openssl",
@@ -1435,7 +1400,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twilight-bucket",
- "twilight-cache-inmemory",
  "twilight-gateway",
  "twilight-http",
  "twilight-model",
@@ -1476,18 +1440,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3948c6f62116df308a98f0ac871dd3f9c9ec89136f91de1ab1da9f9e817e30e1"
 dependencies = [
  "dashmap",
-]
-
-[[package]]
-name = "twilight-cache-inmemory"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e54bffa3b3e816a35c2c1cd6dc11f6f612749a444272ad29a6951e54ee594c8d"
-dependencies = [
- "bitflags",
- "dashmap",
- "serde",
- "twilight-model",
 ]
 
 [[package]]
@@ -1566,7 +1518,7 @@ dependencies = [
  "serde",
  "serde-value",
  "serde_repr",
- "time 0.3.9",
+ "time",
  "tracing",
 ]
 
