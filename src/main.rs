@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, MutexGuard};
 use twilight_bucket::{Bucket, Limit};
-use twilight_gateway::{Event, Shard};
+use twilight_gateway::{Event, EventTypeFlags, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::channel::message::AllowedMentions;
 use twilight_model::gateway::payload::incoming::InviteCreate;
@@ -65,22 +65,36 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let client: Client = Client::builder().user_agent("tricked-bot/1.0").build()?;
 
-    let (shard, mut events) = Shard::builder(config.token.to_owned(), Intents::all())
-        .presence(
-            UpdatePresencePayload::new(
-                vec![MinimalActivity {
-                    kind: ActivityType::Competing,
-                    name: "The perfect bot to ruin your Discord server.".to_string(),
-                    url: None,
-                }
-                .into()],
-                false,
-                None,
-                Status::Idle,
-            )
-            .unwrap(),
+    let (shard, mut events) = Shard::builder(
+        config.token.to_owned(),
+        Intents::GUILD_INVITES
+            | Intents::GUILD_MESSAGES
+            | Intents::GUILD_MEMBERS
+            | Intents::GUILDS
+            | Intents::MESSAGE_CONTENT,
+    )
+    .event_types(
+        EventTypeFlags::INVITE_CREATE
+            | EventTypeFlags::MESSAGE_CREATE
+            | EventTypeFlags::MEMBER_ADD
+            | EventTypeFlags::READY
+            | EventTypeFlags::GUILD_CREATE,
+    )
+    .presence(
+        UpdatePresencePayload::new(
+            vec![MinimalActivity {
+                kind: ActivityType::Competing,
+                name: "The perfect bot to ruin your Discord server.".to_string(),
+                url: None,
+            }
+            .into()],
+            false,
+            None,
+            Status::Idle,
         )
-        .build();
+        .unwrap(),
+    )
+    .build();
     let shard = Arc::new(shard);
     shard.start().await?;
 
@@ -280,7 +294,6 @@ async fn handle_event(
                 })
                 .collect()
         }
-
         _ => {}
     }
     Ok(())
@@ -295,6 +308,7 @@ async fn handle_message(
     match msg.content.to_lowercase().as_str() {
         "l" => Ok(Command::Text("+ ratio".to_string())),
         "f" => Ok(Command::React('🇫')),
+        "dn" => Ok(Command::Text("Digital Native".to_string())),
         "gn" => Ok(Command::Text(
             "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
         )),
