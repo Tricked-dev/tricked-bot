@@ -3,6 +3,8 @@
 * qrcode maker
 * dn responder
 * zip command
+* markdown command
+* improvements to command handling
 
 # 1.2.0 
 

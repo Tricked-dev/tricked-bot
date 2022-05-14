@@ -1,5 +1,8 @@
 #![allow(deprecated)]
 use futures::stream::StreamExt;
+
+use mdcat::{push_tty, Environment, ResourceAccess, Settings, TerminalCapabilities, TerminalSize};
+use pulldown_cmark::{Options, Parser};
 use qrcodegen::{QrCode, QrCodeEcc};
 use rand::prelude::{IteratorRandom, SliceRandom, ThreadRng};
 use rand::Rng;
@@ -12,6 +15,8 @@ use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use syntect::parsing::SyntaxSet;
 use tokio::sync::{Mutex, MutexGuard};
 use twilight_bucket::{Bucket, Limit};
 use twilight_embed_builder::EmbedBuilder;
@@ -127,45 +132,50 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     Ok(())
 }
-#[derive(PartialEq, Clone)]
-enum Command {
-    Text(String),
-    React(char),
-    Reply(String),
-    Embed(Embed),
-    Nothing,
-}
 
 #[derive(PartialEq, Default, Clone)]
-struct CommandBuilder {
+struct Command {
     embeds: Vec<Embed>,
     text: Option<String>,
     reply: bool,
     reaction: Option<char>,
     attachments: Vec<Attachment>,
+    skip: bool,
 }
-impl From<Command> for CommandBuilder {
-    fn from(cmd: Command) -> CommandBuilder {
-        match cmd {
-            Command::Embed(embed) => CommandBuilder {
-                embeds: vec![embed],
-                ..Default::default()
-            },
-            Command::Text(txt) => CommandBuilder {
-                text: Some(txt),
-                ..Default::default()
-            },
-            Command::React(txt) => CommandBuilder {
-                reaction: Some(txt),
-                ..Default::default()
-            },
-            Command::Reply(txt) => CommandBuilder {
-                text: Some(txt),
-                reply: true,
-                ..Default::default()
-            },
-            _ => Default::default(),
+
+impl Command {
+    pub fn embed(embed: Embed) -> Self {
+        Self {
+            embeds: vec![embed],
+            ..Self::default()
         }
+    }
+    pub fn text<T: Into<String>>(text: T) -> Self {
+        Self {
+            text: Some(text.into()),
+            ..Self::default()
+        }
+    }
+    pub fn react(reaction: char) -> Self {
+        Self {
+            reaction: Some(reaction),
+            ..Self::default()
+        }
+    }
+    pub fn nothing() -> Self {
+        Self {
+            skip: true,
+            ..Self::default()
+        }
+    }
+    pub fn reply(mut self) -> Self {
+        self.reply = true;
+        self
+    }
+
+    pub fn attachments(mut self, attachments: Vec<Attachment>) -> Self {
+        self.attachments = attachments;
+        self
     }
 }
 
@@ -249,7 +259,7 @@ async fn handle_event(
                 .collect()
         }
         Event::MessageCreate(msg) => {
-            tracing::info!("Message received {}", &msg.content,);
+            tracing::info!("Message received {}", &msg.content.replace("\n", "\\ "));
 
             if msg.guild_id.is_none() || msg.author.bot {
                 return Ok(());
@@ -280,45 +290,40 @@ async fn handle_event(
 
             let r = handle_message(&msg, locked_state, &config, &http).await;
 
-            let locked_state = state.lock().await;
             if let Ok(res) = r {
-                if res != Command::Nothing {
-                    locked_state.channel_bucket.register(msg.channel_id.get());
-                    locked_state.user_bucket.register(msg.author.id.get());
-                }
+                let Command {
+                    embeds,
+                    text,
+                    reaction,
+                    attachments,
+                    reply,
+                    skip,
+                } = res;
+                if skip {
+                    return Ok(());
+                } else if let Some(reaction) = reaction {
+                    http.create_reaction(
+                        msg.channel_id,
+                        msg.id,
+                        &RequestReactionType::Unicode {
+                            name: &reaction.to_string(),
+                        },
+                    )
+                    .exec()
+                    .await?;
+                } else {
+                    let mut req = http
+                        .create_message(msg.channel_id)
+                        .embeds(&embeds)?
+                        .attachments(&attachments)?;
+                    if let Some(text) = &text {
+                        req = req.content(text)?;
+                    }
+                    if reply == true {
+                        req = req.reply(msg.id);
+                    }
 
-                match res {
-                    Command::Text(text) => {
-                        http.create_message(msg.channel_id)
-                            .content(&text)?
-                            .exec()
-                            .await?;
-                    }
-                    Command::Reply(text) => {
-                        http.create_message(msg.channel_id)
-                            .content(&text)?
-                            .reply(msg.id)
-                            .exec()
-                            .await?;
-                    }
-                    Command::React(emoji) => {
-                        http.create_reaction(
-                            msg.channel_id,
-                            msg.id,
-                            &RequestReactionType::Unicode {
-                                name: &emoji.to_string(),
-                            },
-                        )
-                        .exec()
-                        .await?;
-                    }
-                    Command::Embed(embed) => {
-                        http.create_message(msg.channel_id)
-                            .embeds(&[embed])?
-                            .exec()
-                            .await?;
-                    }
-                    _ => {}
+                    req.exec().await?;
                 }
             }
         }
@@ -350,9 +355,9 @@ fn print_qr(qr: &QrCode) -> String {
             let c = if qr.get_module(x, y) { '█' } else { ' ' };
             res.push_str(&format!("{0}{0}", c));
         }
-        res.push_str("\n");
+        res.push('\n');
     }
-    res.push_str("\n");
+    res.push('\n');
     res
 }
 
@@ -363,17 +368,14 @@ async fn handle_message(
     http: &Arc<HttpClient>,
 ) -> Result<Command, Box<dyn Error + Send + Sync>> {
     match msg.content.to_lowercase().as_str() {
-        "l" => Ok(Command::Text("+ ratio".to_string())),
-        "f" => Ok(Command::React('🇫')),
-        "dn" => Ok(Command::Text("Digital Native".to_string())),
-        "gn" => Ok(Command::Text(
-            "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
-        )),
-
+        "l" => Ok(Command::text("+ ratio".to_string())),
+        "f" => Ok(Command::react('🇫')),
+        "dn" => Ok(Command::text("Digital Native".to_string())),
+        "gn" => Ok(Command::text("https://www.youtube.com/watch?v=ykLDTsfnE5A")),
         "zip" => {
             let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
             if size > 6000000 {
-                return Ok(Command::Text("Too big".to_string()));
+                return Ok(Command::text("Too big".to_string()));
             }
             let mut buf = Vec::new();
 
@@ -395,16 +397,14 @@ async fn handle_message(
             }
 
             let res = zip.finish()?;
-            http.create_message(msg.channel_id)
-                .content("Zip files arrived")?
-                .attachments(&[Attachment::from_bytes(
+
+            Ok(
+                Command::text("Zip files arrived").attachments(vec![Attachment::from_bytes(
                     format!("files-{}.zip", msg.id.get()),
                     res.get_ref().to_vec(),
                     125,
-                )])?
-                .exec()
-                .await?;
-            Ok(Command::Nothing)
+                )]),
+            )
         }
         x if x.contains("--qr") => {
             let qr = QrCode::encode_text(x.replace("--qr", "").trim(), QrCodeEcc::Low)?;
@@ -412,10 +412,9 @@ async fn handle_message(
             let embed = EmbedBuilder::new()
                 .description(format!("```ansi\n{res}\n```"))
                 .build()?;
-            Ok(Command::Embed(embed))
+            Ok(Command::embed(embed))
         }
-
-        x if x.contains("skull") => Ok(Command::React('💀')),
+        x if x.contains("skull") => Ok(Command::react('💀')),
         content
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
                 && config
@@ -425,7 +424,7 @@ async fn handle_message(
                 && locked_state.rng.gen_range(0..10) == 2 =>
         {
             if content.to_lowercase().contains("uwu") || content.to_lowercase().contains("owo") {
-                Ok(Command::Text("No furry shit!!!!!".into()))
+                Ok(Command::text("No furry shit!!!!!"))
             } else {
                 tracing::info!("Channel renamed");
                 match http.update_channel(msg.channel_id).topic(content) {
@@ -435,15 +434,52 @@ async fn handle_message(
                     }
                     Err(err) => tracing::error!("{:?}", err),
                 }
-                Ok(Command::Nothing)
+                Ok(Command::nothing())
+            }
+        }
+        x if x.contains("--md") => {
+            let env = &Environment::for_local_directory(&"/").unwrap();
+            let settings = &Settings {
+                resource_access: ResourceAccess::LocalOnly,
+                syntax_set: SyntaxSet::load_defaults_newlines(),
+                terminal_capabilities: TerminalCapabilities::ansi(),
+                terminal_size: TerminalSize::default(),
+            };
+
+            let mut buf = Vec::new();
+            let ct = x.replace("--md", "");
+            let parser = Parser::new_ext(
+                &ct,
+                Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
+            );
+            push_tty(settings, env, &mut buf, parser).unwrap();
+            let res = String::from_utf8(buf.clone()).unwrap();
+            let size = res.len();
+            if size > 4050 {
+                Ok(
+                    Command::text("Message exceeded discord limit send attachment!").attachments(
+                        vec![Attachment::from_bytes(
+                            "message.ansi".to_string(),
+                            buf.to_vec(),
+                            125,
+                        )],
+                    ),
+                )
+            } else if size > 2000 {
+                let embed = EmbedBuilder::new()
+                    .description(format!("```ansi\n{res}\n```"))
+                    .build()?;
+                Ok(Command::embed(embed))
+            } else {
+                Ok(Command::text(format!("```ansi\n{res}\n```")))
             }
         }
         x if locked_state.rng.gen_range(0..45) == 2 => {
             let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
-            Ok(Command::Reply(content))
+            Ok(Command::text(content).reply())
         }
         _ if locked_state.rng.gen_range(0..20) == 2 => {
-            let res = (&locked_state)
+            let res = locked_state
                 .client
                 .get(format!(
                     "https://www.reddit.com/r/{}/.json",
@@ -461,12 +497,12 @@ async fn handle_message(
                 .choose(&mut locked_state.rng)
                 .map(|x| x.data.url_overridden_by_dest);
             if let Some(pic) = res {
-                Ok(Command::Text(pic))
+                Ok(Command::text(pic))
             } else {
-                Ok(Command::Nothing)
+                Ok(Command::nothing())
             }
         }
-        _ => Ok(Command::Nothing),
+        _ => Ok(Command::nothing()),
     }
 }
 
