@@ -4,6 +4,7 @@
 * dn responder
 * zip command
 * markdown command
+  * create custom fork with less deps
 * improvements to command handling
 
 # 1.2.0 
