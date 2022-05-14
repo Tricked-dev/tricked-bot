@@ -825,6 +825,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quote"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1390,6 +1396,7 @@ dependencies = [
  "futures",
  "log",
  "openssl",
+ "qrcodegen",
  "rand",
  "reqwest",
  "rusqlite",
@@ -1400,6 +1407,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twilight-bucket",
+ "twilight-embed-builder",
  "twilight-gateway",
  "twilight-http",
  "twilight-model",
@@ -1440,6 +1448,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3948c6f62116df308a98f0ac871dd3f9c9ec89136f91de1ab1da9f9e817e30e1"
 dependencies = [
  "dashmap",
+]
+
+[[package]]
+name = "twilight-embed-builder"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7290d2ba2e7e1677bee70f007ae1b6992d606515669b9e4399bfa431d3867a8a"
+dependencies = [
+ "twilight-model",
 ]
 
 [[package]]

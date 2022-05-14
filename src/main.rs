@@ -1,4 +1,6 @@
+#![allow(deprecated)]
 use futures::stream::StreamExt;
+use qrcodegen::{QrCode, QrCodeEcc};
 use rand::{
     prelude::{IteratorRandom, SliceRandom, ThreadRng},
     Rng,
@@ -13,9 +15,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, MutexGuard};
 use twilight_bucket::{Bucket, Limit};
+use twilight_embed_builder::EmbedBuilder;
 use twilight_gateway::{Event, EventTypeFlags, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::channel::message::AllowedMentions;
+use twilight_model::channel::{embed::Embed, message::AllowedMentions};
 use twilight_model::gateway::payload::incoming::InviteCreate;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
@@ -129,6 +132,7 @@ enum Command {
     Text(String),
     React(char),
     Reply(String),
+    Embed(Embed),
     Nothing,
 }
 /// This struct is needed to deal with the invite create event.
@@ -274,6 +278,12 @@ async fn handle_event(
                         .exec()
                         .await?;
                     }
+                    Command::Embed(embed) => {
+                        http.create_message(msg.channel_id)
+                            .embeds(&[embed])?
+                            .exec()
+                            .await?;
+                    }
                     _ => {}
                 }
             }
@@ -298,6 +308,19 @@ async fn handle_event(
     }
     Ok(())
 }
+fn print_qr(qr: &QrCode) -> String {
+    let border: i32 = 1;
+    let mut res = String::new();
+    for y in -border..qr.size() + border {
+        for x in -border..qr.size() + border {
+            let c = if qr.get_module(x, y) { '█' } else { ' ' };
+            res.push_str(&format!("{0}{0}", c));
+        }
+        res.push_str("\n");
+    }
+    res.push_str("\n");
+    res
+}
 
 async fn handle_message(
     msg: &Box<MessageCreate>,
@@ -312,6 +335,15 @@ async fn handle_message(
         "gn" => Ok(Command::Text(
             "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
         )),
+        x if x.contains("--qr") => {
+            let qr = QrCode::encode_text(x.replace("--qr", "").trim(), QrCodeEcc::Low)?;
+            let res = print_qr(&qr);
+            let embed = EmbedBuilder::new()
+                .description(format!("```ansi\n{res}\n```"))
+                .build()?;
+            Ok(Command::Embed(embed))
+        }
+
         x if x.contains("skull") => Ok(Command::React('💀')),
         content
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
