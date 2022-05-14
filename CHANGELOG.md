@@ -1,7 +1,8 @@
 # 1.3.0
 
-* qrcode scanner
+* qrcode maker
 * dn responder
+* zip command
 
 # 1.2.0 
 

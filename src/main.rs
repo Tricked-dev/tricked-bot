@@ -1,16 +1,15 @@
 #![allow(deprecated)]
 use futures::stream::StreamExt;
 use qrcodegen::{QrCode, QrCodeEcc};
-use rand::{
-    prelude::{IteratorRandom, SliceRandom, ThreadRng},
-    Rng,
-};
+use rand::prelude::{IteratorRandom, SliceRandom, ThreadRng};
+use rand::Rng;
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, MutexGuard};
@@ -23,6 +22,7 @@ use twilight_model::gateway::payload::incoming::InviteCreate;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
 use twilight_model::gateway::presence::{ActivityType, MinimalActivity, Status};
+use twilight_model::http::attachment::Attachment;
 use twilight_model::{gateway::Intents, id::Id, invite::Invite};
 
 struct State {
@@ -135,6 +135,40 @@ enum Command {
     Embed(Embed),
     Nothing,
 }
+
+#[derive(PartialEq, Default, Clone)]
+struct CommandBuilder {
+    embeds: Vec<Embed>,
+    text: Option<String>,
+    reply: bool,
+    reaction: Option<char>,
+    attachments: Vec<Attachment>,
+}
+impl From<Command> for CommandBuilder {
+    fn from(cmd: Command) -> CommandBuilder {
+        match cmd {
+            Command::Embed(embed) => CommandBuilder {
+                embeds: vec![embed],
+                ..Default::default()
+            },
+            Command::Text(txt) => CommandBuilder {
+                text: Some(txt),
+                ..Default::default()
+            },
+            Command::React(txt) => CommandBuilder {
+                reaction: Some(txt),
+                ..Default::default()
+            },
+            Command::Reply(txt) => CommandBuilder {
+                text: Some(txt),
+                reply: true,
+                ..Default::default()
+            },
+            _ => Default::default(),
+        }
+    }
+}
+
 /// This struct is needed to deal with the invite create event.
 #[derive(Clone)]
 struct BotInvite {
@@ -335,6 +369,43 @@ async fn handle_message(
         "gn" => Ok(Command::Text(
             "https://www.youtube.com/watch?v=ykLDTsfnE5A".into(),
         )),
+
+        "zip" => {
+            let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
+            if size > 6000000 {
+                return Ok(Command::Text("Too big".to_string()));
+            }
+            let mut buf = Vec::new();
+
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for attachment in &msg.attachments {
+                zip.start_file(attachment.filename.clone(), options)?;
+                zip.write(
+                    &locked_state
+                        .client
+                        .get(&attachment.url)
+                        .send()
+                        .await?
+                        .bytes()
+                        .await?,
+                )?;
+            }
+
+            let res = zip.finish()?;
+            http.create_message(msg.channel_id)
+                .content("Zip files arrived")?
+                .attachments(&[Attachment::from_bytes(
+                    format!("files-{}.zip", msg.id.get()),
+                    res.get_ref().to_vec(),
+                    125,
+                )])?
+                .exec()
+                .await?;
+            Ok(Command::Nothing)
+        }
         x if x.contains("--qr") => {
             let qr = QrCode::encode_text(x.replace("--qr", "").trim(), QrCodeEcc::Low)?;
             let res = print_qr(&qr);
