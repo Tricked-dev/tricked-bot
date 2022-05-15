@@ -6,6 +6,7 @@
 * markdown command
   * create custom fork with less deps
 * improvements to command handling
+* make responders a toml file
 
 # 1.2.0 
 

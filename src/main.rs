@@ -1,6 +1,8 @@
 #![allow(deprecated)]
-use futures::stream::StreamExt;
+#![warn(clippy::all)]
 
+use futures::stream::StreamExt;
+use lazy_static::lazy_static;
 use mdcat::{push_tty, Environment, ResourceAccess, Settings, TerminalCapabilities, TerminalSize};
 use pulldown_cmark::{Options, Parser};
 use qrcodegen::{QrCode, QrCodeEcc};
@@ -15,7 +17,6 @@ use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
 use syntect::parsing::SyntaxSet;
 use tokio::sync::{Mutex, MutexGuard};
 use twilight_bucket::{Bucket, Limit};
@@ -259,7 +260,7 @@ async fn handle_event(
                 .collect()
         }
         Event::MessageCreate(msg) => {
-            tracing::info!("Message received {}", &msg.content.replace("\n", "\\ "));
+            tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
 
             if msg.guild_id.is_none() || msg.author.bot {
                 return Ok(());
@@ -319,7 +320,7 @@ async fn handle_event(
                     if let Some(text) = &text {
                         req = req.content(text)?;
                     }
-                    if reply == true {
+                    if reply {
                         req = req.reply(msg.id);
                     }
 
@@ -361,17 +362,33 @@ fn print_qr(qr: &QrCode) -> String {
     res
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+
+struct Responder {
+    message: Option<String>,
+    react: Option<String>,
+}
+lazy_static! {
+    static ref RESPONDERS: HashMap<String, Responder> =
+        toml::from_str(include_str!("../responders.toml")).unwrap();
+}
+
 async fn handle_message(
-    msg: &Box<MessageCreate>,
+    msg: &MessageCreate,
     mut locked_state: MutexGuard<'_, State>,
     config: &Arc<Config>,
     http: &Arc<HttpClient>,
 ) -> Result<Command, Box<dyn Error + Send + Sync>> {
+    if let Some(responder) = RESPONDERS.get(msg.content.to_uppercase().as_str()) {
+        if let Some(msg) = &responder.message {
+            return Ok(Command::text(msg));
+        }
+        if let Some(reaction) = &responder.react {
+            return Ok(Command::react(reaction.chars().next().unwrap()));
+        }
+    }
+
     match msg.content.to_lowercase().as_str() {
-        "l" => Ok(Command::text("+ ratio".to_string())),
-        "f" => Ok(Command::react('🇫')),
-        "dn" => Ok(Command::text("Digital Native".to_string())),
-        "gn" => Ok(Command::text("https://www.youtube.com/watch?v=ykLDTsfnE5A")),
         "zip" => {
             let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
             if size > 6000000 {
@@ -385,7 +402,7 @@ async fn handle_message(
                 .compression_method(zip::CompressionMethod::Stored);
             for attachment in &msg.attachments {
                 zip.start_file(attachment.filename.clone(), options)?;
-                zip.write(
+                zip.write_all(
                     &locked_state
                         .client
                         .get(&attachment.url)
@@ -414,7 +431,6 @@ async fn handle_message(
                 .build()?;
             Ok(Command::embed(embed))
         }
-        x if x.contains("skull") => Ok(Command::react('💀')),
         content
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
                 && config
@@ -438,7 +454,7 @@ async fn handle_message(
             }
         }
         x if x.contains("--md") => {
-            let env = &Environment::for_local_directory(&"/").unwrap();
+            let env = &Environment::for_local_directory(&"/")?;
             let settings = &Settings {
                 resource_access: ResourceAccess::LocalOnly,
                 syntax_set: SyntaxSet::load_defaults_newlines(),
@@ -452,8 +468,8 @@ async fn handle_message(
                 &ct,
                 Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
             );
-            push_tty(settings, env, &mut buf, parser).unwrap();
-            let res = String::from_utf8(buf.clone()).unwrap();
+            push_tty(settings, env, &mut buf, parser)?;
+            let res = String::from_utf8(buf.clone())?;
             let size = res.len();
             if size > 4050 {
                 Ok(

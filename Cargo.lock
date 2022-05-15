@@ -1885,6 +1885,7 @@ version = "1.2.0"
 dependencies = [
  "bytes",
  "futures",
+ "lazy_static",
  "log",
  "mdcat",
  "openssl",
