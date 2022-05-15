@@ -1,6 +1,17 @@
 #![allow(deprecated)]
-#![warn(clippy::all)]
+#![warn(
+    clippy::all,
+    future_incompatible,
+    nonstandard_style,
+    rust_2018_idioms,
+    missing_debug_implementations
+)]
+#![forbid(unsafe_code, anonymous_parameters)]
 
+///! This project uses the infamous monofile approach
+///! This bot is and shall stay a monofile
+///! Its cooler and makes stuff easier!
+use crate::structs::*;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
 use mdcat::{push_tty, Environment, ResourceAccess, Settings, TerminalCapabilities, TerminalSize};
@@ -10,7 +21,6 @@ use rand::prelude::{IteratorRandom, SliceRandom, ThreadRng};
 use rand::Rng;
 use reqwest::Client;
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
@@ -19,52 +29,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use syntect::parsing::SyntaxSet;
 use tokio::sync::{Mutex, MutexGuard};
-use twilight_bucket::{Bucket, Limit};
 use twilight_embed_builder::EmbedBuilder;
 use twilight_gateway::{Event, EventTypeFlags, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::channel::{embed::Embed, message::AllowedMentions};
-use twilight_model::gateway::payload::incoming::InviteCreate;
+use twilight_model::channel::message::AllowedMentions;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
 use twilight_model::gateway::presence::{ActivityType, MinimalActivity, Status};
 use twilight_model::http::attachment::Attachment;
-use twilight_model::{gateway::Intents, id::Id, invite::Invite};
+use twilight_model::{gateway::Intents, id::Id};
 
-struct State {
-    last_redesc: Instant,
-    rng: ThreadRng,
-    client: Client,
-    user_bucket: Bucket,
-    channel_bucket: Bucket,
-    db: Connection,
-    invites: Vec<BotInvite>,
-}
-
-impl State {
-    fn new(rng: ThreadRng, client: Client, db: Connection) -> Self {
-        let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
-        let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
-        Self {
-            db,
-            rng,
-            client,
-            last_redesc: Instant::now(),
-            user_bucket,
-            channel_bucket,
-            invites: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-struct Config {
-    token: String,
-    discord: u64,
-    join_channel: u64,
-    rename_channels: Vec<u64>,
-    invites: HashMap<String, String>,
-    shit_reddits: Vec<String>,
+lazy_static! {
+    static ref RESPONDERS: HashMap<String, Responder> =
+        toml::from_str(include_str!("../responders.toml")).unwrap();
 }
 
 #[tokio::main]
@@ -75,7 +52,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let client: Client = Client::builder().user_agent("tricked-bot/1.0").build()?;
 
     let (shard, mut events) = Shard::builder(
-        config.token.to_owned(),
+        config.token.clone(),
         Intents::GUILD_INVITES
             | Intents::GUILD_MESSAGES
             | Intents::GUILD_MEMBERS
@@ -110,7 +87,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // HTTP is separate from the gateway, so create a new client.
     let http = Arc::new(
         HttpClient::builder()
-            .token(config.token.to_owned())
+            .token(config.token.clone())
             .default_allowed_mentions(AllowedMentions::builder().build())
             .build(),
     );
@@ -134,77 +111,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-#[derive(PartialEq, Default, Clone)]
-struct Command {
-    embeds: Vec<Embed>,
-    text: Option<String>,
-    reply: bool,
-    reaction: Option<char>,
-    attachments: Vec<Attachment>,
-    skip: bool,
-}
-
-impl Command {
-    pub fn embed(embed: Embed) -> Self {
-        Self {
-            embeds: vec![embed],
-            ..Self::default()
-        }
-    }
-    pub fn text<T: Into<String>>(text: T) -> Self {
-        Self {
-            text: Some(text.into()),
-            ..Self::default()
-        }
-    }
-    pub fn react(reaction: char) -> Self {
-        Self {
-            reaction: Some(reaction),
-            ..Self::default()
-        }
-    }
-    pub fn nothing() -> Self {
-        Self {
-            skip: true,
-            ..Self::default()
-        }
-    }
-    pub fn reply(mut self) -> Self {
-        self.reply = true;
-        self
-    }
-
-    pub fn attachments(mut self, attachments: Vec<Attachment>) -> Self {
-        self.attachments = attachments;
-        self
-    }
-}
-
-/// This struct is needed to deal with the invite create event.
-#[derive(Clone)]
-struct BotInvite {
-    code: String,
-    uses: Option<u64>,
-}
-
-impl From<Invite> for BotInvite {
-    fn from(invite: Invite) -> Self {
-        Self {
-            code: invite.code.to_owned(),
-            uses: invite.uses,
-        }
-    }
-}
-
-impl From<Box<InviteCreate>> for BotInvite {
-    fn from(invite: Box<InviteCreate>) -> Self {
-        Self {
-            code: invite.code.to_owned(),
-            uses: Some(invite.uses as u64),
-        }
-    }
-}
-
 async fn handle_event(
     event: Event,
     http: Arc<HttpClient>,
@@ -226,7 +132,7 @@ async fn handle_event(
                     if old_invite.uses < invite.uses {
                         let name = config.invites.iter().find_map(|(key, value)| {
                             if value == &old_invite.code {
-                                Some(key.to_owned())
+                                Some(key.clone())
                             } else {
                                 None
                             }
@@ -238,7 +144,7 @@ async fn handle_event(
                                 if let Some(name) = name {
                                     format!("{name} ({})", invite.code)
                                 } else {
-                                    invite.code.to_owned()
+                                    invite.code.clone()
                                 }
                             ))?
                             .exec()
@@ -254,10 +160,10 @@ async fn handle_event(
             locked_state.invites = invites
                 .into_iter()
                 .map(|invite| BotInvite {
-                    code: invite.code.to_owned(),
+                    code: invite.code.clone(),
                     uses: invite.uses,
                 })
-                .collect()
+                .collect();
         }
         Event::MessageCreate(msg) => {
             tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
@@ -339,10 +245,10 @@ async fn handle_event(
                 .await?
                 .into_iter()
                 .map(|invite| BotInvite {
-                    code: invite.code.to_owned(),
+                    code: invite.code.clone(),
                     uses: invite.uses,
                 })
-                .collect()
+                .collect();
         }
         _ => {}
     }
@@ -360,17 +266,6 @@ fn print_qr(qr: &QrCode) -> String {
     }
     res.push('\n');
     res
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-
-struct Responder {
-    message: Option<String>,
-    react: Option<String>,
-}
-lazy_static! {
-    static ref RESPONDERS: HashMap<String, Responder> =
-        toml::from_str(include_str!("../responders.toml")).unwrap();
 }
 
 async fn handle_message(
@@ -418,7 +313,7 @@ async fn handle_message(
             Ok(
                 Command::text("Zip files arrived").attachments(vec![Attachment::from_bytes(
                     format!("files-{}.zip", msg.id.get()),
-                    res.get_ref().to_vec(),
+                    (*res.get_ref()).clone(),
                     125,
                 )]),
             )
@@ -435,7 +330,7 @@ async fn handle_message(
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
                 && config
                     .rename_channels
-                    .to_vec()
+                    .clone()
                     .contains(&msg.channel_id.get())
                 && locked_state.rng.gen_range(0..10) == 2 =>
         {
@@ -476,7 +371,7 @@ async fn handle_message(
                     Command::text("Message exceeded discord limit send attachment!").attachments(
                         vec![Attachment::from_bytes(
                             "message.ansi".to_string(),
-                            buf.to_vec(),
+                            buf.clone(),
                             125,
                         )],
                     ),
@@ -610,29 +505,158 @@ pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
     new_text
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct List {
-    pub data: Data,
-}
+mod structs {
+    use rand::prelude::ThreadRng;
+    use reqwest::Client;
+    use rusqlite::Connection;
+    use serde::{Deserialize, Serialize};
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
+    use twilight_bucket::{Bucket, Limit};
+    use twilight_model::http::attachment::Attachment;
+    use twilight_model::{
+        channel::embed::Embed, gateway::payload::incoming::InviteCreate, invite::Invite,
+    };
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Data {
-    pub children: Vec<Children>,
-}
+    #[derive(PartialEq, Default, Clone)]
+    pub struct Command {
+        pub embeds: Vec<Embed>,
+        pub text: Option<String>,
+        pub reply: bool,
+        pub reaction: Option<char>,
+        pub attachments: Vec<Attachment>,
+        pub skip: bool,
+    }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Children {
-    pub data: Data2,
-}
+    impl Command {
+        pub fn embed(embed: Embed) -> Self {
+            Self {
+                embeds: vec![embed],
+                ..Self::default()
+            }
+        }
+        pub fn text<T: Into<String>>(text: T) -> Self {
+            Self {
+                text: Some(text.into()),
+                ..Self::default()
+            }
+        }
+        pub fn react(reaction: char) -> Self {
+            Self {
+                reaction: Some(reaction),
+                ..Self::default()
+            }
+        }
+        pub fn nothing() -> Self {
+            Self {
+                skip: true,
+                ..Self::default()
+            }
+        }
+        pub fn reply(mut self) -> Self {
+            self.reply = true;
+            self
+        }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Data2 {
-    #[serde(rename = "url_overridden_by_dest")]
-    pub url_overridden_by_dest: String,
-    #[serde(rename = "over_18")]
-    pub over_18: bool,
+        pub fn attachments(mut self, attachments: Vec<Attachment>) -> Self {
+            self.attachments = attachments;
+            self
+        }
+    }
+
+    /// This pub struct is needed to deal with the invite create event.
+    #[derive(Clone)]
+    pub struct BotInvite {
+        pub code: String,
+        pub uses: Option<u64>,
+    }
+
+    impl From<Invite> for BotInvite {
+        fn from(invite: Invite) -> Self {
+            Self {
+                code: invite.code.clone(),
+                uses: invite.uses,
+            }
+        }
+    }
+
+    impl From<Box<InviteCreate>> for BotInvite {
+        fn from(invite: Box<InviteCreate>) -> Self {
+            Self {
+                code: invite.code.clone(),
+                uses: Some(invite.uses as u64),
+            }
+        }
+    }
+
+    pub struct State {
+        pub last_redesc: Instant,
+        pub rng: ThreadRng,
+        pub client: Client,
+        pub user_bucket: Bucket,
+        pub channel_bucket: Bucket,
+        pub db: Connection,
+        pub invites: Vec<BotInvite>,
+    }
+
+    impl State {
+        pub fn new(rng: ThreadRng, client: Client, db: Connection) -> Self {
+            let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
+            let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
+            Self {
+                db,
+                rng,
+                client,
+                last_redesc: Instant::now(),
+                user_bucket,
+                channel_bucket,
+                invites: Vec::new(),
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+    pub struct Config {
+        pub token: String,
+        pub discord: u64,
+        pub join_channel: u64,
+        pub rename_channels: Vec<u64>,
+        pub invites: HashMap<String, String>,
+        pub shit_reddits: Vec<String>,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+
+    pub struct Responder {
+        pub message: Option<String>,
+        pub react: Option<String>,
+    }
+
+    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct List {
+        pub data: Data,
+    }
+
+    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Data {
+        pub children: Vec<Children>,
+    }
+
+    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Children {
+        pub data: Data2,
+    }
+
+    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Data2 {
+        #[serde(rename = "url_overridden_by_dest")]
+        pub url_overridden_by_dest: String,
+        #[serde(rename = "over_18")]
+        pub over_18: bool,
+    }
 }
