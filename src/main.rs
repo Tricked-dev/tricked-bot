@@ -80,7 +80,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         )
         .unwrap(),
     )
-    .build();
+    .build()
+    .await?;
     let shard = Arc::new(shard);
     shard.start().await?;
 

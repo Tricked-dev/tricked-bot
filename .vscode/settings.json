@@ -1,1 +1,6 @@
-{}
+{
+    "explorer.fileNesting.enabled": true,
+    "explorer.fileNesting.patterns": {
+        "Cargo.toml": "rust-toolchain.toml, Cargo.lock, rustfmt.toml",
+    }
+}
