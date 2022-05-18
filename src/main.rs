@@ -12,6 +12,7 @@
 ///! This bot is and shall stay a monofile
 ///! Its cooler and makes stuff easier!
 use crate::structs::*;
+use argh::FromArgs;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
 use mdcat::{push_tty, Environment, ResourceAccess, Settings, TerminalCapabilities, TerminalSize};
@@ -283,50 +284,101 @@ async fn handle_message(
             return Ok(Command::react(reaction.chars().next().unwrap()));
         }
     }
+    if msg.content.to_lowercase().starts_with("l+") {
+        let join = msg.content.split("+").skip(1).collect::<Vec<_>>().join("+");
+        let args = join.trim().split(" ");
+        let two = &args.collect::<Vec<&str>>()[..];
+        let commands = TrickedCommands::from_args(&["L+"], two);
+        if let Ok(command) = commands {
+            return match command.nested {
+                Commands::QR(qr) => {
+                    let qr = QrCode::encode_text(&qr.text.join(" "), QrCodeEcc::Low)?;
+                    let res = print_qr(&qr);
+                    let embed = EmbedBuilder::new()
+                        .description(format!("```ansi\n{res}\n```"))
+                        .build()?;
+                    Ok(Command::embed(embed))
+                }
+                Commands::MD(md) => {
+                    let env = &Environment::for_local_directory(&"/")?;
+                    let settings = &Settings {
+                        resource_access: ResourceAccess::LocalOnly,
+                        syntax_set: SyntaxSet::load_defaults_newlines(),
+                        terminal_capabilities: TerminalCapabilities::ansi(),
+                        terminal_size: TerminalSize::default(),
+                    };
+
+                    let mut buf = Vec::new();
+                    let text = md.text.join(" ");
+                    let parser = Parser::new_ext(
+                        &text,
+                        Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
+                    );
+                    push_tty(settings, env, &mut buf, parser)?;
+                    let res = String::from_utf8(buf.clone())?;
+                    let size = res.len();
+                    if size > 4050 {
+                        Ok(
+                            Command::text("Message exceeded discord limit send attachment!")
+                                .attachments(vec![Attachment::from_bytes(
+                                    "message.ansi".to_string(),
+                                    buf.clone(),
+                                    125,
+                                )]),
+                        )
+                    } else if size > 2000 {
+                        let embed = EmbedBuilder::new()
+                            .description(format!("```ansi\n{res}\n```"))
+                            .build()?;
+                        Ok(Command::embed(embed))
+                    } else {
+                        Ok(Command::text(format!("```ansi\n{res}\n```")))
+                    }
+                }
+                Commands::ZIP(_) => {
+                    let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
+                    if size > 6000000 {
+                        return Ok(Command::text("Too big".to_string()));
+                    }
+                    let mut buf = Vec::new();
+
+                    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+
+                    let options = zip::write::FileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored);
+                    for attachment in &msg.attachments {
+                        zip.start_file(attachment.filename.clone(), options)?;
+                        zip.write_all(
+                            &locked_state
+                                .client
+                                .get(&attachment.url)
+                                .send()
+                                .await?
+                                .bytes()
+                                .await?,
+                        )?;
+                    }
+
+                    let res = zip.finish()?;
+
+                    Ok(Command::text("Zip files arrived").attachments(vec![
+                        Attachment::from_bytes(
+                            format!("files-{}.zip", msg.id.get()),
+                            (*res.get_ref()).clone(),
+                            125,
+                        ),
+                    ]))
+                }
+            };
+        } else {
+            return Ok(Command::text(format!(
+                "```\n{}\n```",
+                commands.err().unwrap().output
+            )));
+        }
+    }
 
     match msg.content.to_lowercase().as_str() {
-        "zip" => {
-            let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
-            if size > 6000000 {
-                return Ok(Command::text("Too big".to_string()));
-            }
-            let mut buf = Vec::new();
-
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-
-            let options = zip::write::FileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            for attachment in &msg.attachments {
-                zip.start_file(attachment.filename.clone(), options)?;
-                zip.write_all(
-                    &locked_state
-                        .client
-                        .get(&attachment.url)
-                        .send()
-                        .await?
-                        .bytes()
-                        .await?,
-                )?;
-            }
-
-            let res = zip.finish()?;
-
-            Ok(
-                Command::text("Zip files arrived").attachments(vec![Attachment::from_bytes(
-                    format!("files-{}.zip", msg.id.get()),
-                    (*res.get_ref()).clone(),
-                    125,
-                )]),
-            )
-        }
-        x if x.contains("--qr") => {
-            let qr = QrCode::encode_text(x.replace("--qr", "").trim(), QrCodeEcc::Low)?;
-            let res = print_qr(&qr);
-            let embed = EmbedBuilder::new()
-                .description(format!("```ansi\n{res}\n```"))
-                .build()?;
-            Ok(Command::embed(embed))
-        }
         content
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
                 && config
@@ -349,43 +401,7 @@ async fn handle_message(
                 Ok(Command::nothing())
             }
         }
-        x if x.contains("--md") => {
-            let env = &Environment::for_local_directory(&"/")?;
-            let settings = &Settings {
-                resource_access: ResourceAccess::LocalOnly,
-                syntax_set: SyntaxSet::load_defaults_newlines(),
-                terminal_capabilities: TerminalCapabilities::ansi(),
-                terminal_size: TerminalSize::default(),
-            };
 
-            let mut buf = Vec::new();
-            let ct = x.replace("--md", "");
-            let parser = Parser::new_ext(
-                &ct,
-                Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
-            );
-            push_tty(settings, env, &mut buf, parser)?;
-            let res = String::from_utf8(buf.clone())?;
-            let size = res.len();
-            if size > 4050 {
-                Ok(
-                    Command::text("Message exceeded discord limit send attachment!").attachments(
-                        vec![Attachment::from_bytes(
-                            "message.ansi".to_string(),
-                            buf.clone(),
-                            125,
-                        )],
-                    ),
-                )
-            } else if size > 2000 {
-                let embed = EmbedBuilder::new()
-                    .description(format!("```ansi\n{res}\n```"))
-                    .build()?;
-                Ok(Command::embed(embed))
-            } else {
-                Ok(Command::text(format!("```ansi\n{res}\n```")))
-            }
-        }
         x if locked_state.rng.gen_range(0..45) == 2 => {
             let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
             Ok(Command::text(content).reply())
@@ -520,6 +536,44 @@ mod structs {
     use twilight_model::{
         channel::embed::Embed, gateway::payload::incoming::InviteCreate, invite::Invite,
     };
+
+    use argh::FromArgs;
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    /// Tricked Commands!!
+    pub struct TrickedCommands {
+        #[argh(subcommand)]
+        pub nested: Commands,
+    }
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    #[argh(subcommand)]
+    pub enum Commands {
+        QR(QR),
+        MD(MD),
+        ZIP(ZIP),
+    }
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    #[argh(subcommand, name = "qr")]
+    /// create a qrcode from text!
+    pub struct QR {
+        #[argh(positional)]
+        /// the text to be qr-d
+        pub text: Vec<String>,
+    }
+    #[derive(FromArgs, PartialEq, Debug)]
+    #[argh(subcommand, name = "md")]
+    /// turn text into a markdown ansi
+    pub struct MD {
+        #[argh(positional)]
+        /// the text to be marked!
+        pub text: Vec<String>,
+    }
+    #[derive(FromArgs, PartialEq, Debug)]
+    #[argh(subcommand, name = "zip")]
+    /// zip some files
+    pub struct ZIP {}
 
     #[derive(PartialEq, Default, Clone)]
     pub struct Command {

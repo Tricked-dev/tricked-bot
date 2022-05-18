@@ -9,6 +9,8 @@
 * make responders a toml file
 * refactor structs to seprate file
 * more clippy rules
+* update twilight
+* use argh for command parsing
 
 # 1.2.0 
 
