@@ -1,8 +1,10 @@
 [package]
+authors = ["Tricked-dev"]
+description = "A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)"
 edition = "2021"
+license = "Apache-2"
 name = "tricked-bot"
 version = "1.3.0"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]

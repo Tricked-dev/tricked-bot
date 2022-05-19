@@ -638,7 +638,7 @@ mod structs {
     }
     #[derive(FromArgs, PartialEq, Debug)]
     #[argh(subcommand, name = "md")]
-    /// turn text into a markdown ansi
+    /// turn text into a markdown ansiL
     pub struct MD {
         #[argh(positional)]
         /// the text to be marked!
@@ -646,7 +646,7 @@ mod structs {
     }
     #[derive(FromArgs, PartialEq, Debug)]
     #[argh(subcommand, name = "zip")]
-    /// zip some files
+    /// zip some files they must be attachments!
     pub struct Zip {}
 
     #[derive(PartialEq, Default, Clone)]
