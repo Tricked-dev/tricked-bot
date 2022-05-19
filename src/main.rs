@@ -469,9 +469,9 @@ async fn update_rss_feed(
     config: Arc<Config>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for page in &config.rss_feeds {
-        let bytes = reqwest::get(page).await.unwrap().bytes().await.unwrap();
+        let bytes = reqwest::get(page).await?.bytes().await?;
         let res = std::io::Cursor::new(bytes);
-        let res = parser::parse(res).unwrap();
+        let res = parser::parse(res)?;
 
         let icon = if let Some(icon) = res.icon {
             Some(icon.uri)
@@ -482,7 +482,15 @@ async fn update_rss_feed(
         };
 
         for entry in res.entries {
-            if 3600 > Utc::now().timestamp() - entry.published.unwrap().timestamp() {
+            if 3600 > (Utc::now().timestamp() - entry.published.unwrap().timestamp()) {
+                if res.title.is_none()
+                    || res.links.is_empty()
+                    || entry.summary.is_none()
+                    || entry.published.is_none()
+                    || entry.authors.is_empty()
+                {
+                    continue;
+                }
                 let embed = EmbedBuilder::new()
                     .author(EmbedAuthor {
                         icon_url: icon.clone(),
@@ -499,11 +507,9 @@ async fn update_rss_feed(
                         icon_url: entry.authors.get(0).unwrap().uri.clone(),
                         proxy_icon_url: None,
                     })
-                    .build()
-                    .unwrap();
+                    .build()?;
                 http.create_message(Id::new(config.join_channel))
-                    .embeds(&[embed])
-                    .unwrap()
+                    .embeds(&[embed])?
                     .exec()
                     .await?;
             }
