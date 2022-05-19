@@ -1,4 +1,4 @@
-#![allow(deprecated)]
+#![allow(deprecated, clippy::upper_case_acronyms)]
 #![warn(
     clippy::all,
     future_incompatible,
@@ -13,8 +13,11 @@
 ///! Its cooler and makes stuff easier!
 use crate::structs::*;
 use argh::FromArgs;
+use chrono::Utc;
+use feed_rs::parser;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
+use log::error;
 use mdcat::{push_tty, Environment, ResourceAccess, Settings, TerminalCapabilities, TerminalSize};
 use pulldown_cmark::{Options, Parser};
 use qrcodegen::{QrCode, QrCodeEcc};
@@ -30,14 +33,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use syntect::parsing::SyntaxSet;
 use tokio::sync::{Mutex, MutexGuard};
+use tokio::time;
 use twilight_embed_builder::EmbedBuilder;
 use twilight_gateway::{Event, EventTypeFlags, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
+use twilight_model::channel::embed::{EmbedAuthor, EmbedFooter};
 use twilight_model::channel::message::AllowedMentions;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
 use twilight_model::gateway::presence::{ActivityType, MinimalActivity, Status};
 use twilight_model::http::attachment::Attachment;
+use twilight_model::util::Timestamp;
 use twilight_model::{gateway::Intents, id::Id};
 
 lazy_static! {
@@ -93,9 +99,27 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .default_allowed_mentions(AllowedMentions::builder().build())
             .build(),
     );
+
     let conn = Connection::open(".trickedbot/database.sqlite")?;
 
     let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client, conn)));
+
+    let mut interval = time::interval(Duration::from_secs(3600));
+    let http_clone = Arc::clone(&http);
+    let config_clone = Arc::clone(&config);
+    tokio::spawn(async move {
+        loop {
+            let http = Arc::clone(&http_clone);
+            let config = Arc::clone(&config_clone);
+            tokio::spawn(async move {
+                let res = update_rss_feed(http, config).await;
+                if let Err(e) = res {
+                    error!("Error updating RSS feed: {}", e);
+                }
+            });
+            interval.tick().await;
+        }
+    });
 
     while let Some(event) = events.next().await {
         let res = handle_event(
@@ -285,8 +309,8 @@ async fn handle_message(
         }
     }
     if msg.content.to_lowercase().starts_with("l+") {
-        let join = msg.content.split("+").skip(1).collect::<Vec<_>>().join("+");
-        let args = join.trim().split(" ");
+        let join = msg.content.split('+').skip(1).collect::<Vec<_>>().join("+");
+        let args = join.trim().split(' ');
         let two = &args.collect::<Vec<&str>>()[..];
         let commands = TrickedCommands::from_args(&["L+"], two);
         if let Ok(command) = commands {
@@ -299,6 +323,7 @@ async fn handle_message(
                         .build()?;
                     Ok(Command::embed(embed))
                 }
+
                 Commands::MD(md) => {
                     let env = &Environment::for_local_directory(&"/")?;
                     let settings = &Settings {
@@ -335,7 +360,7 @@ async fn handle_message(
                         Ok(Command::text(format!("```ansi\n{res}\n```")))
                     }
                 }
-                Commands::ZIP(_) => {
+                Commands::Zip(_) => {
                     let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
                     if size > 6000000 {
                         return Ok(Command::text("Too big".to_string()));
@@ -439,72 +464,55 @@ fn init_config() -> Config {
     toml::from_str(&config_str).unwrap_or_default()
 }
 
-const ZALGO_UP: [char; 50] = [
-    '\u{030e}', /*    ̎    */ '\u{0304}', /*    ̄    */ '\u{0305}', /*    ̅    */
-    '\u{033f}', /*    ̿    */ '\u{0311}', /*    ̑    */ '\u{0306}',
-    /*    ̆    */ '\u{0310}', /*    ̐    */
-    '\u{0352}', /*    ͒    */ '\u{0357}', /*    ͗    */ '\u{0351}',
-    /*    ͑    */ '\u{0307}', /*    ̇    */
-    '\u{0308}', /*    ̈    */ '\u{030a}', /*    ̊    */ '\u{0342}',
-    /*    ͂    */ '\u{0343}', /*    ̓    */
-    '\u{0344}', /*    ̈́    */ '\u{034a}', /*    ͊    */ '\u{034b}',
-    /*    ͋    */ '\u{034c}', /*    ͌    */
-    '\u{0303}', /*    ̃    */ '\u{0302}', /*    ̂    */ '\u{030c}',
-    /*    ̌    */ '\u{0350}', /*    ͐    */
-    '\u{0300}', /*    ̀    */ '\u{0301}', /*    ́    */ '\u{030b}',
-    /*    ̋    */ '\u{030f}', /*    ̏    */
-    '\u{0312}', /*    ̒    */ '\u{0313}', /*    ̓    */ '\u{0314}',
-    /*    ̔    */ '\u{033d}', /*    ̽    */
-    '\u{0309}', /*    ̉    */ '\u{0363}', /*    ͣ    */ '\u{0364}',
-    /*    ͤ    */ '\u{0365}', /*    ͥ    */
-    '\u{0366}', /*    ͦ    */ '\u{0367}', /*    ͧ    */ '\u{0368}',
-    /*    ͨ    */ '\u{0369}', /*    ͩ    */
-    '\u{036a}', /*    ͪ    */ '\u{036b}', /*    ͫ    */ '\u{036c}',
-    /*    ͬ    */ '\u{036d}', /*    ͭ    */
-    '\u{036e}', /*    ͮ    */ '\u{036f}', /*    ͯ    */ '\u{033e}',
-    /*    ̾    */ '\u{035b}', /*    ͛    */
-    '\u{0346}', /*    ͆    */ '\u{031a}', /*    ̚    */ '\u{030d}', /*    ̍    */
-];
+async fn update_rss_feed(
+    http: Arc<HttpClient>,
+    config: Arc<Config>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for page in &config.rss_feeds {
+        let bytes = reqwest::get(page).await.unwrap().bytes().await.unwrap();
+        let res = std::io::Cursor::new(bytes);
+        let res = parser::parse(res).unwrap();
 
-const ZALGO_DOWN: [char; 40] = [
-    '\u{0317}', /*     ̗     */ '\u{0318}',
-    /*     ̘     */ '\u{0319}', /*     ̙     */
-    '\u{031c}', /*     ̜     */ '\u{031d}', /*     ̝     */ '\u{031e}',
-    /*     ̞     */ '\u{031f}', /*     ̟     */
-    '\u{0320}', /*     ̠     */ '\u{0324}', /*     ̤     */ '\u{0325}',
-    /*     ̥     */ '\u{0326}', /*     ̦     */
-    '\u{0329}', /*     ̩     */ '\u{032a}', /*     ̪     */ '\u{032b}',
-    /*     ̫     */ '\u{032c}', /*     ̬     */
-    '\u{032d}', /*     ̭     */ '\u{032e}', /*     ̮     */ '\u{032f}',
-    /*     ̯     */ '\u{0330}', /*     ̰     */
-    '\u{0331}', /*     ̱     */ '\u{0332}', /*     ̲     */ '\u{0333}',
-    /*     ̳     */ '\u{0339}', /*     ̹     */
-    '\u{033a}', /*     ̺     */ '\u{033b}', /*     ̻     */ '\u{033c}',
-    /*     ̼     */ '\u{0345}', /*     ͅ     */
-    '\u{0347}', /*     ͇     */ '\u{0348}', /*     ͈     */ '\u{0349}',
-    /*     ͉     */ '\u{034d}', /*     ͍     */
-    '\u{034e}', /*     ͎     */ '\u{0353}', /*     ͓     */ '\u{0354}',
-    /*     ͔     */ '\u{0355}', /*     ͕     */
-    '\u{0356}', /*     ͖     */ '\u{0359}', /*     ͙     */ '\u{035a}',
-    /*     ͚     */ '\u{0323}', /*     ̣     */
-    '\u{0316}', /*     ̖     */
-];
+        let icon = if let Some(icon) = res.icon {
+            Some(icon.uri)
+        } else if let Some(icon) = res.logo {
+            Some(icon.uri)
+        } else {
+            None
+        };
 
-const ZALGO_MID: [char; 23] = [
-    '\u{031b}', /*     ̛     */ '\u{0340}',
-    /*     ̀     */ '\u{0341}', /*     ́     */
-    '\u{0358}', /*     ͘     */ '\u{0321}', /*     ̡     */ '\u{0322}',
-    /*     ̢     */ '\u{0327}', /*     ̧     */
-    '\u{0328}', /*     ̨     */ '\u{0334}', /*     ̴     */ '\u{0335}',
-    /*     ̵     */ '\u{0336}', /*     ̶     */
-    '\u{034f}', /*     ͏     */ '\u{035c}', /*     ͜     */ '\u{035d}',
-    /*     ͝     */ '\u{035e}', /*     ͞     */
-    '\u{035f}', /*     ͟     */ '\u{0360}', /*     ͠     */ '\u{0362}',
-    /*     ͢     */ '\u{0338}', /*     ̸     */
-    '\u{0337}', /*     ̷     */ '\u{0361}', /*     ͡     */ '\u{0489}',
-    /*     ҉_   */ '\u{0315}', /*     ̕     */
-];
+        for entry in res.entries {
+            if 3600 > Utc::now().timestamp() - entry.published.unwrap().timestamp() {
+                let embed = EmbedBuilder::new()
+                    .author(EmbedAuthor {
+                        icon_url: icon.clone(),
+                        name: res.title.clone().unwrap().content,
+                        url: Some(res.links.get(0).unwrap().href.clone()),
+                        proxy_icon_url: None,
+                    })
+                    .title(entry.title.unwrap().content)
+                    .url(entry.links.get(0).as_ref().unwrap().href.clone())
+                    .description(rhtml2md::parse_html(&entry.summary.unwrap().content))
+                    .timestamp(Timestamp::from_secs(entry.published.unwrap().timestamp()).unwrap())
+                    .footer(EmbedFooter {
+                        text: entry.authors.get(0).unwrap().name.clone(),
+                        icon_url: entry.authors.get(0).unwrap().uri.clone(),
+                        proxy_icon_url: None,
+                    })
+                    .build()
+                    .unwrap();
+                http.create_message(Id::new(config.join_channel))
+                    .embeds(&[embed])
+                    .unwrap()
+                    .exec()
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
 
+use zalgos::*;
 pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
     let mut new_text = String::with_capacity(s.len() * 2);
     for c in s.chars() {
@@ -522,22 +530,88 @@ pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
     new_text
 }
 
+mod zalgos {
+    pub const ZALGO_UP: [char; 50] = [
+        '\u{030e}', /*    ̎    */ '\u{0304}',
+        /*    ̄    */ '\u{0305}', /*    ̅    */
+        '\u{033f}', /*    ̿    */ '\u{0311}', /*    ̑    */ '\u{0306}',
+        /*    ̆    */ '\u{0310}', /*    ̐    */
+        '\u{0352}', /*    ͒    */ '\u{0357}', /*    ͗    */ '\u{0351}',
+        /*    ͑    */ '\u{0307}', /*    ̇    */
+        '\u{0308}', /*    ̈    */ '\u{030a}', /*    ̊    */ '\u{0342}',
+        /*    ͂    */ '\u{0343}', /*    ̓    */
+        '\u{0344}', /*    ̈́    */ '\u{034a}', /*    ͊    */ '\u{034b}',
+        /*    ͋    */ '\u{034c}', /*    ͌    */
+        '\u{0303}', /*    ̃    */ '\u{0302}', /*    ̂    */ '\u{030c}',
+        /*    ̌    */ '\u{0350}', /*    ͐    */
+        '\u{0300}', /*    ̀    */ '\u{0301}', /*    ́    */ '\u{030b}',
+        /*    ̋    */ '\u{030f}', /*    ̏    */
+        '\u{0312}', /*    ̒    */ '\u{0313}', /*    ̓    */ '\u{0314}',
+        /*    ̔    */ '\u{033d}', /*    ̽    */
+        '\u{0309}', /*    ̉    */ '\u{0363}', /*    ͣ    */ '\u{0364}',
+        /*    ͤ    */ '\u{0365}', /*    ͥ    */
+        '\u{0366}', /*    ͦ    */ '\u{0367}', /*    ͧ    */ '\u{0368}',
+        /*    ͨ    */ '\u{0369}', /*    ͩ    */
+        '\u{036a}', /*    ͪ    */ '\u{036b}', /*    ͫ    */ '\u{036c}',
+        /*    ͬ    */ '\u{036d}', /*    ͭ    */
+        '\u{036e}', /*    ͮ    */ '\u{036f}', /*    ͯ    */ '\u{033e}',
+        /*    ̾    */ '\u{035b}', /*    ͛    */
+        '\u{0346}', /*    ͆    */ '\u{031a}',
+        /*    ̚    */ '\u{030d}', /*    ̍    */
+    ];
+
+    pub const ZALGO_DOWN: [char; 40] = [
+        '\u{0317}', /*     ̗     */ '\u{0318}',
+        /*     ̘     */ '\u{0319}', /*     ̙     */
+        '\u{031c}', /*     ̜     */ '\u{031d}', /*     ̝     */ '\u{031e}',
+        /*     ̞     */ '\u{031f}', /*     ̟     */
+        '\u{0320}', /*     ̠     */ '\u{0324}', /*     ̤     */ '\u{0325}',
+        /*     ̥     */ '\u{0326}', /*     ̦     */
+        '\u{0329}', /*     ̩     */ '\u{032a}', /*     ̪     */ '\u{032b}',
+        /*     ̫     */ '\u{032c}', /*     ̬     */
+        '\u{032d}', /*     ̭     */ '\u{032e}', /*     ̮     */ '\u{032f}',
+        /*     ̯     */ '\u{0330}', /*     ̰     */
+        '\u{0331}', /*     ̱     */ '\u{0332}', /*     ̲     */ '\u{0333}',
+        /*     ̳     */ '\u{0339}', /*     ̹     */
+        '\u{033a}', /*     ̺     */ '\u{033b}', /*     ̻     */ '\u{033c}',
+        /*     ̼     */ '\u{0345}', /*     ͅ     */
+        '\u{0347}', /*     ͇     */ '\u{0348}', /*     ͈     */ '\u{0349}',
+        /*     ͉     */ '\u{034d}', /*     ͍     */
+        '\u{034e}', /*     ͎     */ '\u{0353}', /*     ͓     */ '\u{0354}',
+        /*     ͔     */ '\u{0355}', /*     ͕     */
+        '\u{0356}', /*     ͖     */ '\u{0359}', /*     ͙     */ '\u{035a}',
+        /*     ͚     */ '\u{0323}', /*     ̣     */
+        '\u{0316}', /*     ̖     */
+    ];
+
+    pub const ZALGO_MID: [char; 23] = [
+        '\u{031b}', /*     ̛     */ '\u{0340}',
+        /*     ̀     */ '\u{0341}', /*     ́     */
+        '\u{0358}', /*     ͘     */ '\u{0321}', /*     ̡     */ '\u{0322}',
+        /*     ̢     */ '\u{0327}', /*     ̧     */
+        '\u{0328}', /*     ̨     */ '\u{0334}', /*     ̴     */ '\u{0335}',
+        /*     ̵     */ '\u{0336}', /*     ̶     */
+        '\u{034f}', /*     ͏     */ '\u{035c}', /*     ͜     */ '\u{035d}',
+        /*     ͝     */ '\u{035e}', /*     ͞     */
+        '\u{035f}', /*     ͟     */ '\u{0360}', /*     ͠     */ '\u{0362}',
+        /*     ͢     */ '\u{0338}', /*     ̸     */
+        '\u{0337}', /*     ̷     */ '\u{0361}', /*     ͡     */ '\u{0489}',
+        /*     ҉_   */ '\u{0315}', /*     ̕     */
+    ];
+}
+
 mod structs {
+    use argh::FromArgs;
     use rand::prelude::ThreadRng;
     use reqwest::Client;
     use rusqlite::Connection;
     use serde::{Deserialize, Serialize};
-    use std::{
-        collections::HashMap,
-        time::{Duration, Instant},
-    };
+    use std::time::Instant;
+    use std::{collections::HashMap, time::Duration};
     use twilight_bucket::{Bucket, Limit};
     use twilight_model::http::attachment::Attachment;
-    use twilight_model::{
-        channel::embed::Embed, gateway::payload::incoming::InviteCreate, invite::Invite,
-    };
-
-    use argh::FromArgs;
+    use twilight_model::invite::Invite;
+    use twilight_model::{channel::embed::Embed, gateway::payload::incoming::InviteCreate};
 
     #[derive(FromArgs, PartialEq, Debug)]
     /// Tricked Commands!!
@@ -551,7 +625,7 @@ mod structs {
     pub enum Commands {
         QR(QR),
         MD(MD),
-        ZIP(ZIP),
+        Zip(Zip),
     }
 
     #[derive(FromArgs, PartialEq, Debug)]
@@ -573,7 +647,7 @@ mod structs {
     #[derive(FromArgs, PartialEq, Debug)]
     #[argh(subcommand, name = "zip")]
     /// zip some files
-    pub struct ZIP {}
+    pub struct Zip {}
 
     #[derive(PartialEq, Default, Clone)]
     pub struct Command {
@@ -645,7 +719,6 @@ mod structs {
             }
         }
     }
-
     pub struct State {
         pub last_redesc: Instant,
         pub rng: ThreadRng,
@@ -680,6 +753,7 @@ mod structs {
         pub rename_channels: Vec<u64>,
         pub invites: HashMap<String, String>,
         pub shit_reddits: Vec<String>,
+        pub rss_feeds: Vec<String>,
     }
     #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 

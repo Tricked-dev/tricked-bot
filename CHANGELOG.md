@@ -11,6 +11,7 @@
 * more clippy rules
 * update twilight
 * use argh for command parsing
+* RSS feeds
 
 # 1.2.0 
 
