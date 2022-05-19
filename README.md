@@ -2,7 +2,7 @@
 
 A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)
 
-# Features
+## Features
 
 * rss feeds
 * channel topic changer
@@ -13,11 +13,11 @@ A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)
 * reddit post fetcher
 * invite tracking
 
-# Tech
+## Tech
 
 * Bot is made in twilight
 * database used is sqlite
 
-# License
+## License
 
 > This project is licensed under APACHE-2
