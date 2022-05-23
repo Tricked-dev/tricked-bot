@@ -1,3 +1,7 @@
+# 1.4.0
+
+* im responder!
+
 # 1.3.0
 
 * qrcode maker

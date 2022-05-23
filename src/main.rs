@@ -426,7 +426,14 @@ async fn handle_message(
                 Ok(Command::nothing())
             }
         }
+        x if x.contains("im") => {
+            let text = x.split("im").last().unwrap().trim();
+            if text.is_empty() {
+                return Ok(Command::nothing());
+            }
 
+            Ok(Command::text(format!("Hi {text} i'm Tricked-bot")).reply())
+        }
         x if locked_state.rng.gen_range(0..45) == 2 => {
             let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
             Ok(Command::text(content).reply())
