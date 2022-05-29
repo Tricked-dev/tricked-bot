@@ -25,8 +25,11 @@ use rand::prelude::{IteratorRandom, SliceRandom, ThreadRng};
 use rand::Rng;
 use reqwest::Client;
 use rusqlite::{params, Connection};
+use select::document::Document;
+use select::predicate::Class;
 use std::collections::HashMap;
 use std::error::Error;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
@@ -37,7 +40,7 @@ use tokio::time;
 use twilight_embed_builder::EmbedBuilder;
 use twilight_gateway::{Event, EventTypeFlags, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::channel::embed::{EmbedAuthor, EmbedFooter};
+use twilight_model::channel::embed::{Embed, EmbedAuthor, EmbedFooter};
 use twilight_model::channel::message::AllowedMentions;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
@@ -77,7 +80,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         UpdatePresencePayload::new(
             vec![MinimalActivity {
                 kind: ActivityType::Competing,
-                name: "The perfect bot to ruin your Discord server.".to_string(),
+                name: config.status.to_string(),
                 url: None,
             }
             .into()],
@@ -286,7 +289,8 @@ fn print_qr(qr: &QrCode) -> String {
     for y in -border..qr.size() + border {
         for x in -border..qr.size() + border {
             let c = if qr.get_module(x, y) { '█' } else { ' ' };
-            res.push_str(&format!("{0}{0}", c));
+
+            let _ = write!(res, "{0}{0}", c);
         }
         res.push('\n');
     }
@@ -393,6 +397,51 @@ async fn handle_message(
                             125,
                         ),
                     ]))
+                }
+                Commands::Search(Search { query }) => {
+                    let res = locked_state
+                        .client
+                        .get(format!(
+                            "https://duckduckgo.com/html/?q={}",
+                            query.join("-")
+                        ))
+                        .send()
+                        .await?
+                        .text()
+                        .await?;
+
+                    let document = Document::from(res.as_str());
+                    let embeds =
+                        document
+                            .find(Class("result__body"))
+                            .take(5)
+                            .map(|node| -> Option<Embed> {
+                                let url_node = node.find(Class("result__a")).next()?;
+                                let url = url_node
+                                    .attr("href")?
+                                    .replace("//duckduckgo.com", "https://duckduckgo.com");
+                                let title = url_node.inner_html();
+                                let snippet = node
+                                    .find(Class("result__snippet"))
+                                    .next()?
+                                    .inner_html()
+                                    .replace("<b>", "**")
+                                    .replace("</b>", "**")
+                                    .split_whitespace()
+                                    .collect::<Vec<&str>>()
+                                    .join(" ");
+                                Some(
+                                    EmbedBuilder::new()
+                                        .title(title)
+                                        .url(url)
+                                        .color(0x179e87)
+                                        .description(snippet)
+                                        .build()
+                                        .unwrap(),
+                                )
+                            });
+
+                    Ok(Command::embeds(embeds.flatten().collect()))
                 }
             };
         } else {
@@ -526,7 +575,7 @@ async fn update_rss_feed(
 }
 
 use zalgos::*;
-pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
+pub(crate) fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
     let mut new_text = String::with_capacity(s.len() * 2);
     for c in s.chars() {
         new_text.push(c);
@@ -544,7 +593,7 @@ pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
 }
 
 mod zalgos {
-    pub const ZALGO_UP: [char; 50] = [
+    pub(crate) const ZALGO_UP: [char; 50] = [
         '\u{030e}', /*    ̎    */ '\u{0304}',
         /*    ̄    */ '\u{0305}', /*    ̅    */
         '\u{033f}', /*    ̿    */ '\u{0311}', /*    ̑    */ '\u{0306}',
@@ -573,7 +622,7 @@ mod zalgos {
         /*    ̚    */ '\u{030d}', /*    ̍    */
     ];
 
-    pub const ZALGO_DOWN: [char; 40] = [
+    pub(crate) const ZALGO_DOWN: [char; 40] = [
         '\u{0317}', /*     ̗     */ '\u{0318}',
         /*     ̘     */ '\u{0319}', /*     ̙     */
         '\u{031c}', /*     ̜     */ '\u{031d}', /*     ̝     */ '\u{031e}',
@@ -597,7 +646,7 @@ mod zalgos {
         '\u{0316}', /*     ̖     */
     ];
 
-    pub const ZALGO_MID: [char; 23] = [
+    pub(crate) const ZALGO_MID: [char; 23] = [
         '\u{031b}', /*     ̛     */ '\u{0340}',
         /*     ̀     */ '\u{0341}', /*     ́     */
         '\u{0358}', /*     ͘     */ '\u{0321}', /*     ̡     */ '\u{0322}',
@@ -626,93 +675,110 @@ mod structs {
     use twilight_model::invite::Invite;
     use twilight_model::{channel::embed::Embed, gateway::payload::incoming::InviteCreate};
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(FromArgs, PartialEq, Eq, Debug)]
     /// Tricked Commands!!
-    pub struct TrickedCommands {
+    pub(crate) struct TrickedCommands {
         #[argh(subcommand)]
-        pub nested: Commands,
+        pub(crate) nested: Commands,
     }
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(FromArgs, PartialEq, Eq, Debug)]
     #[argh(subcommand)]
-    pub enum Commands {
+    pub(crate) enum Commands {
         QR(QR),
         MD(MD),
         Zip(Zip),
+        Search(Search),
     }
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(FromArgs, PartialEq, Eq, Debug)]
     #[argh(subcommand, name = "qr")]
     /// create a qrcode from text!
-    pub struct QR {
+    pub(crate) struct QR {
         #[argh(positional)]
         /// the text to be qr-d
-        pub text: Vec<String>,
+        pub(crate) text: Vec<String>,
     }
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(FromArgs, PartialEq, Eq, Debug)]
     #[argh(subcommand, name = "md")]
     /// turn text into a markdown ansiL
-    pub struct MD {
+    pub(crate) struct MD {
         #[argh(positional)]
         /// the text to be marked!
-        pub text: Vec<String>,
+        pub(crate) text: Vec<String>,
     }
-    #[derive(FromArgs, PartialEq, Debug)]
+
+    #[derive(FromArgs, PartialEq, Eq, Debug)]
+    #[argh(subcommand, name = "search")]
+    /// search for things on ddg
+    pub(crate) struct Search {
+        #[argh(positional)]
+        /// query to be searched
+        pub(crate) query: Vec<String>,
+    }
+
+    #[derive(FromArgs, PartialEq, Eq, Debug)]
     #[argh(subcommand, name = "zip")]
     /// zip some files they must be attachments!
-    pub struct Zip {}
+    pub(crate) struct Zip {}
 
-    #[derive(PartialEq, Default, Clone)]
-    pub struct Command {
-        pub embeds: Vec<Embed>,
-        pub text: Option<String>,
-        pub reply: bool,
-        pub reaction: Option<char>,
-        pub attachments: Vec<Attachment>,
-        pub skip: bool,
+    #[derive(PartialEq, Eq, Default, Clone)]
+    pub(crate) struct Command {
+        pub(crate) embeds: Vec<Embed>,
+        pub(crate) text: Option<String>,
+        pub(crate) reply: bool,
+        pub(crate) reaction: Option<char>,
+        pub(crate) attachments: Vec<Attachment>,
+        pub(crate) skip: bool,
     }
 
     impl Command {
-        pub fn embed(embed: Embed) -> Self {
+        pub(crate) fn embed(embed: Embed) -> Self {
             Self {
                 embeds: vec![embed],
                 ..Self::default()
             }
         }
-        pub fn text<T: Into<String>>(text: T) -> Self {
+        pub(crate) fn embeds(embeds: Vec<Embed>) -> Self {
+            Self {
+                embeds,
+                ..Self::default()
+            }
+        }
+        pub(crate) fn text<T: Into<String>>(text: T) -> Self {
             Self {
                 text: Some(text.into()),
                 ..Self::default()
             }
         }
-        pub fn react(reaction: char) -> Self {
+        pub(crate) fn react(reaction: char) -> Self {
             Self {
                 reaction: Some(reaction),
                 ..Self::default()
             }
         }
-        pub fn nothing() -> Self {
+        pub(crate) fn nothing() -> Self {
             Self {
                 skip: true,
                 ..Self::default()
             }
         }
-        pub fn reply(mut self) -> Self {
+        pub(crate) fn reply(mut self) -> Self {
             self.reply = true;
             self
         }
 
-        pub fn attachments(mut self, attachments: Vec<Attachment>) -> Self {
+        pub(crate) fn attachments(mut self, attachments: Vec<Attachment>) -> Self {
             self.attachments = attachments;
             self
         }
     }
 
-    /// This pub struct is needed to deal with the invite create event.
+    /// This pub(crate)struct is needed to deal with the invite create event.
     #[derive(Clone)]
-    pub struct BotInvite {
-        pub code: String,
-        pub uses: Option<u64>,
+    pub(crate) struct BotInvite {
+        pub(crate) code: String,
+        pub(crate) uses: Option<u64>,
     }
 
     impl From<Invite> for BotInvite {
@@ -732,18 +798,18 @@ mod structs {
             }
         }
     }
-    pub struct State {
-        pub last_redesc: Instant,
-        pub rng: ThreadRng,
-        pub client: Client,
-        pub user_bucket: Bucket,
-        pub channel_bucket: Bucket,
-        pub db: Connection,
-        pub invites: Vec<BotInvite>,
+    pub(crate) struct State {
+        pub(crate) last_redesc: Instant,
+        pub(crate) rng: ThreadRng,
+        pub(crate) client: Client,
+        pub(crate) user_bucket: Bucket,
+        pub(crate) channel_bucket: Bucket,
+        pub(crate) db: Connection,
+        pub(crate) invites: Vec<BotInvite>,
     }
 
     impl State {
-        pub fn new(rng: ThreadRng, client: Client, db: Connection) -> Self {
+        pub(crate) fn new(rng: ThreadRng, client: Client, db: Connection) -> Self {
             let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
             let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
             Self {
@@ -759,46 +825,76 @@ mod structs {
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-    pub struct Config {
-        pub token: String,
-        pub discord: u64,
-        pub join_channel: u64,
-        pub rename_channels: Vec<u64>,
-        pub invites: HashMap<String, String>,
-        pub shit_reddits: Vec<String>,
-        pub rss_feeds: Vec<String>,
+    pub(crate) struct Config {
+        pub(crate) token: String,
+        pub(crate) discord: u64,
+        pub(crate) join_channel: u64,
+        pub(crate) rename_channels: Vec<u64>,
+        pub(crate) invites: HashMap<String, String>,
+        pub(crate) shit_reddits: Vec<String>,
+        pub(crate) rss_feeds: Vec<String>,
+        pub(crate) status: String,
     }
     #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 
-    pub struct Responder {
-        pub message: Option<String>,
-        pub react: Option<String>,
+    pub(crate) struct Responder {
+        pub(crate) message: Option<String>,
+        pub(crate) react: Option<String>,
     }
 
-    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct List {
-        pub data: Data,
+    pub(crate) struct List {
+        pub(crate) data: Data,
     }
 
-    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct Data {
-        pub children: Vec<Children>,
+    pub(crate) struct Data {
+        pub(crate) children: Vec<Children>,
     }
 
-    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct Children {
-        pub data: Data2,
+    pub(crate) struct Children {
+        pub(crate) data: Data2,
     }
 
-    #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct Data2 {
+    pub(crate) struct Data2 {
         #[serde(rename = "url_overridden_by_dest")]
-        pub url_overridden_by_dest: String,
+        pub(crate) url_overridden_by_dest: String,
         #[serde(rename = "over_18")]
-        pub over_18: bool,
+        pub(crate) over_18: bool,
     }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    // use select::{document::Document, predicate::Class};
+
+    // #[test]
+    // fn test_scrapping_ddg() {
+    //     let document = Document::from(include_str!("../result.html"));
+    //     for node in document.find(Class("result__body")).take(10) {
+    //         let _url = node
+    //             .find(Class("result__a"))
+    //             .next()
+    //             .unwrap()
+    //             .attr("href")
+    //             .unwrap()
+    //             .replace("//duckduckgo.com", "https://duckduckgo.com");
+    //         let _snippet = node
+    //             .find(Class("result__snippet"))
+    //             .next()
+    //             .unwrap()
+    //             .inner_html()
+    //             .replace("<b>", "**")
+    //             .replace("</b>", "**")
+    //             .split_whitespace()
+    //             .collect::<Vec<&str>>()
+    //             .join(" ");
+    //     }
+    // }
 }

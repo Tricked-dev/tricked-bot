@@ -1,6 +1,7 @@
 # 1.4.0
 
 * im responder!
+* search command
 
 # 1.3.0
 
