@@ -28,6 +28,7 @@ use rusqlite::{params, Connection};
 use select::document::Document;
 use select::predicate::Class;
 use std::collections::HashMap;
+use std::env;
 use std::error::Error;
 use std::fmt::Write as _;
 use std::fs;
@@ -37,7 +38,7 @@ use std::time::{Duration, Instant};
 use syntect::parsing::SyntaxSet;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time;
-use twilight_embed_builder::EmbedBuilder;
+use twilight_embed_builder::{EmbedAuthorBuilder, EmbedBuilder, ImageSource};
 use twilight_gateway::{Event, EventTypeFlags, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::channel::embed::{Embed, EmbedAuthor, EmbedFooter};
@@ -54,12 +55,21 @@ lazy_static! {
         toml::from_str(include_str!("../responders.toml")).unwrap();
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt().init();
     let config = Arc::new(init_config());
 
-    let client: Client = Client::builder().user_agent("tricked-bot/1.0").build()?;
+    let client: Client = Client::builder()
+        .user_agent(format!(
+            "tricked-bot/{} ({}; {})",
+            VERSION,
+            env::consts::OS,
+            env::consts::ARCH
+        ))
+        .build()?;
 
     let (shard, mut events) = Shard::builder(
         config.token.clone(),
@@ -409,7 +419,6 @@ async fn handle_message(
                         .await?
                         .text()
                         .await?;
-
                     let document = Document::from(res.as_str());
                     let embeds =
                         document
@@ -430,18 +439,36 @@ async fn handle_message(
                                     .split_whitespace()
                                     .collect::<Vec<&str>>()
                                     .join(" ");
-                                Some(
-                                    EmbedBuilder::new()
-                                        .title(title)
-                                        .url(url)
-                                        .color(0x179e87)
-                                        .description(snippet)
-                                        .build()
-                                        .unwrap(),
-                                )
-                            });
 
-                    Ok(Command::embeds(embeds.flatten().collect()))
+                                let icon = node
+                                    .find(Class("result__icon__img"))
+                                    .next()?
+                                    .attr("src")?
+                                    .replace(
+                                        "//external-content.duckduckgo.com",
+                                        "https://external-content.duckduckgo.com",
+                                    );
+
+                                let preview_url =
+                                    node.find(Class("result__url")).next()?.inner_html();
+                                EmbedBuilder::new()
+                                    .title(title)
+                                    .url(url)
+                                    .color(0x179e87)
+                                    .description(snippet)
+                                    .author(
+                                        EmbedAuthorBuilder::new(preview_url)
+                                            .icon_url(ImageSource::url(icon).ok()?),
+                                    )
+                                    .build()
+                                    .ok()
+                            });
+                    let embeds: Vec<Embed> = embeds.flatten().collect();
+                    Ok(if embeds.is_empty() {
+                        Command::text("Nothing found (or i am blocked)")
+                    } else {
+                        Command::embeds(embeds)
+                    })
                 }
             };
         } else {
@@ -872,29 +899,42 @@ mod structs {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    // use select::{document::Document, predicate::Class};
+    use select::{document::Document, predicate::Class};
 
-    // #[test]
-    // fn test_scrapping_ddg() {
-    //     let document = Document::from(include_str!("../result.html"));
-    //     for node in document.find(Class("result__body")).take(10) {
-    //         let _url = node
-    //             .find(Class("result__a"))
-    //             .next()
-    //             .unwrap()
-    //             .attr("href")
-    //             .unwrap()
-    //             .replace("//duckduckgo.com", "https://duckduckgo.com");
-    //         let _snippet = node
-    //             .find(Class("result__snippet"))
-    //             .next()
-    //             .unwrap()
-    //             .inner_html()
-    //             .replace("<b>", "**")
-    //             .replace("</b>", "**")
-    //             .split_whitespace()
-    //             .collect::<Vec<&str>>()
-    //             .join(" ");
-    //     }
-    // }
+    #[test]
+    fn test_scrapping_ddg() {
+        let document = Document::from(include_str!("../tests/ddg.html"));
+        for node in document.find(Class("result__body")).take(10) {
+            let _url = node
+                .find(Class("result__a"))
+                .next()
+                .unwrap()
+                .attr("href")
+                .unwrap()
+                .replace("//duckduckgo.com", "https://duckduckgo.com");
+            let _snippet = node
+                .find(Class("result__snippet"))
+                .next()
+                .unwrap()
+                .inner_html()
+                .replace("<b>", "**")
+                .replace("</b>", "**")
+                .split_whitespace()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let icon = node
+                .find(Class("result__icon__img"))
+                .next()
+                .unwrap()
+                .attr("src")
+                .unwrap()
+                .replace(
+                    "//external-content.duckduckgo.com",
+                    "https://external-content.duckduckgo.com",
+                );
+
+            let url = node.find(Class("result__url")).next().unwrap().inner_html();
+            println!("{icon} {url}");
+        }
+    }
 }
