@@ -7,7 +7,6 @@
     missing_debug_implementations
 )]
 #![forbid(unsafe_code, anonymous_parameters)]
-
 ///! This project uses the infamous monofile approach
 ///! This bot is and shall stay a monofile
 ///! Its cooler and makes stuff easier!
@@ -513,6 +512,11 @@ async fn handle_message(
         x if locked_state.rng.gen_range(0..45) == 2 => {
             let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
             Ok(Command::text(content).reply())
+        }
+        x if locked_state.rng.gen_range(0..35) == 2 => {
+            let mut text = x.split(' ').collect::<Vec<&str>>();
+            text.shuffle(&mut locked_state.rng.clone());
+            Ok(Command::text(text.join(" ")).reply())
         }
         _ if locked_state.rng.gen_range(0..20) == 2 => {
             let res = locked_state
