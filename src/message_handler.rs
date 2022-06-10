@@ -217,23 +217,23 @@ pub async fn handle_message(
             }
         }
         x if x.contains("im") => {
-            let text = x.split("im").last().unwrap().trim();
+            let text = msg.content.split("im").last().unwrap().trim();
             if text.is_empty() {
                 return Ok(Command::nothing());
             }
 
             Ok(Command::text(format!("Hi {text} i'm Tricked-bot")).reply())
         }
-        x if locked_state.rng.gen_range(0..45) == 2 => {
-            let content = zalgify_text(locked_state.rng.clone(), x.to_owned());
+        _x if locked_state.rng.gen_range(0..75) == 2 => {
+            let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
             Ok(Command::text(content).reply())
         }
-        x if locked_state.rng.gen_range(0..35) == 2 => {
-            let mut text = x.split(' ').collect::<Vec<&str>>();
+        _x if locked_state.rng.gen_range(0..55) == 2 => {
+            let mut text = msg.content.split(' ').collect::<Vec<&str>>();
             text.shuffle(&mut locked_state.rng.clone());
             Ok(Command::text(text.join(" ")).reply())
         }
-        _ if locked_state.rng.gen_range(0..20) == 2 => {
+        _ if locked_state.rng.gen_range(0..40) == 2 => {
             let res = locked_state
                 .client
                 .get(format!(
