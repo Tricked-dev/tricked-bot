@@ -253,7 +253,7 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
-        x if x.contains("im") => {
+        x if x.contains("im") && (x.split(' ').count() < 4) => {
             let text = msg.content.split("im").last().unwrap().trim();
             if text.is_empty() {
                 return Ok(Command::nothing());
