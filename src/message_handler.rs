@@ -4,8 +4,10 @@ use pulldown_cmark::{Options, Parser};
 use qrcodegen::{QrCode, QrCodeEcc};
 use rand::prelude::{IteratorRandom, SliceRandom};
 use rand::Rng;
+
 use select::document::Document;
 use select::predicate::Class;
+
 use std::error::Error;
 use std::io::Write;
 use std::sync::Arc;
@@ -18,7 +20,9 @@ use twilight_model::channel::embed::Embed;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::http::attachment::Attachment;
 
-use crate::structs::{Command, Commands, Config, List, Search, State, TrickedCommands};
+use crate::structs::{
+    Command, Commands, Config, InviteStats, List, Search, State, TrickedCommands,
+};
 use crate::zalgos::zalgify_text;
 use crate::{print_qr, RESPONDERS};
 
@@ -121,6 +125,39 @@ pub async fn handle_message(
                             125,
                         ),
                     ]))
+                }
+                Commands::InviteStats(InviteStats {}) => {
+                    let mut stmt = locked_state
+                        .db
+                        .prepare("select invite_used, count(invite_used) from users group by invite_used")
+                        .unwrap();
+                    let mut res = stmt
+                        .query_map([], |row| {
+                            let key: String = row.get(0)?;
+                            let value: i32 = row.get(1)?;
+                            Ok((key, value))
+                        })?
+                        .flatten()
+                        .collect::<Vec<(String, i32)>>();
+
+                    res.sort_by(|a, b| b.1.cmp(&a.1));
+
+                    let data = res
+                        .into_iter()
+                        .map(|(k, v)| {
+                            format!(
+                                "{k} ({}): {v}",
+                                config
+                                    .invites
+                                    .clone()
+                                    .into_iter()
+                                    .find_map(|(key, val)| if val == k { Some(key) } else { None })
+                                    .unwrap_or_else(|| "None".to_owned())
+                            )
+                        })
+                        .collect::<Vec<String>>();
+                    let embed = EmbedBuilder::new().description(data.join("\n")).build()?;
+                    Ok(Command::embed(embed))
                 }
                 Commands::Search(Search { query }) => {
                     let res = locked_state

@@ -24,6 +24,7 @@ pub enum Commands {
     MD(MD),
     Zip(Zip),
     Search(Search),
+    InviteStats(InviteStats),
 }
 
 #[derive(FromArgs, PartialEq, Eq, Debug)]
@@ -56,6 +57,11 @@ pub struct Search {
 #[argh(subcommand, name = "zip")]
 /// zip some files they must be attachments!
 pub struct Zip {}
+
+#[derive(FromArgs, PartialEq, Eq, Debug)]
+#[argh(subcommand, name = "invite_stats")]
+/// Get Some invite stats!
+pub struct InviteStats {}
 
 #[derive(PartialEq, Eq, Default, Clone)]
 pub struct Command {
