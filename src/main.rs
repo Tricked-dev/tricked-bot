@@ -18,6 +18,7 @@ use lazy_static::lazy_static;
 use log::error;
 use qrcodegen::QrCode;
 use reqwest::Client;
+use roms::{codename, format_device, search};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::env;
@@ -29,16 +30,22 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time;
 use twilight_embed_builder::EmbedBuilder;
-use twilight_gateway::{Event, EventTypeFlags, Shard};
+use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::channel::embed::{EmbedAuthor, EmbedFooter};
 use twilight_model::channel::message::AllowedMentions;
 use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
 use twilight_model::gateway::presence::{ActivityType, MinimalActivity, Status};
+use twilight_model::id::GuildId;
 use twilight_model::util::Timestamp;
 use twilight_model::{gateway::Intents, id::Id};
+use zephyrus::prelude::*;
+use zephyrus::twilight_exports::{
+    CommandOptionChoice, InteractionResponse, InteractionResponseData, InteractionResponseType,
+};
 
 mod message_handler;
+mod roms;
 mod structs;
 mod zalgos;
 
@@ -74,13 +81,14 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             | Intents::GUILDS
             | Intents::MESSAGE_CONTENT,
     )
-    .event_types(
-        EventTypeFlags::INVITE_CREATE
-            | EventTypeFlags::MESSAGE_CREATE
-            | EventTypeFlags::MEMBER_ADD
-            | EventTypeFlags::READY
-            | EventTypeFlags::GUILD_CREATE,
-    )
+    // .event_types(
+    //     EventTypeFlags::INVITE_CREATE
+    //         | EventTypeFlags::MESSAGE_CREATE
+    //         | EventTypeFlags::MEMBER_ADD
+    //         | EventTypeFlags::READY
+    //         | EventTypeFlags::GUILD_CREATE
+    //         | EventTypeFlags::INTEGRATION_CREATE,
+    // )
     .presence(
         UpdatePresencePayload::new(
             vec![MinimalActivity {
@@ -129,13 +137,36 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     });
 
+    let framework = Arc::new(
+        Framework::builder(Arc::clone(&http), Id::new(config.id), ())
+            .command(roms)
+            .build(),
+    );
+
+    // Zephyrus can register commands in guilds or globally.
+    framework
+        .register_guild_commands(GuildId::new(config.discord))
+        .await
+        .unwrap();
+
     while let Some(event) = events.next().await {
+        // match event {
+        //     Event::InteractionCreate(i) => {
+        //         let clone = Arc::clone(&framework);
+        //         tokio::spawn(async move {
+        //             let inner = i.0;
+        //             clone.process(inner).await;
+        //         });
+        //     }
+        //     _ => (),
+        // }
         let res = handle_event(
             event,
             Arc::clone(&http),
             Arc::clone(&shard),
             Arc::clone(&state),
             Arc::clone(&config),
+            Arc::clone(&framework),
         )
         .await;
         if let Err(res) = res {
@@ -145,15 +176,80 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
+#[command]
+#[description = "Find the fucking rom!"]
+async fn roms(
+    ctx: &SlashContext<'_, ()>,
+    #[autocomplete = "autocomplete_arg"]
+    #[description = "Some description"]
+    device: Option<String>,
+    #[description = "Some description"] code: Option<String>,
+) -> CommandResult {
+    let cdn = device.map(Some).unwrap_or(code);
+    let m = if let Some(device) = cdn {
+        let device = codename(device).await;
+        if let Some(device) = device {
+            format_device(device)
+        } else {
+            "Phone not found".to_owned()
+        }
+    } else {
+        "Please provide either a device or a codename".to_owned()
+    };
+
+    ctx.interaction_client
+        .create_response(
+            ctx.interaction.id,
+            &ctx.interaction.token,
+            &InteractionResponse {
+                kind: InteractionResponseType::ChannelMessageWithSource,
+                data: Some(InteractionResponseData {
+                    content: Some(m),
+                    ..Default::default()
+                }),
+            },
+        )
+        .exec()
+        .await?;
+
+    Ok(())
+}
+
+#[autocomplete]
+async fn autocomplete_arg(ctx: AutocompleteContext<()>) -> Option<InteractionResponseData> {
+    let r = search(ctx.user_input.unwrap()).await;
+    Some(InteractionResponseData {
+        choices: r.map(|x| {
+            let devices = x.1;
+            devices
+                .into_iter()
+                .map(|x| CommandOptionChoice::String {
+                    value: x.codename.clone(),
+                    name: format!("{} ({}): {}", x.name, x.codename, x.roms.len()),
+                    name_localizations: None,
+                })
+                .collect::<Vec<CommandOptionChoice>>()
+        }),
+        ..Default::default()
+    })
+}
+
 async fn handle_event(
     event: Event,
     http: Arc<HttpClient>,
     _shard: Arc<Shard>,
     state: Arc<Mutex<State>>,
     config: Arc<Config>,
+    framework: Arc<Framework<()>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut locked_state = state.lock().await;
     match event {
+        Event::InteractionCreate(i) => {
+            tokio::spawn(async move {
+                let inner = i.0;
+                framework.process(inner).await;
+            });
+        }
         Event::InviteCreate(inv) => {
             locked_state.invites.push(BotInvite::from(inv));
         }

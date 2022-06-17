@@ -1,5 +1,3 @@
-use select::{document::Document, predicate::Class};
-
 // #[test]
 // fn test_scrapping_ddg() {
 //     let document = Document::from(include_str!("../tests/ddg.html"));

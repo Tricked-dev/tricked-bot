@@ -170,6 +170,7 @@ pub struct Config {
     pub token: String,
     pub discord: u64,
     pub join_channel: u64,
+    pub id: u64,
     pub rename_channels: Vec<u64>,
     pub invites: HashMap<String, String>,
     pub shit_reddits: Vec<String>,

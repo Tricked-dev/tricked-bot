@@ -100,6 +100,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6f8c380fa28aa1b36107cd97f0196474bb7241bb95a453c5c01a15ac74b2eac"
 
 [[package]]
+name = "async-trait"
+version = "0.1.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed6aa3524a2dfcf9fe180c51eae2b58738348d819517ceadf95789c51fff7600"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2291,6 +2302,7 @@ dependencies = [
 name = "tricked-bot"
 version = "1.3.0"
 dependencies = [
+ "anyhow",
  "argh",
  "bytes",
  "chrono",
@@ -2319,6 +2331,9 @@ dependencies = [
  "twilight-gateway",
  "twilight-http",
  "twilight-model",
+ "twilight-util",
+ "urlencoding",
+ "zephyrus",
  "zip",
 ]
 
@@ -2451,6 +2466,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "twilight-util"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da9f54602b3265361fb7337abc5305d93b7e70faa0b1e76fe59a264144936543"
+
+[[package]]
 name = "twilight-validate"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,6 +2545,12 @@ dependencies = [
  "matches",
  "percent-encoding",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68b90931029ab9b034b300b797048cf23723400aa757e8a2bfb9d748102f9821"
 
 [[package]]
 name = "utf-8"
@@ -2791,6 +2818,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56c1936c4cc7a1c9ab21a1ebb602eb942ba868cbd44a99cb7cdc5892335e1c85"
 dependencies = [
  "linked-hash-map",
+]
+
+[[package]]
+name = "zephyrus"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c22ef12e51c806c44ea1f5ae04f09b024ebc22eb4768ad1ba3ea26c7f1ad708"
+dependencies = [
+ "async-trait",
+ "parking_lot",
+ "tokio",
+ "tracing",
+ "twilight-http",
+ "twilight-model",
+ "zephyrus-macros",
+]
+
+[[package]]
+name = "zephyrus-macros"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53dd217b97a80fc1863e53e6ab6018e2db7fb482fb69031804592c4d543da7dc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
