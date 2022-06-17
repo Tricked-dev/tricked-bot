@@ -205,10 +205,12 @@ async fn handle_event(
             if msg.guild_id.is_none() || msg.author.bot {
                 return Ok(());
             }
-            if let Some(guild_id) = msg.guild_id {
-                if guild_id != Id::new(config.discord) {
-                    http.leave_guild(guild_id).exec().await?;
-                }
+
+            if msg.channel_id == Id::new(987096740127707196)
+                && !msg.content.clone().to_lowercase().starts_with("today i")
+            {
+                http.delete_message(msg.channel_id, msg.id).exec().await?;
+                return Ok(());
             }
 
             if let Some(channel_limit_duration) = locked_state
@@ -326,6 +328,10 @@ async fn update_rss_feed(
         };
 
         for entry in res.entries {
+            if entry.published.is_none() {
+                continue;
+            }
+
             if 3600 > (Utc::now().timestamp() - entry.published.unwrap().timestamp()) {
                 if res.title.is_none()
                     || res.links.is_empty()
