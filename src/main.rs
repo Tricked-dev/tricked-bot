@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             | Intents::GUILD_MESSAGES
             | Intents::GUILD_MEMBERS
             | Intents::GUILDS
+            | Intents::GUILD_PRESENCES
             | Intents::MESSAGE_CONTENT,
     )
     // .event_types(
@@ -244,6 +245,21 @@ async fn handle_event(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut locked_state = state.lock().await;
     match event {
+        Event::PresenceUpdate(p) => {
+            if p.user.id() == Id::new(870383692403593226) && p.status == Status::Offline {
+                for _i in 0..10 {
+                    http.create_message(Id::new(748957504666599507))
+                        .content("AETHOR WENT OFFLINE <@336465356304678913> <@336465356304678913>")?
+                        .allowed_mentions(Some(
+                            &AllowedMentions::builder()
+                                .user_ids([Id::new(336465356304678913)])
+                                .build(),
+                        ))
+                        .exec()
+                        .await?;
+                }
+            }
+        }
         Event::InteractionCreate(i) => {
             tokio::spawn(async move {
                 let inner = i.0;
