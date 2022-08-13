@@ -147,6 +147,8 @@ pub struct State {
     pub channel_bucket: Bucket,
     pub db: Connection,
     pub invites: Vec<BotInvite>,
+    pub nick: String,
+    pub nick_id: u64,
 }
 
 impl State {
@@ -159,6 +161,8 @@ impl State {
             client,
             last_redesc: Instant::now(),
             user_bucket,
+            nick: "".to_owned(),
+            nick_id: 0,
             channel_bucket,
             invites: Vec::new(),
         }
@@ -171,11 +175,19 @@ pub struct Config {
     pub discord: u64,
     pub join_channel: u64,
     pub id: u64,
+    #[serde(default)]
     pub rename_channels: Vec<u64>,
+    #[serde(default)]
     pub invites: HashMap<String, String>,
+    #[serde(default)]
     pub shit_reddits: Vec<String>,
+    #[serde(default)]
     pub rss_feeds: Vec<String>,
+    #[serde(default = "default_status")]
     pub status: String,
+}
+fn default_status() -> String {
+    "I am a bot".to_string()
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 

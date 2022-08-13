@@ -5,13 +5,13 @@ pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
     let mut new_text = String::with_capacity(s.len() * 2);
     for c in s.chars() {
         new_text.push(c);
-        for _ in 0..rng.gen_range(0..8) / 2 + 1 {
+        for _ in 0..rng.gen_range(0..3) / 2 + 1 {
             new_text.push(ZALGO_UP[rng.gen_range(0..ZALGO_UP.len())]);
         }
-        for _ in 0..rng.gen_range(0..3) / 2 {
+        for _ in 0..rng.gen_range(0..2) / 2 {
             new_text.push(ZALGO_MID[rng.gen_range(0..ZALGO_MID.len())]);
         }
-        for _ in 0..rng.gen_range(0..4) / 2 + 1 {
+        for _ in 0..rng.gen_range(0..3) / 2 + 1 {
             new_text.push(ZALGO_DOWN[rng.gen_range(0..ZALGO_DOWN.len())]);
         }
     }

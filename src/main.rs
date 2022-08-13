@@ -17,6 +17,7 @@ use futures::stream::StreamExt;
 use lazy_static::lazy_static;
 use log::error;
 use qrcodegen::QrCode;
+use rand::seq::IteratorRandom;
 use reqwest::Client;
 use roms::{codename, format_device, search};
 use rusqlite::{params, Connection};
@@ -29,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time;
+use twilight_cache_inmemory::InMemoryCache;
 use twilight_embed_builder::EmbedBuilder;
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
@@ -82,14 +84,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             | Intents::GUILD_PRESENCES
             | Intents::MESSAGE_CONTENT,
     )
-    // .event_types(
-    //     EventTypeFlags::INVITE_CREATE
-    //         | EventTypeFlags::MESSAGE_CREATE
-    //         | EventTypeFlags::MEMBER_ADD
-    //         | EventTypeFlags::READY
-    //         | EventTypeFlags::GUILD_CREATE
-    //         | EventTypeFlags::INTEGRATION_CREATE,
-    // )
     .presence(
         UpdatePresencePayload::new(
             vec![MinimalActivity {
@@ -150,17 +144,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .await
         .unwrap();
 
+    let cache = Arc::new(InMemoryCache::new());
+
     while let Some(event) = events.next().await {
-        // match event {
-        //     Event::InteractionCreate(i) => {
-        //         let clone = Arc::clone(&framework);
-        //         tokio::spawn(async move {
-        //             let inner = i.0;
-        //             clone.process(inner).await;
-        //         });
-        //     }
-        //     _ => (),
-        // }
+        cache.update(&event);
         let res = handle_event(
             event,
             Arc::clone(&http),
@@ -168,6 +155,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             Arc::clone(&state),
             Arc::clone(&config),
             Arc::clone(&framework),
+            Arc::clone(&cache),
         )
         .await;
         if let Err(res) = res {
@@ -242,6 +230,7 @@ async fn handle_event(
     state: Arc<Mutex<State>>,
     config: Arc<Config>,
     framework: Arc<Framework<()>>,
+    cache: Arc<InMemoryCache>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut locked_state = state.lock().await;
     match event {
@@ -341,9 +330,15 @@ async fn handle_event(
                 } else {
                     return Ok(());
                 }
-            }
+            };
 
-            let r = handle_message(&msg, locked_state, &config, &http).await;
+            let st = cache.guild_members(msg.guild_id.unwrap()).unwrap().clone();
+            let id = st.iter().choose(&mut rand::thread_rng()).unwrap();
+            let member = cache.member(msg.guild_id.unwrap(), id.clone()).unwrap();
+            let username = cache.user(id.clone()).unwrap().name.clone();
+            let nick = member.nick().unwrap_or_else(|| &username);
+
+            let r = handle_message(&msg, locked_state, &config, &http, nick).await;
 
             if let Ok(res) = r {
                 let Command {

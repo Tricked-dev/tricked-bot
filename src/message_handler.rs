@@ -7,6 +7,7 @@ use rand::Rng;
 
 use select::document::Document;
 use select::predicate::Class;
+use twilight_model::id::Id;
 
 use std::error::Error;
 use std::io::Write;
@@ -31,6 +32,7 @@ pub async fn handle_message(
     mut locked_state: MutexGuard<'_, State>,
     config: &Arc<Config>,
     http: &Arc<HttpClient>,
+    name: &'_ str,
 ) -> Result<Command, Box<dyn Error + Send + Sync>> {
     if let Some(responder) = RESPONDERS.get(msg.content.to_uppercase().as_str()) {
         if let Some(msg) = &responder.message {
@@ -265,6 +267,14 @@ pub async fn handle_message(
             let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
             Ok(Command::text(content).reply())
         }
+        _x if locked_state.rng.gen_range(0..40) == 2 => {
+            http.update_guild_member(msg.guild_id.unwrap(), msg.author.id)
+                .nick(Some(name))?
+                .exec()
+                .await?;
+
+            Ok(Command::nothing())
+        }
         _x if locked_state.rng.gen_range(0..55) == 2 => {
             let mut text = msg.content.split(' ').collect::<Vec<&str>>();
             text.shuffle(&mut locked_state.rng.clone());
@@ -294,6 +304,17 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
-        _ => Ok(Command::nothing()),
+        _ => {
+            if let Some(member) = &msg.member {
+                let user_name = member
+                    .nick
+                    .clone()
+                    .unwrap_or_else(|| msg.author.name.clone());
+                locked_state.nick = user_name;
+                locked_state.nick_id = msg.author.id.get();
+            }
+
+            Ok(Command::nothing())
+        }
     }
 }
