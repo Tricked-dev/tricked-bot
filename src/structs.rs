@@ -3,12 +3,15 @@ use rand::prelude::ThreadRng;
 use reqwest::Client;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 use std::time::Instant;
 use std::{collections::HashMap, time::Duration};
 use twilight_bucket::{Bucket, Limit};
 use twilight_model::http::attachment::Attachment;
+use twilight_model::id::Id;
 use twilight_model::invite::Invite;
 use twilight_model::{channel::embed::Embed, gateway::payload::incoming::InviteCreate};
+use zephyrus::twilight_exports::ChannelMarker;
 
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 /// Tricked Commands!!
@@ -149,6 +152,7 @@ pub struct State {
     pub invites: Vec<BotInvite>,
     pub nick: String,
     pub nick_id: u64,
+    pub del: HashMap<Id<ChannelMarker>, u64>,
 }
 
 impl State {
@@ -163,6 +167,7 @@ impl State {
             user_bucket,
             nick: "".to_owned(),
             nick_id: 0,
+            del: HashMap::new(),
             channel_bucket,
             invites: Vec::new(),
         }

@@ -82,7 +82,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             | Intents::GUILD_MEMBERS
             | Intents::GUILDS
             | Intents::GUILD_PRESENCES
-            | Intents::MESSAGE_CONTENT,
+            | Intents::MESSAGE_CONTENT
+            | Intents::GUILD_MESSAGE_TYPING,
     )
     .presence(
         UpdatePresencePayload::new(
@@ -379,6 +380,21 @@ async fn handle_event(
         }
         Event::Ready(_) => {
             tracing::info!("Connected",);
+        }
+        Event::TypingStart(event) => {
+            let msg = http
+                .create_message(event.channel_id)
+                .content(&format!("{} is typing", event.member.unwrap().user.name))?
+                .exec()
+                .await?;
+            if let Some(id) = locked_state.del.get(&event.channel_id) {
+                let _ = http
+                    .delete_message(event.channel_id, Id::new(id.to_owned()))
+                    .exec()
+                    .await?;
+            };
+            let res = msg.model().await?;
+            locked_state.del.insert(event.channel_id, res.id.get());
         }
         Event::GuildCreate(guild) => {
             tracing::info!("Active in guild {}", guild.name);

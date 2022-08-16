@@ -267,7 +267,7 @@ pub async fn handle_message(
             let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
             Ok(Command::text(content).reply())
         }
-        _x if locked_state.rng.gen_range(0..40) == 2 => {
+        _x if locked_state.rng.gen_range(0..60) == 2 => {
             http.update_guild_member(msg.guild_id.unwrap(), msg.author.id)
                 .nick(Some(name))?
                 .exec()
