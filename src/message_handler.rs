@@ -262,6 +262,10 @@ pub async fn handle_message(
             if let Some(member) = msg.member.clone() {
                 if let Some(user) = member.user {
                     return Ok(Command::text(format!("{} is a weeb", user.name)));
+                } else {
+                    if let Some(nick) = member.nick {
+                        return Ok(Command::text(format!("{} is a weeb", nick)));
+                    }
                 }
             }
 
