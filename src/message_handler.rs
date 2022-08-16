@@ -255,6 +255,18 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
+        x if (x.contains("anime") || x.contains("weeb") || x.contains("hentai"))
+            && x.contains("http") =>
+        {
+            http.delete_message(msg.channel_id, msg.id).exec().await?;
+            if let Some(member) = msg.member.clone() {
+                if let Some(user) = member.user {
+                    return Ok(Command::text(format!("{} is a weeb", user.name)));
+                }
+            }
+
+            Ok(Command::nothing())
+        }
         x if x.contains("im") && (x.split(' ').count() < 4) => {
             let text = msg.content.split("im").last().unwrap().trim();
             if text.is_empty() {
