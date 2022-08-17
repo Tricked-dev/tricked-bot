@@ -42,11 +42,11 @@ jobs:
           #     pretty: armv6l-backend,
           #     args: --features rusqlite/bundled,
           #   }
-          # - {
-          #     target: armv7-unknown-linux-gnueabihf,
-          #     pretty: armv7l-backend,
-          #     args: --features rusqlite/bundled,
-          #   }
+          - {
+              target: armv7-unknown-linux-gnueabihf,
+              pretty: armv7l-backend,
+              args: --features rusqlite/bundled,
+            }
           - {
               target: aarch64-unknown-linux-gnu,
               pretty: aarch64-backend,
@@ -58,7 +58,7 @@ jobs:
           fetch-depth: 0
       - run: |
           sudo apt-get update
-          sudo apt-get install -y -qq pkg-config libssl-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          sudo apt-get install -y -qq libasound2-dev libudev-dev pkg-config libssl-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - name: Install rust toolchain
         uses: actions-rs/toolchain@v1
         with:
