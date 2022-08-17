@@ -1007,8 +1007,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9702761c3935f8cc2f101793272e202c72b99da8f4224a19ddcf1279a6450bbf"
 dependencies = [
  "cc",
- "cmake",
- "libc",
  "pkg-config",
  "vcpkg",
 ]
@@ -2349,7 +2347,6 @@ dependencies = [
  "feed-rs",
  "futures",
  "lazy_static",
- "libz-sys",
  "log",
  "mdcat",
  "openssl",
