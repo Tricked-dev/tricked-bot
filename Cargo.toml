@@ -23,6 +23,7 @@ chrono = "0.4.19"
 feed-rs = "1.0.0"
 futures = "0.3.21"
 lazy_static = "1.4.0"
+libz-sys ={version= "1.1.8", default-features=false, features=["zlib-ng"]}
 log = "0.4.17"
 mdcat = {version = "0.27.1", git = "https://codeberg.org/tricked/mdcat", rev = "e966d5e5f678616b0010e315515af276d5edb091"}
 openssl = { version = "0.10.40", features = ["vendored"] }
