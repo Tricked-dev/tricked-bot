@@ -26,6 +26,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      continue-on-error: true
       matrix:
         job:
           # - { target: x86_64-unknown-linux-musl, pretty: x86_64 }
