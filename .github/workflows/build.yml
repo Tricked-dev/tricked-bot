@@ -43,7 +43,7 @@ jobs:
           #     args: --features rusqlite/bundled,
           #   }
           - {
-              target: armv7-unknown-linux-gnu,
+              target: armv7-unknown-linux-gnueabihf,
               pretty: armv7l-backend,
               args: --features rusqlite/bundled,
             }
