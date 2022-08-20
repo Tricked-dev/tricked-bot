@@ -29,7 +29,7 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::time;
+use tokio::{join, time};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_embed_builder::EmbedBuilder;
 use twilight_gateway::{Event, Shard};
@@ -382,18 +382,20 @@ async fn handle_event(
             tracing::info!("Connected",);
         }
         Event::TypingStart(event) => {
-            let msg = http
-                .create_message(event.channel_id)
-                .content(&format!("{} is typing", event.member.unwrap().user.name))?
-                .exec()
-                .await?;
-            if let Some(id) = locked_state.del.get(&event.channel_id) {
-                let _ = http
-                    .delete_message(event.channel_id, Id::new(id.to_owned()))
-                    .exec()
-                    .await?;
-            };
-            let res = msg.model().await?;
+            let (msg, _) = join!(
+                http.create_message(event.channel_id)
+                    .content(&format!("{} is typing", event.member.unwrap().user.name))?
+                    .exec(),
+                async {
+                    if let Some(id) = locked_state.del.get(&event.channel_id) {
+                        let _ = http
+                            .delete_message(event.channel_id, Id::new(id.to_owned()))
+                            .exec()
+                            .await;
+                    }
+                },
+            );
+            let res = msg?.model().await?;
             locked_state.del.insert(event.channel_id, res.id.get());
         }
         Event::GuildCreate(guild) => {
