@@ -333,7 +333,7 @@ async fn handle_event(
                 http.delete_message(msg.channel_id, msg.id).exec().await?;
                 return Ok(());
             }
-            if !msg.author.bot && is_polish(&msg.content) && msg.content.len() > 7 {
+            if !msg.author.bot && !msg.content.contains("http") && msg.content.len() > 7 && is_polish(&msg.content) {
                 let client = reqwest::Client::new();
                 let res = client
                     .post("https://libretranslate.com/translate")
