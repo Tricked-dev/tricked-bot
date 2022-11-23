@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 fn is_polish(text: &str) -> bool {
     let languages = vec![Polish, English];
     let detector: LanguageDetector = LanguageDetectorBuilder::from_languages(&languages).build();
-    let detected_language: Language = detector.detect_language_of(text).unwrap();
+    let detected_language: Language = detector.detect_language_of(text).unwrap_or(English);
 
     detected_language == Polish
 }
@@ -333,7 +333,7 @@ async fn handle_event(
                 http.delete_message(msg.channel_id, msg.id).exec().await?;
                 return Ok(());
             }
-            if is_polish(&msg.content) {
+            if !msg.author.bot && is_polish(&msg.content) {
                 let client = reqwest::Client::new();
                 let res = client
                     .post("https://libretranslate.com/translate")
