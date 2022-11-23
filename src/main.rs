@@ -175,14 +175,14 @@ fn is_polish(text: &str) -> bool {
 }
 #[test]
 fn polish_tests() {
-    assert_eq!(is_polish("ING działa dla mnie"), true);
-    assert_eq!(is_polish("rootowanie telefonu :laughatthisuser:"), true);
-    assert_eq!(is_polish("CA24?? co to za bank"), true);
-    assert_eq!(is_polish("crapple moment"), false);
-    assert_eq!(is_polish("another 6 months of talking"), false);
-    assert_eq!(is_polish("tf was she expecting"), false);
-    assert_eq!(is_polish("is echt dogshit"), false);
-    assert_eq!(is_polish("Maar ja, blijkt dat dat niet per se hoeft?"), false);
+    assert!(is_polish("ING działa dla mnie"));
+    assert!(is_polish("rootowanie telefonu :laughatthisuser:"));
+    assert!(is_polish("CA24?? co to za bank"));
+    assert!(!is_polish("crapple moment"));
+    assert!(!is_polish("another 6 months of talking"));
+    assert!(!is_polish("tf was she expecting"));
+    assert!(!is_polish("is echt dogshit"));
+    assert!(!is_polish("Maar ja, blijkt dat dat niet per se hoeft?"));
 }
 
 #[command]
@@ -337,6 +337,15 @@ async fn handle_event(
                 let client = reqwest::Client::new();
                 let res = client
                     .post("https://libretranslate.com/translate")
+                    .header(
+                        "referer",
+                        format!("https://libretranslate.com/?source=en&target=pl&text={}", msg.content),
+                    )
+                    .header("origin", "https://libretranslate.com")
+                    .header(
+                        "user-agent",
+                        "Mozilla/5.0 (X11; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0",
+                    )
                     .json(&json!({
                         "q": msg.content,
                         "source": "pl",
@@ -347,11 +356,14 @@ async fn handle_event(
                     .await?
                     .json::<Value>()
                     .await?;
-                let translated = res["translatedText"].as_str().unwrap();
-                http.create_message(msg.channel_id)
-                    .content(&format!("Here i translated your message for you: {}", translated))?
-                    .exec()
-                    .await?;
+                let translated = res["translatedText"].as_str();
+                if let Some(translated) = translated {
+                    http.create_message(msg.channel_id)
+                        .reply(msg.id)
+                        .content(&format!("*here's the english version*:\n{}", translated))?
+                        .exec()
+                        .await?;
+                }
             }
 
             if let Some(channel_limit_duration) = locked_state.channel_bucket.limit_duration(msg.channel_id.get()) {
