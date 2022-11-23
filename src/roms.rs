@@ -3,18 +3,12 @@ use std::collections::HashSet;
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-
 use urlencoding::encode;
 
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
 
 lazy_static! {
-    pub static ref CLIENT: Client = {
-        Client::builder()
-            .user_agent(APP_USER_AGENT)
-            .build()
-            .unwrap()
-    };
+    pub static ref CLIENT: Client = Client::builder().user_agent(APP_USER_AGENT).build().unwrap();
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Hash, PartialEq, Eq)]
@@ -42,11 +36,7 @@ pub async fn req(url: String) -> Vec<Device> {
 }
 
 pub async fn search(text: String) -> Option<(Device, Vec<Device>)> {
-    let results = req(format!(
-        "https://nowrom.deno.dev/device?q={}&limit=10",
-        encode(&text)
-    ))
-    .await;
+    let results = req(format!("https://nowrom.deno.dev/device?q={}&limit=10", encode(&text))).await;
 
     if results.is_empty() {
         None
@@ -58,11 +48,7 @@ pub async fn search(text: String) -> Option<(Device, Vec<Device>)> {
 }
 
 pub async fn codename(i: String) -> Option<Device> {
-    let results = req(format!(
-        "https://nowrom.deno.dev/device?codename={}",
-        encode(&i)
-    ))
-    .await;
+    let results = req(format!("https://nowrom.deno.dev/device?codename={}", encode(&i))).await;
 
     if results.is_empty() {
         None

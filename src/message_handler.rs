@@ -4,15 +4,8 @@ use pulldown_cmark::{Options, Parser};
 use qrcodegen::{QrCode, QrCodeEcc};
 use rand::prelude::{IteratorRandom, SliceRandom};
 use rand::Rng;
-
 use select::document::Document;
 use select::predicate::Class;
-use twilight_model::id::Id;
-
-use std::error::Error;
-use std::io::Write;
-use std::sync::Arc;
-use std::time::Instant;
 use syntect::parsing::SyntaxSet;
 use tokio::sync::MutexGuard;
 use twilight_embed_builder::{EmbedAuthorBuilder, EmbedBuilder, ImageSource};
@@ -21,9 +14,13 @@ use twilight_model::channel::embed::Embed;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 use twilight_model::http::attachment::Attachment;
 
-use crate::structs::{
-    Command, Commands, Config, InviteStats, List, Search, State, TrickedCommands,
-};
+
+use std::error::Error;
+use std::io::Write;
+use std::sync::Arc;
+use std::time::Instant;
+
+use crate::structs::{Command, Commands, Config, InviteStats, List, Search, State, TrickedCommands};
 use crate::zalgos::zalgify_text;
 use crate::{print_qr, RESPONDERS};
 
@@ -69,21 +66,15 @@ pub async fn handle_message(
 
                     let mut buf = Vec::new();
                     let text = md.text.join(" ");
-                    let parser = Parser::new_ext(
-                        &text,
-                        Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
-                    );
+                    let parser = Parser::new_ext(&text, Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
                     push_tty(settings, env, &mut buf, parser)?;
                     let res = String::from_utf8(buf.clone())?;
                     let size = res.len();
                     if size > 4050 {
                         Ok(
-                            Command::text("Message exceeded discord limit send attachment!")
-                                .attachments(vec![Attachment::from_bytes(
-                                    "message.ansi".to_string(),
-                                    buf.clone(),
-                                    125,
-                                )]),
+                            Command::text("Message exceeded discord limit send attachment!").attachments(vec![
+                                Attachment::from_bytes("message.ansi".to_string(), buf.clone(), 125),
+                            ]),
                         )
                     } else if size > 2000 {
                         let embed = EmbedBuilder::new()
@@ -103,30 +94,21 @@ pub async fn handle_message(
 
                     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
 
-                    let options = zip::write::FileOptions::default()
-                        .compression_method(zip::CompressionMethod::Stored);
+                    let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
                     for attachment in &msg.attachments {
                         zip.start_file(attachment.filename.clone(), options)?;
-                        zip.write_all(
-                            &locked_state
-                                .client
-                                .get(&attachment.url)
-                                .send()
-                                .await?
-                                .bytes()
-                                .await?,
-                        )?;
+                        zip.write_all(&locked_state.client.get(&attachment.url).send().await?.bytes().await?)?;
                     }
 
                     let res = zip.finish()?;
 
-                    Ok(Command::text("Zip files arrived").attachments(vec![
-                        Attachment::from_bytes(
+                    Ok(
+                        Command::text("Zip files arrived").attachments(vec![Attachment::from_bytes(
                             format!("files-{}.zip", msg.id.get()),
                             (*res.get_ref()).clone(),
                             125,
-                        ),
-                    ]))
+                        )]),
+                    )
                 }
                 Commands::InviteStats(InviteStats {}) => {
                     let mut stmt = locked_state
@@ -164,58 +146,46 @@ pub async fn handle_message(
                 Commands::Search(Search { query }) => {
                     let res = locked_state
                         .client
-                        .get(format!(
-                            "https://duckduckgo.com/html/?q={}",
-                            query.join("-")
-                        ))
+                        .get(format!("https://duckduckgo.com/html/?q={}", query.join("-")))
                         .send()
                         .await?
                         .text()
                         .await?;
                     let document = Document::from(res.as_str());
-                    let embeds =
-                        document
-                            .find(Class("result__body"))
-                            .take(5)
-                            .map(|node| -> Option<Embed> {
-                                let url_node = node.find(Class("result__a")).next()?;
-                                let url = url_node
-                                    .attr("href")?
-                                    .replace("//duckduckgo.com", "https://duckduckgo.com");
-                                let title = url_node.inner_html();
-                                let snippet = node
-                                    .find(Class("result__snippet"))
-                                    .next()?
-                                    .inner_html()
-                                    .replace("<b>", "**")
-                                    .replace("</b>", "**")
-                                    .split_whitespace()
-                                    .collect::<Vec<&str>>()
-                                    .join(" ");
+                    let embeds = document
+                        .find(Class("result__body"))
+                        .take(5)
+                        .map(|node| -> Option<Embed> {
+                            let url_node = node.find(Class("result__a")).next()?;
+                            let url = url_node
+                                .attr("href")?
+                                .replace("//duckduckgo.com", "https://duckduckgo.com");
+                            let title = url_node.inner_html();
+                            let snippet = node
+                                .find(Class("result__snippet"))
+                                .next()?
+                                .inner_html()
+                                .replace("<b>", "**")
+                                .replace("</b>", "**")
+                                .split_whitespace()
+                                .collect::<Vec<&str>>()
+                                .join(" ");
 
-                                let icon = node
-                                    .find(Class("result__icon__img"))
-                                    .next()?
-                                    .attr("src")?
-                                    .replace(
-                                        "//external-content.duckduckgo.com",
-                                        "https://external-content.duckduckgo.com",
-                                    );
+                            let icon = node.find(Class("result__icon__img")).next()?.attr("src")?.replace(
+                                "//external-content.duckduckgo.com",
+                                "https://external-content.duckduckgo.com",
+                            );
 
-                                let preview_url =
-                                    node.find(Class("result__url")).next()?.inner_html();
-                                EmbedBuilder::new()
-                                    .title(title)
-                                    .url(url)
-                                    .color(0x179e87)
-                                    .description(snippet)
-                                    .author(
-                                        EmbedAuthorBuilder::new(preview_url)
-                                            .icon_url(ImageSource::url(icon).ok()?),
-                                    )
-                                    .build()
-                                    .ok()
-                            });
+                            let preview_url = node.find(Class("result__url")).next()?.inner_html();
+                            EmbedBuilder::new()
+                                .title(title)
+                                .url(url)
+                                .color(0x179e87)
+                                .description(snippet)
+                                .author(EmbedAuthorBuilder::new(preview_url).icon_url(ImageSource::url(icon).ok()?))
+                                .build()
+                                .ok()
+                        });
                     let embeds: Vec<Embed> = embeds.flatten().collect();
                     Ok(if embeds.is_empty() {
                         Command::text("Nothing found (or i am blocked)")
@@ -225,20 +195,14 @@ pub async fn handle_message(
                 }
             };
         } else {
-            return Ok(Command::text(format!(
-                "```\n{}\n```",
-                commands.err().unwrap().output
-            )));
+            return Ok(Command::text(format!("```\n{}\n```", commands.err().unwrap().output)));
         }
     }
 
     match msg.content.to_lowercase().as_str() {
         content
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
-                && config
-                    .rename_channels
-                    .clone()
-                    .contains(&msg.channel_id.get())
+                && config.rename_channels.clone().contains(&msg.channel_id.get())
                 && locked_state.rng.gen_range(0..10) == 2 =>
         {
             if content.to_lowercase().contains("uwu") || content.to_lowercase().contains("owo") {
@@ -255,17 +219,13 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
-        x if (x.contains("anime") || x.contains("weeb") || x.contains("hentai"))
-            && x.contains("http") =>
-        {
+        x if (x.contains("anime") || x.contains("weeb") || x.contains("hentai")) && x.contains("http") => {
             http.delete_message(msg.channel_id, msg.id).exec().await?;
             if let Some(member) = msg.member.clone() {
                 if let Some(user) = member.user {
                     return Ok(Command::text(format!("{} is a weeb", user.name)));
-                } else {
-                    if let Some(nick) = member.nick {
-                        return Ok(Command::text(format!("{} is a weeb", nick)));
-                    }
+                } else if let Some(nick) = member.nick {
+                    return Ok(Command::text(format!("{} is a weeb", nick)));
                 }
             }
 
@@ -322,10 +282,7 @@ pub async fn handle_message(
         }
         _ => {
             if let Some(member) = &msg.member {
-                let user_name = member
-                    .nick
-                    .clone()
-                    .unwrap_or_else(|| msg.author.name.clone());
+                let user_name = member.nick.clone().unwrap_or_else(|| msg.author.name.clone());
                 locked_state.nick = user_name;
                 locked_state.nick_id = msg.author.id.get();
             }

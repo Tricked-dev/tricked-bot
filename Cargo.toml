@@ -54,3 +54,4 @@ twilight-model = "0.11.0"
 urlencoding = "2.1.0"
 zephyrus = "0.2.9"
 zip = "0.6.2"
+lingua = { version = "1.4.0", default-features = false, features = ["polish", "english"] }

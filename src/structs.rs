@@ -3,7 +3,7 @@ use rand::prelude::ThreadRng;
 use reqwest::Client;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::hash::Hash;
+
 use std::time::Instant;
 use std::{collections::HashMap, time::Duration};
 use twilight_bucket::{Bucket, Limit};

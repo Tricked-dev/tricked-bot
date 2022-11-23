@@ -15,19 +15,15 @@ use chrono::Utc;
 use feed_rs::parser;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
+use lingua::Language::{self, English, Polish};
+use lingua::{LanguageDetector, LanguageDetectorBuilder};
 use log::error;
 use qrcodegen::QrCode;
 use rand::seq::IteratorRandom;
 use reqwest::Client;
 use roms::{codename, format_device, search};
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
-use std::env;
-use std::error::Error;
-use std::fmt::Write as _;
-use std::fs;
-use std::sync::Arc;
-use std::time::Duration;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio::{join, time};
 use twilight_cache_inmemory::InMemoryCache;
@@ -46,17 +42,21 @@ use zephyrus::twilight_exports::{
     CommandOptionChoice, InteractionResponse, InteractionResponseData, InteractionResponseType,
 };
 
+use std::collections::HashMap;
+use std::env;
+use std::error::Error;
+use std::fmt::Write as _;
+use std::fs;
+use std::sync::Arc;
+use std::time::Duration;
+
 mod message_handler;
 mod roms;
 mod structs;
 mod zalgos;
 
-#[cfg(test)]
-pub mod tests;
-
 lazy_static! {
-    static ref RESPONDERS: HashMap<String, Responder> =
-        toml::from_str(include_str!("../responders.toml")).unwrap();
+    static ref RESPONDERS: HashMap<String, Responder> = toml::from_str(include_str!("../responders.toml")).unwrap();
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     );
 
     let conn = Connection::open(".trickedbot/database.sqlite")?;
-
+    conn.execute(include_str!("../database.sql"), params![])?;
     let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client, conn)));
 
     let mut interval = time::interval(Duration::from_secs(3600));
@@ -164,6 +164,25 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
     Ok(())
+}
+
+fn is_polish(text: &str) -> bool {
+    let languages = vec![Polish, English];
+    let detector: LanguageDetector = LanguageDetectorBuilder::from_languages(&languages).build();
+    let detected_language: Language = detector.detect_language_of(text).unwrap();
+
+    detected_language == Polish
+}
+#[test]
+fn polish_tests() {
+    assert_eq!(is_polish("ING działa dla mnie"), true);
+    assert_eq!(is_polish("rootowanie telefonu :laughatthisuser:"), true);
+    assert_eq!(is_polish("CA24?? co to za bank"), true);
+    assert_eq!(is_polish("crapple moment"), false);
+    assert_eq!(is_polish("another 6 months of talking"), false);
+    assert_eq!(is_polish("tf was she expecting"), false);
+    assert_eq!(is_polish("is echt dogshit"), false);
+    assert_eq!(is_polish("Maar ja, blijkt dat dat niet per se hoeft?"), false);
 }
 
 #[command]
@@ -314,17 +333,32 @@ async fn handle_event(
                 http.delete_message(msg.channel_id, msg.id).exec().await?;
                 return Ok(());
             }
+            if is_polish(&msg.content) {
+                let client = reqwest::Client::new();
+                let res = client
+                    .post("https://libretranslate.com/translate")
+                    .json(&json!({
+                        "q": msg.content,
+                        "source": "pl",
+                        "target": "en",
+                        "format": "text"
+                    }))
+                    .send()
+                    .await?
+                    .json::<Value>()
+                    .await?;
+                let translated = res["translatedText"].as_str().unwrap();
+                http.create_message(msg.channel_id)
+                    .content(&format!("Here i translated your message for you: {}", translated))?
+                    .exec()
+                    .await?;
+            }
 
-            if let Some(channel_limit_duration) = locked_state
-                .channel_bucket
-                .limit_duration(msg.channel_id.get())
-            {
+            if let Some(channel_limit_duration) = locked_state.channel_bucket.limit_duration(msg.channel_id.get()) {
                 tracing::info!("Channel limit reached {}", channel_limit_duration.as_secs());
                 return Ok(());
             }
-            if let Some(user_limit_duration) =
-                locked_state.user_bucket.limit_duration(msg.author.id.get())
-            {
+            if let Some(user_limit_duration) = locked_state.user_bucket.limit_duration(msg.author.id.get()) {
                 tracing::info!("User limit reached {}", user_limit_duration.as_secs());
                 if Duration::from_secs(5) > user_limit_duration {
                     tokio::time::sleep(user_limit_duration).await;
@@ -335,10 +369,9 @@ async fn handle_event(
 
             let st = cache.guild_members(msg.guild_id.unwrap()).unwrap().clone();
             let id = st.iter().choose(&mut rand::thread_rng()).unwrap();
-            let member = cache.member(msg.guild_id.unwrap(), id.clone()).unwrap();
-            let username = cache.user(id.clone()).unwrap().name.clone();
-            let nick = member.nick().unwrap_or_else(|| &username);
-
+            let member = cache.member(msg.guild_id.unwrap(), *id).unwrap();
+            let username = cache.user(*id).unwrap().name.clone();
+            let nick = member.nick().unwrap_or(&username);
             let r = handle_message(&msg, locked_state, &config, &http, nick).await;
 
             if let Ok(res) = r {
@@ -435,10 +468,7 @@ fn init_config() -> Config {
     toml::from_str(&config_str).unwrap_or_default()
 }
 
-async fn update_rss_feed(
-    http: Arc<HttpClient>,
-    config: Arc<Config>,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn update_rss_feed(http: Arc<HttpClient>, config: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
     for page in &config.rss_feeds {
         let bytes = reqwest::get(page).await?.bytes().await?;
         let res = std::io::Cursor::new(bytes);
