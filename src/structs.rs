@@ -95,23 +95,33 @@ impl From<Box<InviteCreate>> for BotInvite {
         }
     }
 }
-
+/// This struct is used to store the state of the bot.\
+/// It is used to store the cache, the database connection, the config and the http client.
 pub struct State {
     pub last_redesc: Instant,
+    /// Rng
     pub rng: ThreadRng,
+    /// Reqwest client
     pub client: Client,
+    /// Bucket for user messages
     pub user_bucket: Bucket,
+    /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
+    /// Sqlite database connection
     pub db: Connection,
     pub invites: Vec<BotInvite>,
     pub nick: String,
     pub nick_id: u64,
+    /// The id of the last user that typed to not resend the indicator
     pub last_typer: u64,
+    /// This is a map of channel id to the last time a message was sent in that channel for message typing indicator.
     pub del: HashMap<Id<ChannelMarker>, u64>,
+    /// cli args
     pub config: Arc<Config>,
+    /// twilight cache
     pub cache: InMemoryCache,
 }
-
+// i hate fixing error
 unsafe impl Send for State {}
 
 impl State {

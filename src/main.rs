@@ -10,15 +10,13 @@
 
 use crate::{message_handler::handle_message, structs::*};
 
-use clap::{error::ContextKind, Parser};
+use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
-
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use tokio::{join, sync::Mutex};
-
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::{
@@ -26,14 +24,13 @@ use twilight_model::{
     gateway::{
         payload::outgoing::update_presence::UpdatePresencePayload,
         presence::{ActivityType, MinimalActivity, Status},
+        Intents,
     },
+    id::Id,
 };
-use twilight_model::{gateway::Intents, id::Id};
 use zephyrus::prelude::*;
 
-use std::{collections::HashMap, env, error::Error};
-
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, env, error::Error, sync::Arc, time::Duration};
 
 mod commands;
 mod config;
@@ -129,7 +126,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         {
             state.lock().await.cache.update(&event);
         }
-        let res = handle_event(event, &http, &shard, &state, Arc::clone(&framework)).await;
+        let res = handle_event(event, &http, &state, Arc::clone(&framework)).await;
         if let Err(res) = res {
             tracing::error!("{}", res);
         }
@@ -140,7 +137,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 async fn handle_event(
     event: Event,
     http: &Arc<HttpClient>,
-    _shard: &Arc<Shard>,
     state: &Arc<Mutex<State>>,
     framework: Arc<Framework<Arc<Mutex<State>>>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -148,7 +144,7 @@ async fn handle_event(
     match event {
         Event::PresenceUpdate(p) => {
             if p.user.id() == Id::new(870383692403593226) && p.status == Status::Offline {
-                for _i in 0..10 {
+                for _ in 0..10 {
                     http.create_message(Id::new(748957504666599507))
                         .content("AETHOR WENT OFFLINE <@336465356304678913> <@336465356304678913>")?
                         .allowed_mentions(Some(
@@ -282,6 +278,13 @@ async fn handle_event(
             tracing::info!("Connected");
         }
         Event::TypingStart(event) => {
+            if !locked_state
+                .config
+                .message_indicator_channels
+                .contains(&event.channel_id.get())
+            {
+                return Ok(());
+            }
             if event.user_id.get() == locked_state.last_typer {
                 return Ok(());
             }
@@ -305,15 +308,17 @@ async fn handle_event(
         Event::GuildCreate(guild) => {
             tracing::info!("Active in guild {}", guild.name);
             let invites_response = http.guild_invites(guild.id).exec().await?;
-            locked_state.invites = invites_response
-                .models()
-                .await?
-                .into_iter()
-                .map(|invite| BotInvite {
-                    code: invite.code.clone(),
-                    uses: invite.uses.unwrap_or_default(),
-                })
-                .collect();
+            locked_state.invites.append(
+                &mut invites_response
+                    .models()
+                    .await?
+                    .into_iter()
+                    .map(|invite| BotInvite {
+                        code: invite.code.clone(),
+                        uses: invite.uses.unwrap_or_default(),
+                    })
+                    .collect(),
+            );
         }
         _ => {}
     }

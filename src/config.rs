@@ -12,6 +12,8 @@ pub struct Config {
     pub discord: u64,
     #[arg(short, long, env)]
     pub join_channel: u64,
+    #[arg(long, env)]
+    pub message_indicator_channels: Vec<u64>,
     #[arg(long, env, default_value = "trickedbot.sqlite")]
     pub database_file: String,
     #[arg(short, long, env, default_value = "0")]

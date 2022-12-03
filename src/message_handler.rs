@@ -6,8 +6,7 @@ use tokio::sync::MutexGuard;
 use twilight_http::Client as HttpClient;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 
-use std::error::Error;
-use std::{sync::Arc, time::Instant};
+use std::{error::Error, sync::Arc, time::Instant};
 
 use crate::{
     structs::{Command, List, State},
