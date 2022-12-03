@@ -10,7 +10,7 @@
 
 use crate::{message_handler::handle_message, structs::*};
 
-use clap::Parser;
+use clap::{error::ContextKind, Parser};
 use config::Config;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
@@ -279,9 +279,12 @@ async fn handle_event(
             }
         }
         Event::Ready(_) => {
-            tracing::info!("Connected",);
+            tracing::info!("Connected");
         }
         Event::TypingStart(event) => {
+            if event.user_id.get() == locked_state.last_typer {
+                return Ok(());
+            }
             let (msg, _) = join!(
                 http.create_message(event.channel_id)
                     .content(&format!("{} is typing", event.member.unwrap().user.name))?
@@ -297,6 +300,7 @@ async fn handle_event(
             );
             let res = msg?.model().await?;
             locked_state.del.insert(event.channel_id, res.id.get());
+            locked_state.last_typer = event.user_id.get();
         }
         Event::GuildCreate(guild) => {
             tracing::info!("Active in guild {}", guild.name);

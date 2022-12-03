@@ -106,13 +106,13 @@ pub struct State {
     pub invites: Vec<BotInvite>,
     pub nick: String,
     pub nick_id: u64,
+    pub last_typer: u64,
     pub del: HashMap<Id<ChannelMarker>, u64>,
     pub config: Arc<Config>,
     pub cache: InMemoryCache,
 }
 
 unsafe impl Send for State {}
-unsafe impl Sync for State {}
 
 impl State {
     pub fn new(rng: ThreadRng, client: Client, db: Connection, config: Arc<Config>) -> Self {
@@ -124,6 +124,7 @@ impl State {
             client,
             last_redesc: Instant::now(),
             user_bucket,
+            last_typer: 0,
             nick: "".to_owned(),
             nick_id: 0,
             del: HashMap::new(),
