@@ -8,48 +8,42 @@
 )]
 #![forbid(unsafe_code, anonymous_parameters)]
 
-use crate::message_handler::handle_message;
-use crate::structs::*;
+use crate::{message_handler::handle_message, structs::*};
 
-use chrono::Utc;
-use feed_rs::parser;
+use clap::Parser;
+use config::Config;
+
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
-use lingua::Language::{self, English, Polish};
-use lingua::{LanguageDetector, LanguageDetectorBuilder};
-use log::error;
-use qrcodegen::QrCode;
+
 use rand::seq::IteratorRandom;
 use reqwest::Client;
-use roms::{codename, format_device, search};
 use rusqlite::{params, Connection};
-use serde_json::{json, Value};
-use tokio::sync::Mutex;
-use tokio::{join, time};
+
+use tokio::{join, sync::Mutex};
 use twilight_cache_inmemory::InMemoryCache;
-use twilight_embed_builder::EmbedBuilder;
+
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::channel::embed::{EmbedAuthor, EmbedFooter};
-use twilight_model::channel::message::AllowedMentions;
-use twilight_model::gateway::payload::outgoing::update_presence::UpdatePresencePayload;
-use twilight_model::gateway::presence::{ActivityType, MinimalActivity, Status};
-use twilight_model::id::GuildId;
-use twilight_model::util::Timestamp;
-use twilight_model::{gateway::Intents, id::Id};
-use zephyrus::prelude::*;
-use zephyrus::twilight_exports::{
-    CommandOptionChoice, InteractionResponse, InteractionResponseData, InteractionResponseType,
+
+use twilight_model::{
+    channel::message::AllowedMentions,
+    gateway::{
+        payload::outgoing::update_presence::UpdatePresencePayload,
+        presence::{ActivityType, MinimalActivity, Status},
+    },
+    id::GuildId,
 };
 
-use std::collections::HashMap;
-use std::env;
-use std::error::Error;
-use std::fmt::Write as _;
-use std::fs;
-use std::sync::Arc;
-use std::time::Duration;
+use twilight_model::{gateway::Intents, id::Id};
+use zephyrus::prelude::*;
 
+use std::{collections::HashMap, env, error::Error};
+
+use std::{sync::Arc, time::Duration};
+
+mod commands;
+mod config;
 mod message_handler;
 mod roms;
 mod structs;
@@ -64,7 +58,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt().init();
-    let config = Arc::new(init_config());
+    let mut cfg = Config::parse();
+    if cfg.id == 0 {
+        cfg.id = String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap())
+            .parse::<u64>()
+            .unwrap();
+    }
+    let config = Arc::new(cfg);
 
     let client: Client = Client::builder()
         .user_agent(format!(
@@ -116,26 +116,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     conn.execute(include_str!("../database.sql"), params![])?;
     let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client, conn)));
 
-    let mut interval = time::interval(Duration::from_secs(3600));
-    let http_clone = Arc::clone(&http);
-    let config_clone = Arc::clone(&config);
-    tokio::spawn(async move {
-        loop {
-            let http = Arc::clone(&http_clone);
-            let config = Arc::clone(&config_clone);
-            tokio::spawn(async move {
-                let res = update_rss_feed(http, config).await;
-                if let Err(e) = res {
-                    error!("Error updating RSS feed: {}", e);
-                }
-            });
-            interval.tick().await;
-        }
-    });
-
     let framework = Arc::new(
         Framework::builder(Arc::clone(&http), Id::new(config.id), ())
-            .command(roms)
+            .command(commands::roms::command)
             .build(),
     );
 
@@ -164,83 +147,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
     Ok(())
-}
-
-fn is_polish(text: &str) -> bool {
-    let languages = vec![Polish, English];
-    let detector: LanguageDetector = LanguageDetectorBuilder::from_languages(&languages).build();
-    let detected_language: Language = detector.detect_language_of(text).unwrap_or(English);
-
-    detected_language == Polish
-}
-#[test]
-fn polish_tests() {
-    assert!(is_polish("ING działa dla mnie"));
-    assert!(is_polish("rootowanie telefonu :laughatthisuser:"));
-    assert!(is_polish("CA24?? co to za bank"));
-    assert!(!is_polish("crapple moment"));
-    assert!(!is_polish("another 6 months of talking"));
-    assert!(!is_polish("tf was she expecting"));
-    assert!(!is_polish("is echt dogshit"));
-    assert!(!is_polish("Maar ja, blijkt dat dat niet per se hoeft?"));
-}
-
-#[command]
-#[description = "Find the fucking rom!"]
-async fn roms(
-    ctx: &SlashContext<'_, ()>,
-    #[autocomplete = "autocomplete_arg"]
-    #[description = "Some description"]
-    device: Option<String>,
-    #[description = "Some description"] code: Option<String>,
-) -> CommandResult {
-    let cdn = device.map(Some).unwrap_or(code);
-    let m = if let Some(device) = cdn {
-        let device = codename(device).await;
-        if let Some(device) = device {
-            format_device(device)
-        } else {
-            "Phone not found".to_owned()
-        }
-    } else {
-        "Please provide either a device or a codename".to_owned()
-    };
-
-    ctx.interaction_client
-        .create_response(
-            ctx.interaction.id,
-            &ctx.interaction.token,
-            &InteractionResponse {
-                kind: InteractionResponseType::ChannelMessageWithSource,
-                data: Some(InteractionResponseData {
-                    content: Some(m),
-                    ..Default::default()
-                }),
-            },
-        )
-        .exec()
-        .await?;
-
-    Ok(())
-}
-
-#[autocomplete]
-async fn autocomplete_arg(ctx: AutocompleteContext<()>) -> Option<InteractionResponseData> {
-    let r = search(ctx.user_input.unwrap()).await;
-    Some(InteractionResponseData {
-        choices: r.map(|x| {
-            let devices = x.1;
-            devices
-                .into_iter()
-                .map(|x| CommandOptionChoice::String {
-                    value: x.codename.clone(),
-                    name: format!("{} ({}): {}", x.name, x.codename, x.roms.len()),
-                    name_localizations: None,
-                })
-                .collect::<Vec<CommandOptionChoice>>()
-        }),
-        ..Default::default()
-    })
 }
 
 async fn handle_event(
@@ -332,38 +238,6 @@ async fn handle_event(
             {
                 http.delete_message(msg.channel_id, msg.id).exec().await?;
                 return Ok(());
-            }
-            if !msg.author.bot && !msg.content.contains("http") && msg.content.len() > 7 && is_polish(&msg.content) {
-                let client = reqwest::Client::new();
-                let res = client
-                    .post("https://libretranslate.com/translate")
-                    .header(
-                        "referer",
-                        format!("https://libretranslate.com/?source=en&target=pl&text={}", msg.content),
-                    )
-                    .header("origin", "https://libretranslate.com")
-                    .header(
-                        "user-agent",
-                        "Mozilla/5.0 (X11; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0",
-                    )
-                    .json(&json!({
-                        "q": msg.content,
-                        "source": "pl",
-                        "target": "en",
-                        "format": "text"
-                    }))
-                    .send()
-                    .await?
-                    .json::<Value>()
-                    .await?;
-                let translated = res["translatedText"].as_str();
-                if let Some(translated) = translated {
-                    http.create_message(msg.channel_id)
-                        .reply(msg.id)
-                        .content(&format!("*here's the english version*:\n{}", translated))?
-                        .exec()
-                        .await?;
-                }
             }
 
             if let Some(channel_limit_duration) = locked_state.channel_bucket.limit_duration(msg.channel_id.get()) {
@@ -457,80 +331,6 @@ async fn handle_event(
                 .collect();
         }
         _ => {}
-    }
-    Ok(())
-}
-fn print_qr(qr: &QrCode) -> String {
-    let border: i32 = 1;
-    let mut res = String::new();
-    for y in -border..qr.size() + border {
-        for x in -border..qr.size() + border {
-            let c = if qr.get_module(x, y) { '█' } else { ' ' };
-
-            let _ = write!(res, "{0}{0}", c);
-        }
-        res.push('\n');
-    }
-    res.push('\n');
-    res
-}
-
-fn init_config() -> Config {
-    let config_str = fs::read_to_string(fs::canonicalize("trickedbot.toml").unwrap()).unwrap();
-    toml::from_str(&config_str).unwrap_or_default()
-}
-
-async fn update_rss_feed(http: Arc<HttpClient>, config: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
-    for page in &config.rss_feeds {
-        let bytes = reqwest::get(page).await?.bytes().await?;
-        let res = std::io::Cursor::new(bytes);
-        let res = parser::parse(res)?;
-
-        let icon = if let Some(icon) = res.icon {
-            Some(icon.uri)
-        } else if let Some(icon) = res.logo {
-            Some(icon.uri)
-        } else {
-            None
-        };
-
-        for entry in res.entries {
-            if entry.published.is_none() {
-                continue;
-            }
-
-            if 3600 > (Utc::now().timestamp() - entry.published.unwrap().timestamp()) {
-                if res.title.is_none()
-                    || res.links.is_empty()
-                    || entry.summary.is_none()
-                    || entry.published.is_none()
-                    || entry.authors.is_empty()
-                {
-                    continue;
-                }
-                let embed = EmbedBuilder::new()
-                    .author(EmbedAuthor {
-                        icon_url: icon.clone(),
-                        name: res.title.clone().unwrap().content,
-                        url: Some(res.links.get(0).unwrap().href.clone()),
-                        proxy_icon_url: None,
-                    })
-                    .title(entry.title.unwrap().content)
-                    .url(entry.links.get(0).as_ref().unwrap().href.clone())
-                    .description(rhtml2md::parse_html(&entry.summary.unwrap().content))
-                    .timestamp(Timestamp::from_secs(entry.published.unwrap().timestamp()).unwrap())
-                    .footer(EmbedFooter {
-                        text: entry.authors.get(0).unwrap().name.clone(),
-                        icon_url: entry.authors.get(0).unwrap().uri.clone(),
-                        proxy_icon_url: None,
-                    })
-                    .build()?;
-                http.create_message(Id::new(config.join_channel))
-                    .embeds(&[embed])?
-                    .exec()
-                    .await?;
-            }
-        }
     }
     Ok(())
 }

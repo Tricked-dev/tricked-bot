@@ -4,13 +4,15 @@ use reqwest::Client;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use std::time::Instant;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use twilight_bucket::{Bucket, Limit};
-use twilight_model::http::attachment::Attachment;
-use twilight_model::id::Id;
-use twilight_model::invite::Invite;
-use twilight_model::{channel::embed::Embed, gateway::payload::incoming::InviteCreate};
+use twilight_model::{
+    channel::embed::Embed, gateway::payload::incoming::InviteCreate, http::attachment::Attachment, id::Id,
+    invite::Invite,
+};
 use zephyrus::twilight_exports::ChannelMarker;
 
 #[derive(FromArgs, PartialEq, Eq, Debug)]
@@ -23,10 +25,6 @@ pub struct TrickedCommands {
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand)]
 pub enum Commands {
-    QR(QR),
-    MD(MD),
-    Zip(Zip),
-    Search(Search),
     InviteStats(InviteStats),
 }
 
@@ -75,7 +73,7 @@ pub struct Command {
     pub attachments: Vec<Attachment>,
     pub skip: bool,
 }
-
+#[allow(dead_code)]
 impl Command {
     pub fn embed(embed: Embed) -> Self {
         Self {
@@ -174,26 +172,6 @@ impl State {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct Config {
-    pub token: String,
-    pub discord: u64,
-    pub join_channel: u64,
-    pub id: u64,
-    #[serde(default)]
-    pub rename_channels: Vec<u64>,
-    #[serde(default)]
-    pub invites: HashMap<String, String>,
-    #[serde(default)]
-    pub shit_reddits: Vec<String>,
-    #[serde(default)]
-    pub rss_feeds: Vec<String>,
-    #[serde(default = "default_status")]
-    pub status: String,
-}
-fn default_status() -> String {
-    "I am a bot".to_string()
-}
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 
 pub struct Responder {

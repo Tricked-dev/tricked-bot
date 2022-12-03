@@ -1,28 +1,22 @@
 use argh::FromArgs;
-use mdcat::{push_tty, Environment, ResourceAccess, Settings, TerminalCapabilities, TerminalSize};
-use pulldown_cmark::{Options, Parser};
-use qrcodegen::{QrCode, QrCodeEcc};
-use rand::prelude::{IteratorRandom, SliceRandom};
-use rand::Rng;
-use select::document::Document;
-use select::predicate::Class;
-use syntect::parsing::SyntaxSet;
+use rand::{
+    prelude::{IteratorRandom, SliceRandom},
+    Rng,
+};
 use tokio::sync::MutexGuard;
-use twilight_embed_builder::{EmbedAuthorBuilder, EmbedBuilder, ImageSource};
+use twilight_embed_builder::EmbedBuilder;
 use twilight_http::Client as HttpClient;
-use twilight_model::channel::embed::Embed;
 use twilight_model::gateway::payload::incoming::MessageCreate;
-use twilight_model::http::attachment::Attachment;
-
 
 use std::error::Error;
-use std::io::Write;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
-use crate::structs::{Command, Commands, Config, InviteStats, List, Search, State, TrickedCommands};
-use crate::zalgos::zalgify_text;
-use crate::{print_qr, RESPONDERS};
+use crate::{
+    config::Config,
+    structs::{Command, Commands, InviteStats, List, State, TrickedCommands},
+    zalgos::zalgify_text,
+    RESPONDERS,
+};
 
 pub async fn handle_message(
     msg: &MessageCreate,
@@ -46,70 +40,6 @@ pub async fn handle_message(
         let commands = TrickedCommands::from_args(&["L+"], two);
         if let Ok(command) = commands {
             return match command.nested {
-                Commands::QR(qr) => {
-                    let qr = QrCode::encode_text(&qr.text.join(" "), QrCodeEcc::Low)?;
-                    let res = print_qr(&qr);
-                    let embed = EmbedBuilder::new()
-                        .description(format!("```ansi\n{res}\n```"))
-                        .build()?;
-                    Ok(Command::embed(embed))
-                }
-
-                Commands::MD(md) => {
-                    let env = &Environment::for_local_directory(&"/")?;
-                    let settings = &Settings {
-                        resource_access: ResourceAccess::LocalOnly,
-                        syntax_set: SyntaxSet::load_defaults_newlines(),
-                        terminal_capabilities: TerminalCapabilities::ansi(),
-                        terminal_size: TerminalSize::default(),
-                    };
-
-                    let mut buf = Vec::new();
-                    let text = md.text.join(" ");
-                    let parser = Parser::new_ext(&text, Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
-                    push_tty(settings, env, &mut buf, parser)?;
-                    let res = String::from_utf8(buf.clone())?;
-                    let size = res.len();
-                    if size > 4050 {
-                        Ok(
-                            Command::text("Message exceeded discord limit send attachment!").attachments(vec![
-                                Attachment::from_bytes("message.ansi".to_string(), buf.clone(), 125),
-                            ]),
-                        )
-                    } else if size > 2000 {
-                        let embed = EmbedBuilder::new()
-                            .description(format!("```ansi\n{res}\n```"))
-                            .build()?;
-                        Ok(Command::embed(embed))
-                    } else {
-                        Ok(Command::text(format!("```ansi\n{res}\n```")))
-                    }
-                }
-                Commands::Zip(_) => {
-                    let size = msg.attachments.iter().map(|x| x.size).sum::<u64>();
-                    if size > 6000000 {
-                        return Ok(Command::text("Too big".to_string()));
-                    }
-                    let mut buf = Vec::new();
-
-                    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-
-                    let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-                    for attachment in &msg.attachments {
-                        zip.start_file(attachment.filename.clone(), options)?;
-                        zip.write_all(&locked_state.client.get(&attachment.url).send().await?.bytes().await?)?;
-                    }
-
-                    let res = zip.finish()?;
-
-                    Ok(
-                        Command::text("Zip files arrived").attachments(vec![Attachment::from_bytes(
-                            format!("files-{}.zip", msg.id.get()),
-                            (*res.get_ref()).clone(),
-                            125,
-                        )]),
-                    )
-                }
                 Commands::InviteStats(InviteStats {}) => {
                     let mut stmt = locked_state
                         .db
@@ -142,56 +72,6 @@ pub async fn handle_message(
                         .collect::<Vec<String>>();
                     let embed = EmbedBuilder::new().description(data.join("\n")).build()?;
                     Ok(Command::embed(embed))
-                }
-                Commands::Search(Search { query }) => {
-                    let res = locked_state
-                        .client
-                        .get(format!("https://duckduckgo.com/html/?q={}", query.join("-")))
-                        .send()
-                        .await?
-                        .text()
-                        .await?;
-                    let document = Document::from(res.as_str());
-                    let embeds = document
-                        .find(Class("result__body"))
-                        .take(5)
-                        .map(|node| -> Option<Embed> {
-                            let url_node = node.find(Class("result__a")).next()?;
-                            let url = url_node
-                                .attr("href")?
-                                .replace("//duckduckgo.com", "https://duckduckgo.com");
-                            let title = url_node.inner_html();
-                            let snippet = node
-                                .find(Class("result__snippet"))
-                                .next()?
-                                .inner_html()
-                                .replace("<b>", "**")
-                                .replace("</b>", "**")
-                                .split_whitespace()
-                                .collect::<Vec<&str>>()
-                                .join(" ");
-
-                            let icon = node.find(Class("result__icon__img")).next()?.attr("src")?.replace(
-                                "//external-content.duckduckgo.com",
-                                "https://external-content.duckduckgo.com",
-                            );
-
-                            let preview_url = node.find(Class("result__url")).next()?.inner_html();
-                            EmbedBuilder::new()
-                                .title(title)
-                                .url(url)
-                                .color(0x179e87)
-                                .description(snippet)
-                                .author(EmbedAuthorBuilder::new(preview_url).icon_url(ImageSource::url(icon).ok()?))
-                                .build()
-                                .ok()
-                        });
-                    let embeds: Vec<Embed> = embeds.flatten().collect();
-                    Ok(if embeds.is_empty() {
-                        Command::text("Nothing found (or i am blocked)")
-                    } else {
-                        Command::embeds(embeds)
-                    })
                 }
             };
         } else {
