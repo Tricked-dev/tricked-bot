@@ -12,7 +12,7 @@ use zephyrus::{
 use crate::structs::State;
 
 #[command]
-#[description = "Find the fucking rom!"]
+#[description = "View invite stats!"]
 pub async fn invite_stats(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> CommandResult {
     let data = {
         let state = ctx.data.lock().await;
@@ -45,10 +45,15 @@ pub async fn invite_stats(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> CommandR
                 )
             })
             .collect::<Vec<String>>()
+            .join("\n")
     };
 
     let embed = Embed {
-        description: Some(data.join("\n")),
+        description: Some(if data.is_empty() {
+            "No invites used".to_owned()
+        } else {
+            data
+        }),
         author: None,
         color: Some(0x00ff00),
         fields: vec![],
