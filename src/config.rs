@@ -12,13 +12,13 @@ pub struct Config {
     pub discord: u64,
     #[arg(short, long, env)]
     pub join_channel: u64,
-    #[arg(long, env)]
+    #[arg(long, env, value_parser = vec_u64_parser)]
     pub message_indicator_channels: Vec<u64>,
     #[arg(long, env, default_value = "trickedbot.sqlite")]
     pub database_file: String,
     #[arg(short, long, env, default_value = "0")]
     pub id: u64,
-    #[arg(long, env)]
+    #[arg(long, env, value_parser = vec_u64_parser)]
     pub rename_channels: Vec<u64>,
     #[arg(long, env, value_parser = parse_invites)]
     pub invites: HashMap<String, String>,
@@ -40,4 +40,11 @@ fn parse_invites(src: &str) -> Result<HashMap<String, String>, io::Error> {
         map.insert(key.to_string(), value.parse().unwrap());
     }
     Ok(map)
+}
+fn vec_u64_parser(src: &str) -> Result<Vec<u64>, io::Error> {
+    let mut vec = Vec::new();
+    for pair in src.split(',') {
+        vec.push(pair.parse().unwrap());
+    }
+    Ok(vec)
 }
