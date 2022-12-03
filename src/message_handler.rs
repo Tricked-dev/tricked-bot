@@ -1,10 +1,8 @@
-use argh::FromArgs;
 use rand::{
     prelude::{IteratorRandom, SliceRandom},
     Rng,
 };
 use tokio::sync::MutexGuard;
-use twilight_embed_builder::EmbedBuilder;
 use twilight_http::Client as HttpClient;
 use twilight_model::gateway::payload::incoming::MessageCreate;
 
@@ -12,8 +10,7 @@ use std::error::Error;
 use std::{sync::Arc, time::Instant};
 
 use crate::{
-    config::Config,
-    structs::{Command, Commands, InviteStats, List, State, TrickedCommands},
+    structs::{Command, List, State},
     zalgos::zalgify_text,
     RESPONDERS,
 };
@@ -21,9 +18,7 @@ use crate::{
 pub async fn handle_message(
     msg: &MessageCreate,
     mut locked_state: MutexGuard<'_, State>,
-    config: &Arc<Config>,
     http: &Arc<HttpClient>,
-    name: &'_ str,
 ) -> Result<Command, Box<dyn Error + Send + Sync>> {
     if let Some(responder) = RESPONDERS.get(msg.content.to_uppercase().as_str()) {
         if let Some(msg) = &responder.message {
@@ -33,56 +28,15 @@ pub async fn handle_message(
             return Ok(Command::react(reaction.chars().next().unwrap()));
         }
     }
-    if msg.content.to_lowercase().starts_with("l+") {
-        let join = msg.content.split('+').skip(1).collect::<Vec<_>>().join("+");
-        let args = join.trim().split(' ');
-        let two = &args.collect::<Vec<&str>>()[..];
-        let commands = TrickedCommands::from_args(&["L+"], two);
-        if let Ok(command) = commands {
-            return match command.nested {
-                Commands::InviteStats(InviteStats {}) => {
-                    let mut stmt = locked_state
-                        .db
-                        .prepare("select invite_used, count(invite_used) from users group by invite_used")
-                        .unwrap();
-                    let mut res = stmt
-                        .query_map([], |row| {
-                            let key: String = row.get(0)?;
-                            let value: i32 = row.get(1)?;
-                            Ok((key, value))
-                        })?
-                        .flatten()
-                        .collect::<Vec<(String, i32)>>();
-
-                    res.sort_by(|a, b| b.1.cmp(&a.1));
-
-                    let data = res
-                        .into_iter()
-                        .map(|(k, v)| {
-                            format!(
-                                "{k} ({}): {v}",
-                                config
-                                    .invites
-                                    .clone()
-                                    .into_iter()
-                                    .find_map(|(key, val)| if val == k { Some(key) } else { None })
-                                    .unwrap_or_else(|| "None".to_owned())
-                            )
-                        })
-                        .collect::<Vec<String>>();
-                    let embed = EmbedBuilder::new().description(data.join("\n")).build()?;
-                    Ok(Command::embed(embed))
-                }
-            };
-        } else {
-            return Ok(Command::text(format!("```\n{}\n```", commands.err().unwrap().output)));
-        }
-    }
 
     match msg.content.to_lowercase().as_str() {
         content
             if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
-                && config.rename_channels.clone().contains(&msg.channel_id.get())
+                && locked_state
+                    .config
+                    .rename_channels
+                    .clone()
+                    .contains(&msg.channel_id.get())
                 && locked_state.rng.gen_range(0..10) == 2 =>
         {
             if content.to_lowercase().contains("uwu") || content.to_lowercase().contains("owo") {
@@ -123,7 +77,13 @@ pub async fn handle_message(
             let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
             Ok(Command::text(content).reply())
         }
-        _x if locked_state.rng.gen_range(0..60) == 2 => {
+        _x if locked_state.rng.gen_range(0..500) == 2 => {
+            let st = locked_state.cache.guild_members(msg.guild_id.unwrap()).unwrap().clone();
+            let id = st.iter().choose(&mut rand::thread_rng()).unwrap();
+            let member = locked_state.cache.member(msg.guild_id.unwrap(), *id).unwrap();
+            let username = locked_state.cache.user(*id).unwrap().name.clone();
+            let name = member.nick().unwrap_or(&username);
+
             http.update_guild_member(msg.guild_id.unwrap(), msg.author.id)
                 .nick(Some(name))?
                 .exec()
@@ -141,7 +101,11 @@ pub async fn handle_message(
                 .client
                 .get(format!(
                     "https://www.reddit.com/r/{}/.json",
-                    config.shit_reddits.choose(&mut rand::thread_rng()).unwrap()
+                    locked_state
+                        .config
+                        .shit_reddits
+                        .choose(&mut rand::thread_rng())
+                        .unwrap()
                 ))
                 .send()
                 .await?

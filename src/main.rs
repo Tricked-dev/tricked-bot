@@ -6,7 +6,7 @@
     rust_2018_idioms,
     missing_debug_implementations
 )]
-#![forbid(unsafe_code, anonymous_parameters)]
+#![forbid(anonymous_parameters)]
 
 use crate::{message_handler::handle_message, structs::*};
 
@@ -14,11 +14,11 @@ use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
-use rand::seq::IteratorRandom;
+
 use reqwest::Client;
 use rusqlite::{params, Connection};
 use tokio::{join, sync::Mutex};
-use twilight_cache_inmemory::InMemoryCache;
+
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::{
@@ -27,7 +27,6 @@ use twilight_model::{
         payload::outgoing::update_presence::UpdatePresencePayload,
         presence::{ActivityType, MinimalActivity, Status},
     },
-    id::GuildId,
 };
 use twilight_model::{gateway::Intents, id::Id};
 use zephyrus::prelude::*;
@@ -39,7 +38,6 @@ use std::{sync::Arc, time::Duration};
 mod commands;
 mod config;
 mod message_handler;
-mod roms;
 mod structs;
 mod zalgos;
 
@@ -93,8 +91,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         )
         .unwrap(),
     )
-    .build()
-    .await?;
+    .build();
     let shard = Arc::new(shard);
     shard.start().await?;
 
@@ -108,34 +105,31 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let conn = Connection::open(&config.database_file)?;
     conn.execute(include_str!("../database.sql"), params![])?;
-    let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client, conn)));
+    let state = Arc::new(Mutex::new(State::new(
+        rand::thread_rng(),
+        client,
+        conn,
+        Arc::clone(&config),
+    )));
 
     let framework = Arc::new(
-        Framework::builder(Arc::clone(&http), Id::new(config.id), ())
-            .command(commands::roms::command)
+        Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
+            .command(commands::roms::roms)
+            .command(commands::invite_stats::invite_stats)
             .build(),
     );
 
     // Zephyrus can register commands in guilds or globally.
     framework
-        .register_guild_commands(GuildId::new(config.discord))
+        .register_guild_commands(Id::new(config.discord))
         .await
         .unwrap();
 
-    let cache = Arc::new(InMemoryCache::new());
-
     while let Some(event) = events.next().await {
-        cache.update(&event);
-        let res = handle_event(
-            event,
-            Arc::clone(&http),
-            Arc::clone(&shard),
-            Arc::clone(&state),
-            Arc::clone(&config),
-            Arc::clone(&framework),
-            Arc::clone(&cache),
-        )
-        .await;
+        {
+            state.lock().await.cache.update(&event);
+        }
+        let res = handle_event(event, &http, &shard, &state, Arc::clone(&framework)).await;
         if let Err(res) = res {
             tracing::error!("{}", res);
         }
@@ -145,12 +139,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
 async fn handle_event(
     event: Event,
-    http: Arc<HttpClient>,
-    _shard: Arc<Shard>,
-    state: Arc<Mutex<State>>,
-    config: Arc<Config>,
-    framework: Arc<Framework<()>>,
-    cache: Arc<InMemoryCache>,
+    http: &Arc<HttpClient>,
+    _shard: &Arc<Shard>,
+    state: &Arc<Mutex<State>>,
+    framework: Arc<Framework<Arc<Mutex<State>>>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut locked_state = state.lock().await;
     match event {
@@ -184,15 +176,15 @@ async fn handle_event(
             let mut invites_iter = invites.iter();
             for old_invite in locked_state.invites.iter() {
                 if let Some(invite) = invites_iter.find(|x| x.code == old_invite.code) {
-                    if old_invite.uses < invite.uses {
-                        let name = config.invites.iter().find_map(|(key, value)| {
+                    if old_invite.uses < invite.uses.unwrap_or_default() {
+                        let name = locked_state.config.invites.iter().find_map(|(key, value)| {
                             if value == &old_invite.code {
                                 Some(key.clone())
                             } else {
                                 None
                             }
                         });
-                        http.create_message(Id::new(config.join_channel))
+                        http.create_message(Id::new(locked_state.config.join_channel))
                             .content(&format!(
                                 "{} Joined invite used {}",
                                 member.user.name,
@@ -216,7 +208,7 @@ async fn handle_event(
                 .into_iter()
                 .map(|invite| BotInvite {
                     code: invite.code.clone(),
-                    uses: invite.uses,
+                    uses: invite.uses.unwrap_or_default(),
                 })
                 .collect();
         }
@@ -247,12 +239,7 @@ async fn handle_event(
                 }
             };
 
-            let st = cache.guild_members(msg.guild_id.unwrap()).unwrap().clone();
-            let id = st.iter().choose(&mut rand::thread_rng()).unwrap();
-            let member = cache.member(msg.guild_id.unwrap(), *id).unwrap();
-            let username = cache.user(*id).unwrap().name.clone();
-            let nick = member.nick().unwrap_or(&username);
-            let r = handle_message(&msg, locked_state, &config, &http, nick).await;
+            let r = handle_message(&msg, locked_state, http).await;
 
             if let Ok(res) = r {
                 let Command {
@@ -320,7 +307,7 @@ async fn handle_event(
                 .into_iter()
                 .map(|invite| BotInvite {
                     code: invite.code.clone(),
-                    uses: invite.uses,
+                    uses: invite.uses.unwrap_or_default(),
                 })
                 .collect();
         }
