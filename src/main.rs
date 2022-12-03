@@ -12,20 +12,15 @@ use crate::{message_handler::handle_message, structs::*};
 
 use clap::Parser;
 use config::Config;
-
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
-
 use rand::seq::IteratorRandom;
 use reqwest::Client;
 use rusqlite::{params, Connection};
-
 use tokio::{join, sync::Mutex};
 use twilight_cache_inmemory::InMemoryCache;
-
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-
 use twilight_model::{
     channel::message::AllowedMentions,
     gateway::{
@@ -34,7 +29,6 @@ use twilight_model::{
     },
     id::GuildId,
 };
-
 use twilight_model::{gateway::Intents, id::Id};
 use zephyrus::prelude::*;
 
@@ -112,7 +106,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .build(),
     );
 
-    let conn = Connection::open(".trickedbot/database.sqlite")?;
+    let conn = Connection::open(&config.database_file)?;
     conn.execute(include_str!("../database.sql"), params![])?;
     let state = Arc::new(Mutex::new(State::new(rand::thread_rng(), client, conn)));
 

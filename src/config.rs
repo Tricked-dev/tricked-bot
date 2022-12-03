@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    io::{self, ErrorKind},
-};
+use std::{collections::HashMap, io};
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -15,6 +12,8 @@ pub struct Config {
     pub discord: u64,
     #[arg(short, long, env)]
     pub join_channel: u64,
+    #[arg(short, long, env, default_value = "trickedbot.sqlite")]
+    pub database_file: String,
     #[arg(short, long, env, default_value = "0")]
     pub id: u64,
     #[arg(long, env)]
@@ -34,7 +33,7 @@ fn parse_invites(src: &str) -> Result<HashMap<String, String>, io::Error> {
     for pair in src.split(',') {
         let (key, value) = match pair.split_once(':') {
             Some(v) => v,
-            None => return Err(io::Error::new(ErrorKind::Other, "Invalid invite format")),
+            None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid invite format")),
         };
         map.insert(key.to_string(), value.parse().unwrap());
     }
