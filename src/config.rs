@@ -1,9 +1,8 @@
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, num::ParseIntError, sync::Arc};
 
 use clap::Parser;
-use serde::{Deserialize, Serialize};
 
-#[derive(Parser, Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Parser, Clone, Debug, Default)]
 #[command(author, version, about, long_about = None)]
 pub struct Config {
     #[arg(short, long, env)]
@@ -13,13 +12,13 @@ pub struct Config {
     #[arg(short, long, env)]
     pub join_channel: u64,
     #[arg(long, env, value_parser = vec_u64_parser)]
-    pub message_indicator_channels: Vec<u64>,
+    pub message_indicator_channels: Arc<Vec<u64>>,
     #[arg(long, env, default_value = "trickedbot.sqlite")]
     pub database_file: String,
     #[arg(short, long, env, default_value = "0")]
     pub id: u64,
-    #[arg(long, env, value_parser = vec_u64_parser)]
-    pub rename_channels: Vec<u64>,
+    #[arg(long, env, value_parser(vec_u64_parser))]
+    pub rename_channels: Arc<Vec<u64>>,
     #[arg(long, env, value_parser = parse_invites)]
     pub invites: HashMap<String, String>,
     #[arg(short, long, env, value_parser = parse_invites)]
@@ -41,10 +40,10 @@ fn parse_invites(src: &str) -> Result<HashMap<String, String>, io::Error> {
     }
     Ok(map)
 }
-fn vec_u64_parser(src: &str) -> Result<Vec<u64>, io::Error> {
+fn vec_u64_parser(src: &str) -> Result<Arc<Vec<u64>>, ParseIntError> {
     let mut vec = Vec::new();
     for pair in src.split(',') {
-        vec.push(pair.parse().unwrap());
+        vec.push(pair.parse()?);
     }
-    Ok(vec)
+    Ok(Arc::new(vec))
 }

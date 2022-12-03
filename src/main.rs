@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .parse::<u64>()
             .unwrap();
     }
+    println!("{cfg:?}");
     let config = Arc::new(cfg);
 
     let client: Client = Client::builder()
