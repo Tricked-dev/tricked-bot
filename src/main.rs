@@ -64,7 +64,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             env::consts::ARCH
         ))
         .build()?;
-
     let (shard, mut events) = Shard::builder(
         config.token.clone(),
         Intents::GUILD_INVITES
