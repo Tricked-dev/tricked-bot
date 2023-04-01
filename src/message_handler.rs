@@ -9,7 +9,9 @@ use twilight_model::gateway::payload::incoming::MessageCreate;
 use std::{error::Error, sync::Arc, time::Instant};
 
 use crate::{
+    prisma::{read_filters::StringFilter, user},
     structs::{Command, List, State},
+    utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
     RESPONDERS,
 };
@@ -26,6 +28,55 @@ pub async fn handle_message(
         if let Some(reaction) = &responder.react {
             return Ok(Command::react(reaction.chars().next().unwrap()));
         }
+    }
+
+    let user = locked_state
+        .db
+        .user()
+        .find_unique(user::UniqueWhereParam::IdEquals(msg.author.id.get().to_string()))
+        .exec()
+        .await?;
+
+    if let Some(user) = user {
+        let xp = locked_state.rng.gen_range(5..20);
+        let level = user.level;
+        let xp_required = xp_required_for_level(level);
+        let new_xp = user.xp + xp;
+        if new_xp >= xp_required {
+            let new_level = level + 1;
+            let new_xp_required = xp_required_for_level(new_level);
+            locked_state
+                .db
+                .user()
+                .update(
+                    user::id::equals(user.id),
+                    vec![user::level::set(new_level), user::xp::set(new_xp - new_xp_required)],
+                )
+                .exec()
+                .await?;
+            tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
+            return Ok(Command::text(format!(
+                "Congrats <@{}>! You are now level {}!",
+                msg.author.id.get(),
+                new_level
+            ))
+            .reply()
+            .mention());
+        } else {
+            locked_state
+                .db
+                .user()
+                .update(user::id::equals(user.id), vec![user::xp::set(new_xp)])
+                .exec()
+                .await?;
+        }
+    } else {
+        locked_state
+            .db
+            .user()
+            .create(msg.author.id.get().to_string(), vec![])
+            .exec()
+            .await?;
     }
 
     match msg.content.to_lowercase().as_str() {
@@ -109,7 +160,8 @@ pub async fn handle_message(
                 .send()
                 .await?
                 .json::<List>()
-                .await?
+                .await?;
+            let res = res
                 .data
                 .children
                 .into_iter()

@@ -6,7 +6,6 @@ use std::{
 
 use rand::prelude::ThreadRng;
 use reqwest::Client;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::InMemoryCache;
@@ -16,7 +15,7 @@ use twilight_model::{
 };
 use zephyrus::twilight_exports::ChannelMarker;
 
-use crate::config::Config;
+use crate::{config::Config, prisma::PrismaClient};
 
 #[derive(PartialEq, Default, Eq, Clone)]
 pub struct Command {
@@ -25,6 +24,7 @@ pub struct Command {
     pub reply: bool,
     pub reaction: Option<char>,
     pub attachments: Vec<Attachment>,
+    pub mention: bool,
     pub skip: bool,
 }
 
@@ -62,6 +62,10 @@ impl Command {
     }
     pub fn reply(mut self) -> Self {
         self.reply = true;
+        self
+    }
+    pub fn mention(mut self) -> Self {
+        self.mention = true;
         self
     }
 
@@ -108,7 +112,7 @@ pub struct State {
     /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
     /// Sqlite database connection
-    pub db: Connection,
+    pub db: PrismaClient,
     pub invites: Vec<BotInvite>,
     pub nick: String,
     pub nick_id: u64,
@@ -125,7 +129,7 @@ pub struct State {
 unsafe impl Send for State {}
 
 impl State {
-    pub fn new(rng: ThreadRng, client: Client, db: Connection, config: Arc<Config>) -> Self {
+    pub fn new(rng: ThreadRng, client: Client, db: PrismaClient, config: Arc<Config>) -> Self {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         Self {

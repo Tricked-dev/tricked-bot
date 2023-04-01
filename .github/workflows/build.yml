@@ -73,7 +73,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --release --target ${{ matrix.job.target }} ${{ matrix.job.args }}
+          args: --release --bin tricked-bot --target ${{ matrix.job.target }} ${{ matrix.job.args }}
       - name: Upload binary
         uses: actions/upload-artifact@v3
         with:

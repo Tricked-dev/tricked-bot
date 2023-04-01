@@ -1,0 +1,15 @@
+-- CreateTable
+CREATE TABLE "InviteData" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "invite_used" TEXT,
+    "left" BOOLEAN NOT NULL DEFAULT false,
+    "joined" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "discord_id" TEXT NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "User" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "level" INTEGER NOT NULL DEFAULT 0,
+    "xp" INTEGER NOT NULL DEFAULT 0
+);

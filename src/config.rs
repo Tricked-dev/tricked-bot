@@ -23,10 +23,14 @@ pub struct Config {
     pub invites: HashMap<String, String>,
     #[arg(short, long, env, value_parser = parse_invites)]
     pub responders: HashMap<String, String>,
-    #[arg(long, env)]
-    pub shit_reddits: Vec<String>,
+    #[arg(long, env, value_parser = parse_str_array)]
+    pub shit_reddits: Arc<Vec<String>>,
     #[arg(short, long, env, default_value = "I am tricked bot!")]
     pub status: String,
+}
+
+fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {
+    Ok(Arc::new(src.split(',').map(|x| x.to_owned()).collect()))
 }
 
 fn parse_invites(src: &str) -> Result<HashMap<String, String>, io::Error> {

@@ -8,14 +8,14 @@
 )]
 #![forbid(anonymous_parameters)]
 
-use crate::{message_handler::handle_message, structs::*};
+use crate::{message_handler::handle_message, prisma::PrismaClient, structs::*};
 
 use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
+use prisma::invite_data;
 use reqwest::Client;
-use rusqlite::{params, Connection};
 use tokio::{join, sync::Mutex};
 use twilight_gateway::{Event, Shard};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
@@ -35,7 +35,9 @@ use std::{collections::HashMap, env, error::Error, sync::Arc, time::Duration};
 mod commands;
 mod config;
 mod message_handler;
+mod prisma;
 mod structs;
+mod utils;
 mod zalgos;
 
 lazy_static! {
@@ -46,6 +48,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let db: PrismaClient = PrismaClient::_builder().build().await?;
+
     tracing_subscriber::fmt().init();
     let mut cfg = Config::parse();
     if cfg.id == 0 {
@@ -100,12 +104,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .build(),
     );
 
-    let conn = Connection::open(&config.database_file)?;
-    conn.execute(include_str!("../database.sql"), params![])?;
     let state = Arc::new(Mutex::new(State::new(
         rand::thread_rng(),
         client,
-        conn,
+        db,
         Arc::clone(&config),
     )));
 
@@ -192,10 +194,14 @@ async fn handle_event(
                             ))?
                             .exec()
                             .await?;
-                        locked_state.db.execute(
-                            "INSERT INTO users(discord_id,invite_used) VALUES(?1, ?2)",
-                            params![member.user.id.get(), invite.code],
-                        )?;
+                        locked_state.db.invite_data().create(
+                            member.user.id.get().to_string(),
+                            vec![invite_data::SetParam::SetInviteUsed(Some(invite.code.clone()))],
+                        );
+                        // locked_state.db.execute(
+                        //     "INSERT INTO users(discord_id,invite_used) VALUES(?1, ?2)",
+                        //     params![member.user.id.get(), invite.code],
+                        // )?;
                         break;
                     }
                 }
@@ -236,41 +242,51 @@ async fn handle_event(
             };
 
             let r = handle_message(&msg, locked_state, http).await;
+            match r {
+                Ok(res) => {
+                    let Command {
+                        embeds,
+                        text,
+                        reaction,
+                        attachments,
+                        reply,
+                        skip,
+                        mention,
+                    } = res;
+                    if skip {
+                        return Ok(());
+                    } else if let Some(reaction) = reaction {
+                        http.create_reaction(
+                            msg.channel_id,
+                            msg.id,
+                            &RequestReactionType::Unicode {
+                                name: &reaction.to_string(),
+                            },
+                        )
+                        .exec()
+                        .await?;
+                    } else {
+                        let mut req = http
+                            .create_message(msg.channel_id)
+                            .embeds(&embeds)?
+                            .attachments(&attachments)?;
+                        if let Some(text) = &text {
+                            req = req.content(text)?;
+                        }
 
-            if let Ok(res) = r {
-                let Command {
-                    embeds,
-                    text,
-                    reaction,
-                    attachments,
-                    reply,
-                    skip,
-                } = res;
-                if skip {
-                    return Ok(());
-                } else if let Some(reaction) = reaction {
-                    http.create_reaction(
-                        msg.channel_id,
-                        msg.id,
-                        &RequestReactionType::Unicode {
-                            name: &reaction.to_string(),
-                        },
-                    )
-                    .exec()
-                    .await?;
-                } else {
-                    let mut req = http
-                        .create_message(msg.channel_id)
-                        .embeds(&embeds)?
-                        .attachments(&attachments)?;
-                    if let Some(text) = &text {
-                        req = req.content(text)?;
-                    }
-                    if reply {
-                        req = req.reply(msg.id);
-                    }
+                        if reply {
+                            req = req.reply(msg.id);
+                        }
+                        let mentions = AllowedMentions::builder().user_ids([msg.author.id]).build();
+                        if mention {
+                            req = req.allowed_mentions(Some(&mentions));
+                        }
 
-                    req.exec().await?;
+                        req.exec().await?;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error handling message: {:?}", e);
                 }
             }
         }
