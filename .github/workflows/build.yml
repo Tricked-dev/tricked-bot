@@ -47,11 +47,7 @@ jobs:
           #     pretty: armv7l-backend,
           #     args: --features rusqlite/bundled,
           #   }
-          - {
-              target: aarch64-unknown-linux-gnu,
-              pretty: aarch64-backend,
-              args: --features rusqlite/bundled,
-            }
+          - { target: aarch64-unknown-linux-gnu, pretty: aarch64-backend }
     steps:
       - uses: actions/checkout@v3
         with:
