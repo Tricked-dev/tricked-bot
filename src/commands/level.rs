@@ -35,7 +35,7 @@ pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> CommandResult {
         .db
         .user()
         .find_many(vec![user::level::not(0)])
-        .order_by(user::level::order(Direction::Asc))
+        .order_by(user::level::order(Direction::Desc))
         .exec()
         .await?;
 
