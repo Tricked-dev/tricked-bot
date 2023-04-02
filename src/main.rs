@@ -37,7 +37,7 @@ mod config;
 mod message_handler;
 mod prisma;
 mod structs;
-mod utils;
+pub mod utils;
 mod zalgos;
 
 lazy_static! {
@@ -57,7 +57,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .parse::<u64>()
             .unwrap();
     }
-    println!("{cfg:?}");
     let config = Arc::new(cfg);
 
     let client: Client = Client::builder()
@@ -115,6 +114,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
             .command(commands::roms::roms)
             .command(commands::invite_stats::invite_stats)
+            .command(commands::level::level)
             .build(),
     );
 

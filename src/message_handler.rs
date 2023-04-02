@@ -38,7 +38,14 @@ pub async fn handle_message(
         .await?;
 
     if let Some(user) = user {
-        let xp = locked_state.rng.gen_range(5..20);
+        //give some extra xp for every attachment
+        let xp = msg
+            .attachments
+            .iter()
+            .fold(locked_state.rng.gen_range(5..20), |acc, _| {
+                acc + locked_state.rng.gen_range(2..7)
+            });
+
         let level = user.level;
         let xp_required = xp_required_for_level(level);
         let new_xp = user.xp + xp;
