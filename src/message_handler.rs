@@ -57,7 +57,7 @@ pub async fn handle_message(
                 .user()
                 .update(
                     user::id::equals(user.id),
-                    vec![user::level::set(new_level), user::xp::set(new_xp - new_xp_required)],
+                    vec![user::level::set(new_level), user::xp::set(0)],
                 )
                 .exec()
                 .await?;
