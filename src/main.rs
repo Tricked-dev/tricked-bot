@@ -30,7 +30,7 @@ use twilight_model::{
 };
 use zephyrus::prelude::*;
 
-use std::{collections::HashMap, env, error::Error, sync::Arc, time::Duration};
+use std::{collections::HashMap, env, error::Error, path, sync::Arc, time::Duration};
 
 mod commands;
 mod config;
@@ -48,15 +48,26 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let db: PrismaClient = PrismaClient::_builder().build().await?;
+    dotenv::dotenv().ok();
 
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let mut cfg = Config::parse();
     if cfg.id == 0 {
         cfg.id = String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap())
             .parse::<u64>()
             .unwrap();
     }
+
+    if std::fs::metadata(&cfg.database_file).is_err() {
+        std::fs::write(&cfg.database_file, [])?;
+    }
+    let db_path = format!(
+        "file://{}",
+        cfg.database_file.canonicalize()?.to_string_lossy().to_string()
+    );
+
+    let db: PrismaClient = PrismaClient::_builder().with_url(db_path).build().await?;
+
     let config = Arc::new(cfg);
 
     let client: Client = Client::builder()
@@ -160,6 +171,7 @@ async fn handle_event(
             }
         }
         Event::InteractionCreate(i) => {
+            tracing::info!("Slash Command!");
             tokio::spawn(async move {
                 let inner = i.0;
                 framework.process(inner).await;
@@ -216,6 +228,8 @@ async fn handle_event(
         }
         Event::MessageCreate(msg) => {
             tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
+
+            locked_state.last_typer = msg.id.get();
 
             if msg.guild_id.is_none() || msg.author.bot {
                 return Ok(());

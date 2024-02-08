@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io, num::ParseIntError, sync::Arc};
+use std::{collections::HashMap, io, num::ParseIntError, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 
@@ -14,7 +14,7 @@ pub struct Config {
     #[arg(long, env, value_parser = vec_u64_parser)]
     pub message_indicator_channels: Arc<Vec<u64>>,
     #[arg(long, env, default_value = "trickedbot.sqlite")]
-    pub database_file: String,
+    pub database_file: PathBuf,
     #[arg(short, long, env, default_value = "0")]
     pub id: u64,
     #[arg(long, env, value_parser(vec_u64_parser))]

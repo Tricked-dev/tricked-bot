@@ -58,7 +58,7 @@ pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> CommandResult {
         user.level,
         pos.unwrap_or_default() + 1,
     );
-
+    tracing::info!("Level {message}");
     ctx.interaction_client
         .create_response(
             ctx.interaction.id,
