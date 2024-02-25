@@ -228,8 +228,7 @@ async fn handle_event(
         }
         Event::MessageCreate(msg) => {
             tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
-
-            locked_state.last_typer = msg.id.get();
+            // locked_state.last_typer = msg.id.get();
 
             if msg.guild_id.is_none() || msg.author.bot {
                 return Ok(());
@@ -315,7 +314,7 @@ async fn handle_event(
             {
                 return Ok(());
             }
-            if event.user_id.get() == locked_state.last_typer {
+            if event.user_id.get() == locked_state.last_typer || true {
                 return Ok(());
             }
             let (msg, _) = join!(
