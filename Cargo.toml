@@ -51,3 +51,5 @@ prisma-client-rust-cli = { git = "https://github.com/Brendonovich/prisma-client-
   "sqlite"
 ] }
 dotenv = { version = "0.15.0", features = ["clap"] }
+openai_dive = "0.4.6"
+color-eyre = "0.6.3"

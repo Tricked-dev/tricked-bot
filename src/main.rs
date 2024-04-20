@@ -15,6 +15,7 @@ use config::Config;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
 use prisma::invite_data;
+use rand::Rng;
 use reqwest::Client;
 use tokio::{join, sync::Mutex};
 use twilight_gateway::{Event, Shard};
@@ -47,7 +48,7 @@ lazy_static! {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     dotenv::dotenv().ok();
 
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
@@ -58,6 +59,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .unwrap();
     }
 
+    println!("123");
+
     if std::fs::metadata(&cfg.database_file).is_err() {
         std::fs::write(&cfg.database_file, [])?;
     }
@@ -65,6 +68,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         "file://{}",
         cfg.database_file.canonicalize()?.to_string_lossy().to_string()
     );
+    println!("1233");
 
     let db: PrismaClient = PrismaClient::_builder().with_url(db_path).build().await?;
 
@@ -78,6 +82,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             env::consts::ARCH
         ))
         .build()?;
+    println!("15233");
     let (shard, mut events) = Shard::builder(
         config.token.clone(),
         Intents::GUILD_INVITES
@@ -104,6 +109,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     )
     .build();
     let shard = Arc::new(shard);
+    println!("165233");
     shard.start().await?;
 
     // HTTP is separate from the gateway, so create a new client.
@@ -120,6 +126,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         db,
         Arc::clone(&config),
     )));
+    println!("165263");
 
     let framework = Arc::new(
         Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
@@ -307,6 +314,10 @@ async fn handle_event(
             tracing::info!("Connected");
         }
         Event::TypingStart(event) => {
+            if rand::thread_rng().gen_range(0..100) != 1 {
+                return Ok(());
+            }
+
             if !locked_state
                 .config
                 .message_indicator_channels
@@ -314,7 +325,7 @@ async fn handle_event(
             {
                 return Ok(());
             }
-            if event.user_id.get() == locked_state.last_typer || true {
+            if event.user_id.get() == locked_state.last_typer {
                 return Ok(());
             }
             let (msg, _) = join!(

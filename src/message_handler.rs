@@ -1,10 +1,17 @@
+use futures::lock;
+use openai_dive::v1::{
+    api::Client,
+    models::Gpt35Engine,
+    resources::chat::{ChatCompletionParameters, ChatMessage, ChatMessageContent, Role},
+};
 use rand::{
     prelude::{IteratorRandom, SliceRandom},
     Rng,
 };
 use tokio::sync::MutexGuard;
 use twilight_http::Client as HttpClient;
-use twilight_model::gateway::payload::incoming::MessageCreate;
+use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id, oauth::Application};
+use zephyrus::twilight_exports::{ApplicationMarker, UserMarker};
 
 use std::{error::Error, sync::Arc, time::Instant};
 
@@ -147,6 +154,60 @@ pub async fn handle_message(
                 .await?;
 
             Ok(Command::nothing())
+        }
+        _m if locked_state.config.openai_api_key.is_some()
+            && (locked_state.rng.gen_range(0..200) == 2
+                || _m.contains(&locked_state.config.id.to_string())
+                || msg.referenced_message.clone().map(|m| m.author.id)
+                    == Some(Id::<UserMarker>::new(locked_state.config.id))) =>
+        {
+            let client = Client::new(locked_state.config.openai_api_key.clone().unwrap());
+            let name = msg.author.name.clone();
+            let mut messages=  vec![
+                    ChatMessage {
+                        role: Role::System,
+                        content: ChatMessageContent::Text(format!("You are a evil ai assistant bot that thinks he is smarter than everyone. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to {}", name)),
+                        ..Default::default()
+                    },
+
+                ];
+
+            if let Some(msg) = &msg.referenced_message {
+                let user_name = msg.author.name.clone();
+                println!("{}", user_name);
+                messages.push(ChatMessage {
+                    role: Role::User,
+                    content: ChatMessageContent::Text(format!(
+                        "{}: {}",
+                        user_name,
+                        &msg.content[..std::cmp::min(msg.content.len(), 300)]
+                    )),
+                    ..Default::default()
+                });
+            }
+
+            messages.push(ChatMessage {
+                role: Role::User,
+                content: ChatMessageContent::Text(format!("{}: {}", name, &_m[..std::cmp::min(_m.len(), 300)])),
+                ..Default::default()
+            });
+
+            let parameters: ChatCompletionParameters = ChatCompletionParameters {
+                model: Gpt35Engine::Gpt35Turbo0125.to_string(),
+                messages,
+                max_tokens: Some(32),
+                ..Default::default()
+            };
+
+            let result = client.chat().create(parameters).await.unwrap();
+
+            tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
+
+            if let ChatMessageContent::Text(txt) = result.choices[0].message.content.clone() {
+                Ok(Command::text(txt).reply())
+            } else {
+                Ok(Command::nothing())
+            }
         }
         _x if locked_state.rng.gen_range(0..55) == 2 => {
             let mut text = msg.content.split(' ').collect::<Vec<&str>>();

@@ -27,6 +27,8 @@ pub struct Config {
     pub shit_reddits: Arc<Vec<String>>,
     #[arg(short, long, env, default_value = "I am tricked bot!")]
     pub status: String,
+    #[arg(short, long, env)]
+    pub openai_api_key: Option<String>,
 }
 
 fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {
