@@ -10,13 +10,12 @@ pub async fn new_client_with_url(url: &str) -> Result<PrismaClient, ::prisma_cli
     PrismaClient::_builder().with_url(url.to_string()).build().await
 }
 pub mod invite_data {
-    use super::_prisma::*;
-    use super::*;
+    use super::{_prisma::*, *};
     pub const NAME: &str = "InviteData";
     pub mod id {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "id";
         pub struct Set(pub i32);
         impl From<Set> for SetParam {
@@ -83,9 +82,9 @@ pub mod invite_data {
         }
     }
     pub mod invite_used {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "invite_used";
         pub struct Set(pub Option<String>);
         impl From<Set> for SetParam {
@@ -143,9 +142,9 @@ pub mod invite_data {
         }
     }
     pub mod left {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "left";
         pub struct Set(pub bool);
         impl From<Set> for SetParam {
@@ -194,9 +193,9 @@ pub mod invite_data {
         }
     }
     pub mod joined {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "joined";
         pub struct Set(pub ::prisma_client_rust::chrono::DateTime<::prisma_client_rust::chrono::FixedOffset>);
         impl From<Set> for SetParam {
@@ -259,9 +258,9 @@ pub mod invite_data {
         }
     }
     pub mod discord_id {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "discord_id";
         pub struct Set(pub String);
         impl From<Set> for SetParam {
@@ -677,13 +676,12 @@ pub mod invite_data {
     }
 }
 pub mod user {
-    use super::_prisma::*;
-    use super::*;
+    use super::{_prisma::*, *};
     pub const NAME: &str = "User";
     pub mod id {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "id";
         pub struct Set(pub String);
         impl From<Set> for SetParam {
@@ -741,9 +739,9 @@ pub mod user {
         }
     }
     pub mod level {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "level";
         pub struct Set(pub i32);
         impl From<Set> for SetParam {
@@ -810,9 +808,9 @@ pub mod user {
         }
     }
     pub mod xp {
-        use super::super::*;
-        use super::_prisma::*;
-        use super::{OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam};
+        use super::{
+            super::*, OrderByParam, SetParam, UncheckedSetParam, UniqueWhereParam, WhereParam, WithParam, _prisma::*,
+        };
         pub const NAME: &str = "xp";
         pub struct Set(pub i32);
         impl From<Set> for SetParam {

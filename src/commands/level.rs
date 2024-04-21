@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use prisma_client_rust::Direction;
 use tokio::sync::Mutex;
-use twilight_model::channel::message::Embed;
+
 use vesper::{
     prelude::*,
     twilight_exports::{InteractionResponse, InteractionResponseData, InteractionResponseType},

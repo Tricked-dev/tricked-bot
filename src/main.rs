@@ -8,22 +8,20 @@
 )]
 #![forbid(anonymous_parameters)]
 
-use crate::{message_handler::handle_message, prisma::PrismaClient, structs::*};
+use crate::{prisma::PrismaClient, structs::*};
 
 use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use lazy_static::lazy_static;
-use prisma::invite_data;
-use rand::Rng;
+
 use reqwest::Client;
-use tokio::{join, sync::Mutex};
+use tokio::sync::Mutex;
 use twilight_gateway::{
     stream::{self, ShardEventStream},
-    Config as TLConfig, Event, Shard,
+    Config as TLConfig,
 };
-use twilight_http::Client as TLClient;
-use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
+use twilight_http::Client as HttpClient;
 use twilight_model::{
     channel::message::AllowedMentions,
     gateway::{
@@ -35,10 +33,11 @@ use twilight_model::{
 };
 use vesper::prelude::*;
 
-use std::{collections::HashMap, env, error::Error, path, sync::Arc, time::Duration};
+use std::{collections::HashMap, env, error::Error, sync::Arc};
 
 mod commands;
 mod config;
+mod event_handler;
 mod message_handler;
 mod prisma;
 mod structs;
@@ -56,6 +55,7 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     dotenv::dotenv().ok();
 
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
+
     let mut cfg = Config::parse();
     if cfg.id == 0 {
         cfg.id = String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap())
@@ -66,10 +66,7 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     if std::fs::metadata(&cfg.database_file).is_err() {
         std::fs::write(&cfg.database_file, [])?;
     }
-    let db_path = format!(
-        "file://{}",
-        cfg.database_file.canonicalize()?.to_string_lossy().to_string()
-    );
+    let db_path = format!("file://{}", cfg.database_file.canonicalize()?.to_string_lossy());
 
     let db: PrismaClient = PrismaClient::_builder().with_url(db_path).build().await?;
 
@@ -84,7 +81,13 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
         ))
         .build()?;
 
-    let tl_client = Arc::new(TLClient::new(config.token.clone()));
+    // HTTP is separate from the gateway, so create a new client.
+    let http = Arc::new(
+        HttpClient::builder()
+            .token(config.token.clone())
+            .default_allowed_mentions(AllowedMentions::default())
+            .build(),
+    );
 
     let tl_config = TLConfig::new(
         config.token.clone(),
@@ -96,7 +99,7 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             | Intents::MESSAGE_CONTENT
             | Intents::GUILD_MESSAGE_TYPING,
     );
-    let mut shards = stream::create_recommended(&tl_client, tl_config, |_, builder| {
+    let mut shards = stream::create_recommended(&http, tl_config, |_, builder| {
         builder
             .presence(
                 UpdatePresencePayload::new(
@@ -114,18 +117,9 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             )
             .build()
     })
-    .await
-    .unwrap()
+    .await?
     .collect::<Vec<_>>();
     let mut shard_stream = ShardEventStream::new(shards.iter_mut());
-
-    // HTTP is separate from the gateway, so create a new client.
-    let http = Arc::new(
-        HttpClient::builder()
-            .token(config.token.clone())
-            .default_allowed_mentions(AllowedMentions::default())
-            .build(),
-    );
 
     let state = Arc::new(Mutex::new(State::new(
         rand::thread_rng(),
@@ -142,233 +136,17 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             .build(),
     );
 
-    framework
-        .register_guild_commands(Id::new(config.discord))
-        .await
-        .unwrap();
+    framework.register_guild_commands(Id::new(config.discord)).await?;
 
     while let Some(event) = shard_stream.next().await {
         let ev = event.1?;
         {
             state.lock().await.cache.update(&ev);
         }
-        let res = handle_event(ev, &http, &state, Arc::clone(&framework)).await;
+        let res = event_handler::handle_event(ev, &http, &state, Arc::clone(&framework)).await;
         if let Err(res) = res {
-            tracing::error!("{}", res);
+            tracing::error!("{:?}", res);
         }
-    }
-    Ok(())
-}
-
-async fn handle_event(
-    event: Event,
-    http: &Arc<HttpClient>,
-    state: &Arc<Mutex<State>>,
-    framework: Arc<Framework<Arc<Mutex<State>>>>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut locked_state = state.lock().await;
-    match event {
-        Event::PresenceUpdate(p) => {
-            if p.user.id() == Id::new(870383692403593226) && p.status == Status::Offline {
-                for _ in 0..10 {
-                    http.create_message(Id::new(748957504666599507))
-                        .content("AETHOR WENT OFFLINE <@336465356304678913> <@336465356304678913>")?
-                        .allowed_mentions(Some(&AllowedMentions {
-                            users: vec![Id::new(336465356304678913)],
-                            ..Default::default()
-                        }))
-                        .exec()
-                        .await?;
-                }
-            }
-        }
-        Event::InteractionCreate(i) => {
-            tracing::info!("Slash Command!");
-            tokio::spawn(async move {
-                let inner = i.0;
-                framework.process(inner).await;
-            });
-        }
-        Event::InviteCreate(inv) => {
-            locked_state.invites.push(BotInvite::from(inv));
-        }
-        Event::MemberAdd(member) => {
-            let invites_response = http.guild_invites(member.guild_id).exec().await?;
-            let invites = invites_response.models().await?;
-            let mut invites_iter = invites.iter();
-            for old_invite in locked_state.invites.iter() {
-                if let Some(invite) = invites_iter.find(|x| x.code == old_invite.code) {
-                    if old_invite.uses < invite.uses.unwrap_or_default() {
-                        let name = locked_state.config.invites.iter().find_map(|(key, value)| {
-                            if value == &old_invite.code {
-                                Some(key.clone())
-                            } else {
-                                None
-                            }
-                        });
-                        http.create_message(Id::new(locked_state.config.join_channel))
-                            .content(&format!(
-                                "{} Joined invite used {}",
-                                member.user.name,
-                                if let Some(name) = name {
-                                    format!("{name} ({})", invite.code)
-                                } else {
-                                    invite.code.clone()
-                                }
-                            ))?
-                            .exec()
-                            .await?;
-                        locked_state.db.invite_data().create(
-                            member.user.id.get().to_string(),
-                            vec![invite_data::SetParam::SetInviteUsed(Some(invite.code.clone()))],
-                        );
-                        // locked_state.db.execute(
-                        //     "INSERT INTO users(discord_id,invite_used) VALUES(?1, ?2)",
-                        //     params![member.user.id.get(), invite.code],
-                        // )?;
-                        break;
-                    }
-                }
-            }
-            locked_state.invites = invites
-                .into_iter()
-                .map(|invite| BotInvite {
-                    code: invite.code.clone(),
-                    uses: invite.uses.unwrap_or_default(),
-                })
-                .collect();
-        }
-        Event::MessageCreate(msg) => {
-            tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
-            // locked_state.last_typer = msg.id.get();
-
-            if msg.guild_id.is_none() || msg.author.bot {
-                return Ok(());
-            }
-
-            if msg.channel_id == Id::new(987096740127707196)
-                && !msg.content.clone().to_lowercase().starts_with("today i")
-            {
-                http.delete_message(msg.channel_id, msg.id).exec().await?;
-                return Ok(());
-            }
-
-            if let Some(channel_limit_duration) = locked_state.channel_bucket.limit_duration(msg.channel_id.get()) {
-                tracing::info!("Channel limit reached {}", channel_limit_duration.as_secs());
-                return Ok(());
-            }
-            if let Some(user_limit_duration) = locked_state.user_bucket.limit_duration(msg.author.id.get()) {
-                tracing::info!("User limit reached {}", user_limit_duration.as_secs());
-                if Duration::from_secs(5) > user_limit_duration {
-                    tokio::time::sleep(user_limit_duration).await;
-                } else {
-                    return Ok(());
-                }
-            };
-
-            let r = handle_message(&msg, locked_state, http).await;
-            match r {
-                Ok(res) => {
-                    let Command {
-                        embeds,
-                        text,
-                        reaction,
-                        attachments,
-                        reply,
-                        skip,
-                        mention,
-                    } = res;
-                    if skip {
-                        return Ok(());
-                    } else if let Some(reaction) = reaction {
-                        http.create_reaction(
-                            msg.channel_id,
-                            msg.id,
-                            &RequestReactionType::Unicode {
-                                name: &reaction.to_string(),
-                            },
-                        )
-                        .exec()
-                        .await?;
-                    } else {
-                        let mut req = http
-                            .create_message(msg.channel_id)
-                            .embeds(&embeds)?
-                            .attachments(&attachments)?;
-                        if let Some(text) = &text {
-                            req = req.content(text)?;
-                        }
-
-                        if reply {
-                            req = req.reply(msg.id);
-                        }
-                        let mentions = AllowedMentions {
-                            users: vec![msg.author.id],
-                            ..Default::default()
-                        };
-                        if mention {
-                            req = req.allowed_mentions(Some(&mentions));
-                        }
-
-                        req.exec().await?;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error handling message: {:?}", e);
-                }
-            }
-        }
-        Event::Ready(_) => {
-            tracing::info!("Connected");
-        }
-        Event::TypingStart(event) => {
-            if rand::thread_rng().gen_range(0..100) != 1 {
-                return Ok(());
-            }
-
-            if !locked_state
-                .config
-                .message_indicator_channels
-                .contains(&event.channel_id.get())
-            {
-                return Ok(());
-            }
-            if event.user_id.get() == locked_state.last_typer {
-                return Ok(());
-            }
-            let (msg, _) = join!(
-                http.create_message(event.channel_id)
-                    .content(&format!("{} is typing", event.member.unwrap().user.name))?
-                    .exec(),
-                async {
-                    if let Some(id) = locked_state.del.get(&event.channel_id) {
-                        let _ = http
-                            .delete_message(event.channel_id, Id::new(id.to_owned()))
-                            .exec()
-                            .await;
-                    }
-                },
-            );
-            let res = msg?.model().await?;
-            locked_state.del.insert(event.channel_id, res.id.get());
-            locked_state.last_typer = event.user_id.get();
-        }
-        Event::GuildCreate(guild) => {
-            tracing::info!("Active in guild {}", guild.name);
-            let invites_response = http.guild_invites(guild.id).exec().await?;
-            locked_state.invites.append(
-                &mut invites_response
-                    .models()
-                    .await?
-                    .into_iter()
-                    .map(|invite| BotInvite {
-                        code: invite.code.clone(),
-                        uses: invite.uses.unwrap_or_default(),
-                    })
-                    .collect(),
-            );
-        }
-        _ => {}
     }
     Ok(())
 }

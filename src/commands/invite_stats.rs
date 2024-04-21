@@ -3,17 +3,14 @@
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use twilight_model::channel::message::Embed;
-use vesper::{
-    prelude::*,
-    twilight_exports::{InteractionResponse, InteractionResponseData, InteractionResponseType},
-};
+
+use vesper::prelude::*;
 
 use crate::structs::State;
 
 #[command]
 #[description = "View invite stats!"]
-pub async fn invite_stats(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandResult {
+pub async fn invite_stats(_ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandResult {
     // let data = {
     //     let state = ctx.data.lock().await;
     //     let mut stmt = state

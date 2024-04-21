@@ -1,4 +1,3 @@
-use futures::lock;
 use openai_dive::v1::{
     api::Client,
     models::Gpt35Engine,
@@ -10,13 +9,13 @@ use rand::{
 };
 use tokio::sync::MutexGuard;
 use twilight_http::Client as HttpClient;
-use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id, oauth::Application};
-use vesper::twilight_exports::{ApplicationMarker, UserMarker};
+use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id};
+use vesper::twilight_exports::UserMarker;
 
 use std::{error::Error, sync::Arc, time::Instant};
 
 use crate::{
-    prisma::{read_filters::StringFilter, user},
+    prisma::user,
     structs::{Command, List, State},
     utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
@@ -58,7 +57,7 @@ pub async fn handle_message(
         let new_xp = user.xp + xp;
         if new_xp >= xp_required {
             let new_level = level + 1;
-            let new_xp_required = xp_required_for_level(new_level);
+            let _new_xp_required = xp_required_for_level(new_level);
             locked_state
                 .db
                 .user()
@@ -68,7 +67,7 @@ pub async fn handle_message(
                 )
                 .exec()
                 .await?;
-            tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
+            tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(3000..8000))).await;
             return Ok(Command::text(format!(
                 "Congrats <@{}>! You are now level {}!",
                 msg.author.id.get(),
@@ -129,7 +128,7 @@ pub async fn handle_message(
 
             Ok(Command::nothing())
         }
-        x if x.contains("im") && (x.split(' ').count() < 4) => {
+        x if x.contains("im") && (x.split(' ').count() < 4) && !x.contains("https://") => {
             let text = msg.content.split("im").last().unwrap().trim();
             if text.is_empty() {
                 return Ok(Command::nothing());
@@ -156,10 +155,14 @@ pub async fn handle_message(
             Ok(Command::nothing())
         }
         _m if locked_state.config.openai_api_key.is_some()
-            && (locked_state.rng.gen_range(0..200) == 2
+            && (
+                // Random event chance
+                locked_state.rng.gen_range(0..200) == 2
+                // Check if pinging The Trickster
                 || _m.contains(&locked_state.config.id.to_string())
-                || msg.referenced_message.clone().map(|m| m.author.id)
-                    == Some(Id::<UserMarker>::new(locked_state.config.id))) =>
+                // Check if replying to bot
+                || msg.referenced_message.clone().map(|m| m.author.id) == Some(Id::<UserMarker>::new(locked_state.config.id))
+            ) =>
         {
             let client = Client::new(locked_state.config.openai_api_key.clone().unwrap());
             let name = msg.author.name.clone();
