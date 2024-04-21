@@ -11,7 +11,7 @@ use rand::{
 use tokio::sync::MutexGuard;
 use twilight_http::Client as HttpClient;
 use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id, oauth::Application};
-use zephyrus::twilight_exports::{ApplicationMarker, UserMarker};
+use vesper::twilight_exports::{ApplicationMarker, UserMarker};
 
 use std::{error::Error, sync::Arc, time::Instant};
 

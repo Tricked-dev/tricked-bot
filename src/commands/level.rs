@@ -5,7 +5,7 @@ use std::sync::Arc;
 use prisma_client_rust::Direction;
 use tokio::sync::Mutex;
 use twilight_model::channel::message::Embed;
-use zephyrus::{
+use vesper::{
     prelude::*,
     twilight_exports::{InteractionResponse, InteractionResponseData, InteractionResponseType},
 };
@@ -14,7 +14,7 @@ use crate::{prisma::user, structs::State, utils::levels::xp_required_for_level};
 
 #[command]
 #[description = "Level "]
-pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> CommandResult {
+pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandResult {
     let id = ctx.interaction.member.clone().unwrap().user.unwrap().id.get();
     let state = ctx.data.lock().await;
     let user = state

@@ -3,13 +3,11 @@ use std::{collections::HashSet, error::Error, sync::Arc};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use twilight_model::application::command::CommandOptionChoiceValue;
 use urlencoding::encode;
-use zephyrus::{
+use vesper::{
     prelude::*,
-    twilight_exports::{
-        CommandOptionChoice, CommandOptionChoiceData, InteractionResponse, InteractionResponseData,
-        InteractionResponseType,
-    },
+    twilight_exports::{CommandOptionChoice, InteractionResponse, InteractionResponseData, InteractionResponseType},
 };
 
 use crate::structs::State;
@@ -22,7 +20,7 @@ pub async fn roms(
     #[description = "Some description"]
     device: Option<String>,
     #[description = "Some description"] code: Option<String>,
-) -> CommandResult {
+) -> DefaultCommandResult {
     let state = ctx.data.lock().await;
     let cdn = device.map(Some).unwrap_or(code);
     let m = if let Some(device) = cdn {
@@ -62,12 +60,10 @@ pub async fn autocomplete_arg(ctx: AutocompleteContext<Arc<Mutex<State>>>) -> Op
             let devices = x.1;
             devices
                 .into_iter()
-                .map(|x| {
-                    CommandOptionChoice::String(CommandOptionChoiceData {
-                        value: x.codename.clone(),
-                        name: format!("{} ({}): {}", x.name, x.codename, x.roms.len()),
-                        name_localizations: None,
-                    })
+                .map(|x| CommandOptionChoice {
+                    value: CommandOptionChoiceValue::String(x.codename.clone()),
+                    name: format!("{} ({}): {}", x.name, x.codename, x.roms.len()),
+                    name_localizations: None,
                 })
                 .collect::<Vec<CommandOptionChoice>>()
         }),

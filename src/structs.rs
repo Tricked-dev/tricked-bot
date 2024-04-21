@@ -13,7 +13,7 @@ use twilight_model::{
     channel::message::Embed, gateway::payload::incoming::InviteCreate, guild::invite::Invite,
     http::attachment::Attachment, id::Id,
 };
-use zephyrus::twilight_exports::ChannelMarker;
+use vesper::twilight_exports::ChannelMarker;
 
 use crate::{config::Config, prisma::PrismaClient};
 

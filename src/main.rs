@@ -18,7 +18,11 @@ use prisma::invite_data;
 use rand::Rng;
 use reqwest::Client;
 use tokio::{join, sync::Mutex};
-use twilight_gateway::{Event, Shard};
+use twilight_gateway::{
+    stream::{self, ShardEventStream},
+    Config as TLConfig, Event, Shard,
+};
+use twilight_http::Client as TLClient;
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
 use twilight_model::{
     channel::message::AllowedMentions,
@@ -29,7 +33,7 @@ use twilight_model::{
     },
     id::Id,
 };
-use zephyrus::prelude::*;
+use vesper::prelude::*;
 
 use std::{collections::HashMap, env, error::Error, path, sync::Arc, time::Duration};
 
@@ -59,8 +63,6 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             .unwrap();
     }
 
-    println!("123");
-
     if std::fs::metadata(&cfg.database_file).is_err() {
         std::fs::write(&cfg.database_file, [])?;
     }
@@ -68,7 +70,6 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
         "file://{}",
         cfg.database_file.canonicalize()?.to_string_lossy().to_string()
     );
-    println!("1233");
 
     let db: PrismaClient = PrismaClient::_builder().with_url(db_path).build().await?;
 
@@ -82,8 +83,10 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             env::consts::ARCH
         ))
         .build()?;
-    println!("15233");
-    let (shard, mut events) = Shard::builder(
+
+    let tl_client = Arc::new(TLClient::new(config.token.clone()));
+
+    let tl_config = TLConfig::new(
         config.token.clone(),
         Intents::GUILD_INVITES
             | Intents::GUILD_MESSAGES
@@ -92,31 +95,35 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             | Intents::GUILD_PRESENCES
             | Intents::MESSAGE_CONTENT
             | Intents::GUILD_MESSAGE_TYPING,
-    )
-    .presence(
-        UpdatePresencePayload::new(
-            vec![MinimalActivity {
-                kind: ActivityType::Competing,
-                name: config.status.to_string(),
-                url: None,
-            }
-            .into()],
-            false,
-            None,
-            Status::Idle,
-        )
-        .unwrap(),
-    )
-    .build();
-    let shard = Arc::new(shard);
-    println!("165233");
-    shard.start().await?;
+    );
+    let mut shards = stream::create_recommended(&tl_client, tl_config, |_, builder| {
+        builder
+            .presence(
+                UpdatePresencePayload::new(
+                    vec![MinimalActivity {
+                        kind: ActivityType::Competing,
+                        name: config.status.to_string(),
+                        url: None,
+                    }
+                    .into()],
+                    false,
+                    None,
+                    Status::Idle,
+                )
+                .unwrap(),
+            )
+            .build()
+    })
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+    let mut shard_stream = ShardEventStream::new(shards.iter_mut());
 
     // HTTP is separate from the gateway, so create a new client.
     let http = Arc::new(
         HttpClient::builder()
             .token(config.token.clone())
-            .default_allowed_mentions(AllowedMentions::builder().build())
+            .default_allowed_mentions(AllowedMentions::default())
             .build(),
     );
 
@@ -126,7 +133,6 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
         db,
         Arc::clone(&config),
     )));
-    println!("165263");
 
     let framework = Arc::new(
         Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
@@ -136,17 +142,17 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
             .build(),
     );
 
-    // Zephyrus can register commands in guilds or globally.
     framework
         .register_guild_commands(Id::new(config.discord))
         .await
         .unwrap();
 
-    while let Some(event) = events.next().await {
+    while let Some(event) = shard_stream.next().await {
+        let ev = event.1?;
         {
-            state.lock().await.cache.update(&event);
+            state.lock().await.cache.update(&ev);
         }
-        let res = handle_event(event, &http, &state, Arc::clone(&framework)).await;
+        let res = handle_event(ev, &http, &state, Arc::clone(&framework)).await;
         if let Err(res) = res {
             tracing::error!("{}", res);
         }
@@ -167,11 +173,10 @@ async fn handle_event(
                 for _ in 0..10 {
                     http.create_message(Id::new(748957504666599507))
                         .content("AETHOR WENT OFFLINE <@336465356304678913> <@336465356304678913>")?
-                        .allowed_mentions(Some(
-                            &AllowedMentions::builder()
-                                .user_ids([Id::new(336465356304678913)])
-                                .build(),
-                        ))
+                        .allowed_mentions(Some(&AllowedMentions {
+                            users: vec![Id::new(336465356304678913)],
+                            ..Default::default()
+                        }))
                         .exec()
                         .await?;
                 }
@@ -297,7 +302,10 @@ async fn handle_event(
                         if reply {
                             req = req.reply(msg.id);
                         }
-                        let mentions = AllowedMentions::builder().user_ids([msg.author.id]).build();
+                        let mentions = AllowedMentions {
+                            users: vec![msg.author.id],
+                            ..Default::default()
+                        };
                         if mention {
                             req = req.allowed_mentions(Some(&mentions));
                         }
