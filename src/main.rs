@@ -58,9 +58,8 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
 
     let mut cfg = Config::parse();
     if cfg.id == 0 {
-        cfg.id = String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap())
-            .parse::<u64>()
-            .unwrap();
+        cfg.id =
+            String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap()).parse::<u64>()?;
     }
 
     if std::fs::metadata(&cfg.database_file).is_err() {

@@ -29,7 +29,7 @@ pub struct Config {
     pub status: String,
     #[arg(short, long, env)]
     pub openai_api_key: Option<String>,
-    #[arg(short, long, env)]
+    #[arg(long, env)]
     pub today_i_channel: Option<u64>,
 }
 

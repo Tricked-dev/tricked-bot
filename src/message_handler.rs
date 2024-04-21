@@ -22,6 +22,9 @@ use crate::{
     RESPONDERS,
 };
 
+const PROMPT: &str = 
+"You are a evil ai assistant bot that thinks he is smarter than everyone. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to";
+
 pub async fn handle_message(
     msg: &MessageCreate,
     mut locked_state: MutexGuard<'_, State>,
@@ -91,22 +94,21 @@ pub async fn handle_message(
             .exec()
             .await?;
     }
-
+    let content = msg.content.clone();
     match msg.content.to_lowercase().as_str() {
-        content
-            if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
-                && locked_state
-                    .config
-                    .rename_channels
-                    .clone()
-                    .contains(&msg.channel_id.get())
-                && locked_state.rng.gen_range(0..10) == 2 =>
+        x if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
+            && locked_state
+                .config
+                .rename_channels
+                .clone()
+                .contains(&msg.channel_id.get())
+            && locked_state.rng.gen_range(0..10) == 2 =>
         {
-            if content.to_lowercase().contains("uwu") || content.to_lowercase().contains("owo") {
+            if x.contains("uwu") || x.contains("owo") {
                 Ok(Command::text("No furry shit!!!!!"))
             } else {
                 tracing::info!("Channel renamed");
-                match http.update_channel(msg.channel_id).topic(content) {
+                match http.update_channel(msg.channel_id).topic(&content) {
                     Ok(req) => {
                         req.exec().await?;
                         locked_state.last_redesc = Instant::now();
@@ -128,56 +130,38 @@ pub async fn handle_message(
 
             Ok(Command::nothing())
         }
-        x if x.contains("im") && (x.split(' ').count() < 4) && !x.contains("https://") => {
-            let text = msg.content.split("im").last().unwrap().trim();
+        x if (x.contains("im") || x.contains("i am"))&& (x.split(' ').count() < 4) && !x.contains("https://") => {
+            let text = match x.contains("im") {
+                true => msg.content.split("im").last().unwrap().trim(),
+                false => msg.content.split("i am").last().unwrap().trim(),
+            };
             if text.is_empty() {
                 return Ok(Command::nothing());
             }
 
             Ok(Command::text(format!("Hi {text} i'm Tricked-bot")).reply())
         }
-        _x if locked_state.rng.gen_range(0..75) == 2 => {
-            let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
-            Ok(Command::text(content).reply())
-        }
-        _x if locked_state.rng.gen_range(0..500) == 2 => {
-            let st = locked_state.cache.guild_members(msg.guild_id.unwrap()).unwrap().clone();
-            let id = st.iter().choose(&mut rand::thread_rng()).unwrap();
-            let member = locked_state.cache.member(msg.guild_id.unwrap(), *id).unwrap();
-            let username = locked_state.cache.user(*id).unwrap().name.clone();
-            let name = member.nick().unwrap_or(&username);
-
-            http.update_guild_member(msg.guild_id.unwrap(), msg.author.id)
-                .nick(Some(name))?
-                .exec()
-                .await?;
-
-            Ok(Command::nothing())
-        }
-        _m if locked_state.config.openai_api_key.is_some()
+        m if locked_state.config.openai_api_key.is_some()
             && (
                 // Random event chance
                 locked_state.rng.gen_range(0..200) == 2
                 // Check if pinging The Trickster
-                || _m.contains(&locked_state.config.id.to_string())
+                || m.contains(&locked_state.config.id.to_string())
                 // Check if replying to bot
-                || msg.referenced_message.clone().map(|m| m.author.id) == Some(Id::<UserMarker>::new(locked_state.config.id))
+                || msg.referenced_message.clone().map(|msg| msg.author.id) == Some(Id::<UserMarker>::new(locked_state.config.id))
             ) =>
         {
             let client = Client::new(locked_state.config.openai_api_key.clone().unwrap());
             let name = msg.author.name.clone();
-            let mut messages=  vec![
-                    ChatMessage {
-                        role: Role::System,
-                        content: ChatMessageContent::Text(format!("You are a evil ai assistant bot that thinks he is smarter than everyone. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to {}", name)),
-                        ..Default::default()
-                    },
 
-                ];
+            let mut messages = vec![ChatMessage {
+                role: Role::System,
+                content: ChatMessageContent::Text(format!("{PROMPT} {}", name)),
+                ..Default::default()
+            }];
 
             if let Some(msg) = &msg.referenced_message {
                 let user_name = msg.author.name.clone();
-                println!("{}", user_name);
                 messages.push(ChatMessage {
                     role: Role::User,
                     content: ChatMessageContent::Text(format!(
@@ -191,7 +175,11 @@ pub async fn handle_message(
 
             messages.push(ChatMessage {
                 role: Role::User,
-                content: ChatMessageContent::Text(format!("{}: {}", name, &_m[..std::cmp::min(_m.len(), 300)])),
+                content: ChatMessageContent::Text(format!(
+                    "{}: {}",
+                    name,
+                    &content[..std::cmp::min(content.len(), 300)]
+                )),
                 ..Default::default()
             });
 
@@ -212,11 +200,30 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
-        _x if locked_state.rng.gen_range(0..55) == 2 => {
-            let mut text = msg.content.split(' ').collect::<Vec<&str>>();
+        _ if locked_state.rng.gen_range(0..75) == 2 => {
+            let content = zalgify_text(locked_state.rng.clone(), msg.content.to_owned());
+            Ok(Command::text(content).reply())
+        }
+        _ if locked_state.rng.gen_range(0..500) == 2 => {
+            let st = locked_state.cache.guild_members(msg.guild_id.unwrap()).unwrap().clone();
+            let id = st.iter().choose(&mut locked_state.rng).unwrap();
+            let member = locked_state.cache.member(msg.guild_id.unwrap(), *id).unwrap();
+            let username = locked_state.cache.user(*id).unwrap().name.clone();
+            let name = member.nick().unwrap_or(&username);
+
+            http.update_guild_member(msg.guild_id.unwrap(), msg.author.id)
+                .nick(Some(name))?
+                .exec()
+                .await?;
+
+            Ok(Command::nothing())
+        }
+        _ if locked_state.rng.gen_range(0..55) == 2 => {
+            let mut text = content.split(' ').collect::<Vec<&str>>();
             text.shuffle(&mut locked_state.rng.clone());
             Ok(Command::text(text.join(" ")).reply())
         }
+
         _ if locked_state.rng.gen_range(0..40) == 2 && !locked_state.config.shit_reddits.is_empty() => {
             let res = locked_state
                 .client
