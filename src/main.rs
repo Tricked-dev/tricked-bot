@@ -13,8 +13,7 @@ use crate::{prisma::PrismaClient, structs::*};
 use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
-use lazy_static::lazy_static;
-
+use once_cell::sync::Lazy;
 use reqwest::Client;
 use tokio::sync::Mutex;
 use twilight_gateway::{
@@ -44,9 +43,8 @@ mod structs;
 pub mod utils;
 mod zalgos;
 
-lazy_static! {
-    static ref RESPONDERS: HashMap<String, Responder> = toml::from_str(include_str!("../responders.toml")).unwrap();
-}
+static RESPONDERS: Lazy<HashMap<String, Responder>> =
+    Lazy::new(|| toml::from_str(include_str!("../responders.toml")).unwrap());
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

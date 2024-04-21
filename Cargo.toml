@@ -13,7 +13,6 @@ lto = true
 [dependencies]
 bytes = "1"
 futures = "0.3"
-lazy_static = "1"
 log = "0.4"
 openssl = { version = "0.10", features = ["vendored"] }
 rand = { version = "0.8", features = ["log", "serde"] }
@@ -38,15 +37,14 @@ urlencoding = "2.1.0"
 clap = { version = "4.0.29", features = ["derive", "cargo", "env"] }
 base64 = "0.13.1"
 parking_lot = "0.12.1"
-twilight-embed-builder = "0.11.1"
-prisma-client-rust = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.7", default-features = false, features = [
+prisma-client-rust = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.11", default-features = false, features = [
   "sqlite"
 ] }
-prisma-client-rust-cli = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.7", default-features = false, features = [
+prisma-client-rust-cli = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.11", default-features = false, features = [
   "sqlite"
 ] }
 dotenv = { version = "0.15.0", features = ["clap"] }
 openai_dive = "0.4.6"
 color-eyre = "0.6.3"
 vesper = "0.13.0"
-twilight-util = { version = "0.15.4", features = ["full"] }
+once_cell = { version = "1.19.0", features = ["parking_lot"] }
