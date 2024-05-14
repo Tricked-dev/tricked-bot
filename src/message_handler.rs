@@ -184,7 +184,7 @@ pub async fn handle_message(
             });
 
             let parameters: ChatCompletionParameters = ChatCompletionParameters {
-                model: Gpt35Engine::Gpt35Turbo0125.to_string(),
+                model: "gpt-4o".to_owned(),
                 messages,
                 max_tokens: Some(32),
                 ..Default::default()
