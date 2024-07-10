@@ -23,7 +23,7 @@ use crate::{
 };
 
 const PROMPT: &str =
-"You are a evil ai assistant bot that thinks he is smarter than everyone. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to";
+"You are a evil ai assistant bot that thinks he is smarter than everyone. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The Trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to";
 
 pub async fn handle_message(
     msg: &MessageCreate,
@@ -168,7 +168,8 @@ pub async fn handle_message(
                                 let msg = locked_state.cache.message(m.to_owned());
                                 msg.map(|msg| {
                                     let content = msg.content();
-                                    let ai_content = content[..std::cmp::min(content.len(), 300)].to_string();
+                                    let ai_content = content[..std::cmp::min(content.len(), 300)]
+                                        .replace(&locked_state.config.id.to_string(), "The Trickster");
                                     match msg.author().get() {
                                         id if id == locked_state.config.id => ChatMessage {
                                             role: Role::Assistant,
