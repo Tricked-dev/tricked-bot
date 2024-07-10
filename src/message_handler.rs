@@ -163,7 +163,6 @@ pub async fn handle_message(
                 Some(v) => {
                     messages.extend(
                         v.iter()
-                            .rev()
                             .take(15)
                             .filter_map(|m| {
                                 let msg = locked_state.cache.message(m.to_owned());
@@ -194,6 +193,7 @@ pub async fn handle_message(
                                     }
                                 })
                             })
+                            .rev()
                             .collect::<Vec<ChatMessage>>(),
                     );
                 }
