@@ -22,7 +22,7 @@ use crate::{
     RESPONDERS,
 };
 
-const PROMPT: &str = 
+const PROMPT: &str =
 "You are a evil ai assistant bot that thinks he is smarter than everyone. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to";
 
 pub async fn handle_message(
@@ -130,7 +130,7 @@ pub async fn handle_message(
 
             Ok(Command::nothing())
         }
-        x if (x.contains("im") || x.contains("i am"))&& (x.split(' ').count() < 4) && !x.contains("https://") => {
+        x if (x.contains("im") || x.contains("i am")) && (x.split(' ').count() < 4) && !x.contains("https://") => {
             let text = match x.contains("im") {
                 true => msg.content.split("im").last().unwrap().trim(),
                 false => msg.content.split("i am").last().unwrap().trim(),
@@ -153,35 +153,83 @@ pub async fn handle_message(
         {
             let client = Client::new(locked_state.config.openai_api_key.clone().unwrap());
             let name = msg.author.name.clone();
-
-            let mut messages = vec![ChatMessage {
+            let mut messages: Vec<ChatMessage> = vec![ChatMessage {
                 role: Role::System,
                 content: ChatMessageContent::Text(format!("{PROMPT} {}", name)),
                 ..Default::default()
             }];
 
-            if let Some(msg) = &msg.referenced_message {
-                let user_name = msg.author.name.clone();
-                messages.push(ChatMessage {
-                    role: Role::User,
-                    content: ChatMessageContent::Text(format!(
-                        "{}: {}",
-                        user_name,
-                        &msg.content[..std::cmp::min(msg.content.len(), 300)]
-                    )),
-                    ..Default::default()
-                });
-            }
+            match locked_state.cache.channel_messages(msg.channel_id) {
+                Some(v) => {
+                    messages.extend(
+                        v.iter()
+                            .rev()
+                            .take(15)
+                            .filter_map(|m| {
+                                let msg = locked_state.cache.message(m.to_owned());
+                                msg.map(|msg| {
+                                    let content = msg.content();
+                                    let ai_content = content[..std::cmp::min(content.len(), 300)].to_string();
+                                    match msg.author().get() {
+                                        id if id == locked_state.config.id => ChatMessage {
+                                            role: Role::Assistant,
+                                            content: ChatMessageContent::Text(ai_content),
+                                            ..Default::default()
+                                        },
+                                        _ => {
+                                            let username = locked_state
+                                                .cache
+                                                .user(msg.author())
+                                                .map(|c| c.name.clone())
+                                                .unwrap_or_default();
+                                            ChatMessage {
+                                                role: Role::User,
+                                                content: ChatMessageContent::Text(format!(
+                                                    "{}: {}",
+                                                    username, ai_content
+                                                )),
+                                                ..Default::default()
+                                            }
+                                        }
+                                    }
+                                })
+                            })
+                            .collect::<Vec<ChatMessage>>(),
+                    );
+                }
+                None => {
+                    if let Some(msg) = &msg.referenced_message {
+                        let user_name = msg.author.name.clone();
+                        messages.push(ChatMessage {
+                            role: Role::User,
+                            content: ChatMessageContent::Text(format!(
+                                "{}: {}",
+                                user_name,
+                                &msg.content[..std::cmp::min(msg.content.len(), 300)]
+                            )),
+                            ..Default::default()
+                        });
+                    }
 
-            messages.push(ChatMessage {
-                role: Role::User,
-                content: ChatMessageContent::Text(format!(
-                    "{}: {}",
-                    name,
-                    &content[..std::cmp::min(content.len(), 300)]
-                )),
-                ..Default::default()
-            });
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        content: ChatMessageContent::Text(format!(
+                            "{}: {}",
+                            name,
+                            &content[..std::cmp::min(content.len(), 300)]
+                        )),
+                        ..Default::default()
+                    });
+                }
+            };
+
+            println!(
+                "{}",
+                messages
+                    .iter()
+                    .map(|m| format!("{:?}\n", m.content.clone()))
+                    .collect::<String>()
+            );
 
             let parameters: ChatCompletionParameters = ChatCompletionParameters {
                 model: "gpt-4o".to_owned(),
