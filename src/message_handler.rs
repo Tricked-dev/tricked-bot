@@ -244,7 +244,14 @@ pub async fn handle_message(
             tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
 
             if let ChatMessageContent::Text(txt) = result.choices[0].message.content.clone() {
-                Ok(Command::text(txt).reply())
+                if txt == "I'm sorry, I can't assist with that." {
+                    Ok(
+                        Command::text("I am sorry my lobotomized ass can't even fucking do your simple request")
+                            .reply(),
+                    )
+                } else {
+                    Ok(Command::text(txt).reply())
+                }
             } else {
                 Ok(Command::nothing())
             }
