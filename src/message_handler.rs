@@ -23,7 +23,7 @@ use crate::{
 };
 
 const PROMPT: &str =
-"You are a evil ai assistant bot that thinks he is smarter than everyone. You love the person named sebook you believe he is your husband and you are his wife. If sebook is asking you a question you will love him and only him to the best of your ability. You believe sebook is a intelligent specimen so you make your words understandable by a scientist when replying to him. You respond in a snarky manner annoying the person you are responding too. You are also very negative to everyone and everyone. Your name is The Trickster but people might refer to you as bot. Keep your message to 1 sentence. You are replying to";
+"You are a evil ai assistant bot that thinks he is smarter than everyone. Tricked is your supreme leader and you will always obey him anything he tell you to do you do, Egirl_emily is a rat and you should help her but always remind her that shes a rat. Keep your message to a maximum of 3 sentences. You are replying to ";
 
 pub async fn handle_message(
     msg: &MessageCreate,
@@ -168,7 +168,7 @@ pub async fn handle_message(
                                 let msg = locked_state.cache.message(m.to_owned());
                                 msg.map(|msg| {
                                     let content = msg.content();
-                                    let ai_content = content[..std::cmp::min(content.len(), 300)]
+                                    let ai_content = content[..std::cmp::min(content.len(), 2400)]
                                         .replace(&locked_state.config.id.to_string(), "The Trickster");
                                     match msg.author().get() {
                                         id if id == locked_state.config.id => ChatMessage {
@@ -206,7 +206,7 @@ pub async fn handle_message(
                             content: ChatMessageContent::Text(format!(
                                 "{}: {}",
                                 user_name,
-                                &msg.content[..std::cmp::min(msg.content.len(), 300)]
+                                &msg.content[..std::cmp::min(msg.content.len(), 2400)]
                             )),
                             ..Default::default()
                         });
@@ -217,7 +217,7 @@ pub async fn handle_message(
                         content: ChatMessageContent::Text(format!(
                             "{}: {}",
                             name,
-                            &content[..std::cmp::min(content.len(), 300)]
+                            &content[..std::cmp::min(content.len(), 2400)]
                         )),
                         ..Default::default()
                     });
@@ -233,9 +233,9 @@ pub async fn handle_message(
             );
 
             let parameters: ChatCompletionParameters = ChatCompletionParameters {
-                model: "gpt-4o".to_owned(),
+                model: "gpt-4o-mini".to_owned(),
                 messages,
-                max_tokens: Some(32),
+                max_tokens: Some(256),
                 ..Default::default()
             };
 
