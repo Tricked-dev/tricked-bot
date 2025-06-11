@@ -35,6 +35,7 @@ use vesper::prelude::*;
 
 use std::{collections::HashMap, env, error::Error, sync::Arc};
 
+pub mod ai_message;
 mod commands;
 mod config;
 mod database;
@@ -67,12 +68,6 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
 
     let rusqlite = rusqlite::Connection::open(&cfg.database_file)?;
 
-    println!(
-        "{}\n{}",
-        database::User::CREATE_TABLE_SQL,
-        database::Memory::CREATE_TABLE_SQL
-    );
-
     if rusqlite.table_exists(None, "User")? {
         rusqlite.execute("ALTER TABLE User RENAME TO user1", [])?;
         rusqlite.execute("ALTER TABLE user1 RENAME TO user", [])?;
@@ -80,15 +75,6 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
         rusqlite.execute(database::User::CREATE_TABLE_SQL, [])?;
     }
     rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
-
-    let mut statement = rusqlite.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-    let result = statement
-        .query_one(["336465356304678913"], |row| {
-            from_row::<User>(row).map_err(|e| rusqlite::Error::InvalidColumnName(e.to_string()))
-        })
-        ;
-    drop(statement);
-    println!("{result:?}");
 
     let config = Arc::new(cfg);
 

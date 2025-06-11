@@ -92,7 +92,7 @@ pub struct State {
     /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
     /// Sqlite database connection
-    pub db: Mutex<Connection>,
+    pub db: Arc<Mutex<Connection>>,
     pub nick: String,
     pub nick_id: u64,
     /// The id of the last user that typed to not resend the indicator
@@ -112,7 +112,7 @@ impl State {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         Self {
-            db: Mutex::new(db),
+            db: Arc::new(Mutex::new(db)),
             rng,
             client,
             last_redesc: Instant::now(),

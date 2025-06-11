@@ -15,6 +15,7 @@ use vesper::twilight_exports::UserMarker;
 use wb_sqlite::{CreateTableSql, InsertSync, UpdateSync};
 
 use crate::{
+    ai_message,
     database::User,
     structs::{Command, List, State},
     utils::levels::xp_required_for_level,
@@ -145,99 +146,67 @@ pub async fn handle_message(
                 || msg.referenced_message.clone().map(|msg| msg.author.id) == Some(Id::<UserMarker>::new(locked_state.config.id))
             ) =>
         {
-            let client = Client::new(locked_state.config.openai_api_key.clone().unwrap());
             let name = msg.author.name.clone();
-            let mut messages: Vec<ChatMessage> = vec![ChatMessage {
-                role: Role::System,
-                content: ChatMessageContent::Text(format!("{PROMPT} {}", name)),
-                ..Default::default()
-            }];
 
+            let mut context = String::new();
             match locked_state.cache.channel_messages(msg.channel_id) {
                 Some(v) => {
-                    messages.extend(
-                        v.iter()
-                            .take(25)
-                            .filter_map(|m| {
-                                let msg = locked_state.cache.message(m.to_owned());
-                                msg.map(|msg| {
-                                    let content = msg.content();
-                                    let ai_content = content[..std::cmp::min(content.len(), 2400)]
-                                        .replace(&locked_state.config.id.to_string(), "The Trickster");
-                                    match msg.author().get() {
-                                        id if id == locked_state.config.id => ChatMessage {
-                                            role: Role::Assistant,
-                                            content: ChatMessageContent::Text(ai_content),
-                                            ..Default::default()
-                                        },
-                                        _ => {
-                                            let username = locked_state
-                                                .cache
-                                                .user(msg.author())
-                                                .map(|c| c.name.clone())
-                                                .unwrap_or_default();
-                                            ChatMessage {
-                                                role: Role::User,
-                                                content: ChatMessageContent::Text(format!(
-                                                    "{}: {}",
-                                                    username, ai_content
-                                                )),
-                                                ..Default::default()
-                                            }
-                                        }
+                    let msgs = v
+                        .iter()
+                        .take(25)
+                        .filter_map(|m| {
+                            let msg = locked_state.cache.message(m.to_owned());
+                            msg.map(|msg| {
+                                let content = msg.content();
+                                let ai_content = content[..std::cmp::min(content.len(), 2400)]
+                                    .replace(&locked_state.config.id.to_string(), "The Trickster");
+                                match msg.author().get() {
+                                    id if id == locked_state.config.id => format!("The Trickster: {ai_content}"),
+                                    _ => {
+                                        let username = locked_state
+                                            .cache
+                                            .user(msg.author())
+                                            .map(|c| c.name.clone())
+                                            .unwrap_or_default();
+                                        format!("{}: {}\n", username, ai_content)
                                     }
-                                })
+                                }
                             })
-                            .rev()
-                            .collect::<Vec<ChatMessage>>(),
-                    );
+                        })
+                        .rev()
+                        .collect::<Vec<String>>();
+                    context.push_str(&msgs.join("\n"));
                 }
                 None => {
                     if let Some(msg) = &msg.referenced_message {
                         let user_name = msg.author.name.clone();
-                        messages.push(ChatMessage {
-                            role: Role::User,
-                            content: ChatMessageContent::Text(format!(
-                                "{}: {}",
-                                user_name,
-                                &msg.content[..std::cmp::min(msg.content.len(), 2400)]
-                            )),
-                            ..Default::default()
-                        });
+                        context.push_str(&format!(
+                            "{}: {}\n",
+                            user_name,
+                            &msg.content[..std::cmp::min(msg.content.len(), 2400)]
+                        ));
                     }
-
-                    messages.push(ChatMessage {
-                        role: Role::User,
-                        content: ChatMessageContent::Text(format!(
-                            "{}: {}",
-                            name,
-                            &content[..std::cmp::min(content.len(), 2400)]
-                        )),
-                        ..Default::default()
-                    });
                 }
             };
 
-            println!(
-                "{}",
-                messages
-                    .iter()
-                    .map(|m| format!("{:?}\n", m.content.clone()))
-                    .collect::<String>()
-            );
+            // println!(
+            //     "{}",
+            //     messages
+            //         .iter()
+            //         .map(|m| format!("{:?}\n", m.content.clone()))
+            //         .collect::<String>()
+            // );
 
-            let parameters: ChatCompletionParameters = ChatCompletionParameters {
-                model: "gpt-4o-mini".to_owned(),
-                messages,
-                max_tokens: Some(256),
-                ..Default::default()
-            };
-
-            let result = client.chat().create(parameters).await.unwrap();
-
-            tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
-
-            if let ChatMessageContent::Text(txt) = result.choices[0].message.content.clone() {
+            // tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
+            println!("Context: {}", context);
+            if let Ok(txt) = ai_message::main(
+                locked_state.db.clone(),
+                msg.author.id.get(),
+                &format!("{name}: {}", &content[..std::cmp::min(content.len(), 2400)]),
+                &context,
+            )
+            .await
+            {
                 if txt == "I'm sorry, I can't assist with that." {
                     Ok(
                         Command::text("I am sorry my lobotomized ass can't even fucking do your simple request")

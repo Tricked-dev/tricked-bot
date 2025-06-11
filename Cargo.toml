@@ -45,3 +45,5 @@ once_cell = { version = "1.19.0", features = ["parking_lot"] }
 wb_sqlite = {git="https://github.com/wbcat/wb_sqlite"}
 rusqlite = { version = "0.36.0", features = ["bundled"] }
 serde_rusqlite = "0.39.0"
+rig-core = "0.13.0"
+thiserror = "2.0.12"
