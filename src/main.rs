@@ -8,13 +8,14 @@
 )]
 #![forbid(anonymous_parameters)]
 
-use crate::{prisma::PrismaClient, structs::*};
+use crate::{database::User, structs::*};
 
 use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use once_cell::sync::Lazy;
 use reqwest::Client;
+use serde_rusqlite::from_row;
 use tokio::sync::Mutex;
 use twilight_gateway::{
     stream::{self, ShardEventStream},
@@ -36,9 +37,9 @@ use std::{collections::HashMap, env, error::Error, sync::Arc};
 
 mod commands;
 mod config;
+mod database;
 mod event_handler;
 mod message_handler;
-mod prisma;
 mod structs;
 pub mod utils;
 mod zalgos;
@@ -63,9 +64,31 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     if std::fs::metadata(&cfg.database_file).is_err() {
         std::fs::write(&cfg.database_file, [])?;
     }
-    let db_path = format!("file://{}", cfg.database_file.canonicalize()?.to_string_lossy());
 
-    let db: PrismaClient = PrismaClient::_builder().with_url(db_path).build().await?;
+    let rusqlite = rusqlite::Connection::open(&cfg.database_file)?;
+
+    println!(
+        "{}\n{}",
+        database::User::CREATE_TABLE_SQL,
+        database::Memory::CREATE_TABLE_SQL
+    );
+
+    if rusqlite.table_exists(None, "User")? {
+        rusqlite.execute("ALTER TABLE User RENAME TO user1", [])?;
+        rusqlite.execute("ALTER TABLE user1 RENAME TO user", [])?;
+    } else if !rusqlite.table_exists(None, "user")? {
+        rusqlite.execute(database::User::CREATE_TABLE_SQL, [])?;
+    }
+    rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
+
+    let mut statement = rusqlite.prepare("SELECT * FROM user WHERE id = ?").unwrap();
+    let result = statement
+        .query_one(["336465356304678913"], |row| {
+            from_row::<User>(row).map_err(|e| rusqlite::Error::InvalidColumnName(e.to_string()))
+        })
+        ;
+    drop(statement);
+    println!("{result:?}");
 
     let config = Arc::new(cfg);
 
@@ -121,7 +144,7 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     let state = Arc::new(Mutex::new(State::new(
         rand::thread_rng(),
         client,
-        db,
+        rusqlite,
         Arc::clone(&config),
     )));
 

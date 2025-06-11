@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use prisma_client_rust::Direction;
+use serde_rusqlite::{from_row, from_rows};
 use tokio::sync::Mutex;
 
 use vesper::{
@@ -10,19 +10,24 @@ use vesper::{
     twilight_exports::{InteractionResponse, InteractionResponseData, InteractionResponseType},
 };
 
-use crate::{prisma::user, structs::State, utils::levels::xp_required_for_level};
+use crate::{database::User, structs::State, utils::levels::xp_required_for_level};
 
 #[command]
 #[description = "Level "]
 pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandResult {
     let id = ctx.interaction.member.clone().unwrap().user.unwrap().id.get();
     let state = ctx.data.lock().await;
-    let user = state
-        .db
-        .user()
-        .find_unique(user::UniqueWhereParam::IdEquals(id.to_string()))
-        .exec()
-        .await?;
+
+    let user = {
+        let db = state.db.lock();
+        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
+        statement
+            .query_row([id], |row| {
+                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+            })
+            .ok()
+    };
+
     let user = match user {
         Some(user) => user,
         None => {
@@ -31,15 +36,18 @@ pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandR
         }
     };
 
-    let all_users = state
-        .db
-        .user()
-        .find_many(vec![user::level::not(0)])
-        .order_by(user::level::order(Direction::Desc))
-        .exec()
-        .await?;
+    let all_users = {
+        let db = state.db.lock();
+        let mut statement = db
+            .prepare("SELECT * FROM user WHERE level != 0 ORDER BY level DESC")
+            .unwrap();
+        from_rows::<User>(statement.query([]).unwrap())
+            .into_iter()
+            .flatten()
+            .collect::<Vec<User>>()
+    };
 
-    let pos = all_users.into_iter().position(|x| x.id == id.to_string());
+    let pos = all_users.into_iter().position(|x| x.id == id);
 
     let xp_to_next_level = xp_required_for_level(user.level);
     let xp_earned = user.xp;

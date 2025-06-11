@@ -4,8 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 use rand::prelude::ThreadRng;
 use reqwest::Client;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::InMemoryCache;
@@ -15,7 +17,7 @@ use twilight_model::{
 };
 use vesper::twilight_exports::ChannelMarker;
 
-use crate::{config::Config, prisma::PrismaClient};
+use crate::{config::Config, };
 
 #[derive(PartialEq, Default, Eq, Clone)]
 pub struct Command {
@@ -76,29 +78,7 @@ impl Command {
 }
 
 /// This pubstruct is needed to deal with the invite create event.
-#[derive(Clone)]
-pub struct BotInvite {
-    pub code: String,
-    pub uses: u64,
-}
 
-impl From<Invite> for BotInvite {
-    fn from(invite: Invite) -> Self {
-        Self {
-            code: invite.code.clone(),
-            uses: invite.uses.unwrap_or_default(),
-        }
-    }
-}
-
-impl From<Box<InviteCreate>> for BotInvite {
-    fn from(invite: Box<InviteCreate>) -> Self {
-        Self {
-            code: invite.code.clone(),
-            uses: invite.uses as u64,
-        }
-    }
-}
 /// This struct is used to store the state of the bot.\
 /// It is used to store the cache, the database connection, the config and the http client.
 pub struct State {
@@ -112,8 +92,7 @@ pub struct State {
     /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
     /// Sqlite database connection
-    pub db: PrismaClient,
-    pub invites: Vec<BotInvite>,
+    pub db: Mutex<Connection>,
     pub nick: String,
     pub nick_id: u64,
     /// The id of the last user that typed to not resend the indicator
@@ -129,11 +108,11 @@ pub struct State {
 unsafe impl Send for State {}
 
 impl State {
-    pub fn new(rng: ThreadRng, client: Client, db: PrismaClient, config: Arc<Config>) -> Self {
+    pub fn new(rng: ThreadRng, client: Client, db: Connection, config: Arc<Config>) -> Self {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         Self {
-            db,
+            db: Mutex::new(db),
             rng,
             client,
             last_redesc: Instant::now(),
@@ -143,7 +122,6 @@ impl State {
             nick_id: 0,
             del: HashMap::new(),
             channel_bucket,
-            invites: Vec::new(),
             cache: InMemoryCache::new(),
             config,
         }

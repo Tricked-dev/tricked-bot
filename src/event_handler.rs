@@ -1,4 +1,4 @@
-use crate::{message_handler::handle_message, prisma::invite_data, structs::*};
+use crate::{message_handler::handle_message, structs::*};
 
 use rand::Rng;
 use tokio::{join, sync::Mutex};
@@ -48,52 +48,6 @@ pub async fn handle_event(
                 let inner = i.0;
                 framework.process(inner).await;
             });
-        }
-        Event::InviteCreate(inv) => {
-            locked_state.invites.push(BotInvite::from(inv));
-        }
-        Event::MemberAdd(member) => {
-            let invites_response = http.guild_invites(member.guild_id).exec().await?;
-            let invites = invites_response.models().await?;
-            let mut invites_iter = invites.iter();
-            for old_invite in locked_state.invites.iter() {
-                if let Some(invite) = invites_iter.find(|x| x.code == old_invite.code) {
-                    if old_invite.uses < invite.uses.unwrap_or_default() {
-                        let name = locked_state.config.invites.iter().find_map(|(key, value)| {
-                            if value == &old_invite.code {
-                                Some(key.clone())
-                            } else {
-                                None
-                            }
-                        });
-                        http.create_message(Id::new(locked_state.config.join_channel))
-                            .content(&format!(
-                                "{} Joined invite used {}",
-                                member.user.name,
-                                if let Some(name) = name {
-                                    format!("{name} ({})", invite.code)
-                                } else {
-                                    invite.code.clone()
-                                }
-                            ))?
-                            .exec()
-                            .await?;
-                        locked_state.db.invite_data().create(
-                            member.user.id.get().to_string(),
-                            vec![invite_data::SetParam::SetInviteUsed(Some(invite.code.clone()))],
-                        );
-                        // Found the used invite! exit!
-                        break;
-                    }
-                }
-            }
-            locked_state.invites = invites
-                .into_iter()
-                .map(|invite| BotInvite {
-                    code: invite.code.clone(),
-                    uses: invite.uses.unwrap_or_default(),
-                })
-                .collect();
         }
         Event::MessageCreate(msg) => {
             tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
@@ -210,21 +164,6 @@ pub async fn handle_event(
                 locked_state.del.insert(event.channel_id, res.id.get());
                 locked_state.last_typer = event.user_id.get();
             }
-        }
-        Event::GuildCreate(guild) => {
-            tracing::info!("Active in guild {}", guild.name);
-            let invites_response = http.guild_invites(guild.id).exec().await?;
-            locked_state.invites.append(
-                &mut invites_response
-                    .models()
-                    .await?
-                    .into_iter()
-                    .map(|invite| BotInvite {
-                        code: invite.code.clone(),
-                        uses: invite.uses.unwrap_or_default(),
-                    })
-                    .collect(),
-            );
         }
         _ => {}
     }

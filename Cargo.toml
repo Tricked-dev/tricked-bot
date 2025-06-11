@@ -14,7 +14,7 @@ lto = true
 bytes = "1"
 futures = "0.3"
 log = "0.4"
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "0.10" }
 rand = { version = "0.8", features = ["log", "serde"] }
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
@@ -37,14 +37,11 @@ urlencoding = "2.1.0"
 clap = { version = "4.0.29", features = ["derive", "cargo", "env"] }
 base64 = "0.13.1"
 parking_lot = "0.12.1"
-prisma-client-rust = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.11", default-features = false, features = [
-  "sqlite"
-] }
-prisma-client-rust-cli = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.11", default-features = false, features = [
-  "sqlite"
-] }
 dotenv = { version = "0.15.0", features = ["clap"] }
 openai_dive = "0.4.6"
 color-eyre = "0.6.3"
 vesper = "0.13.0"
 once_cell = { version = "1.19.0", features = ["parking_lot"] }
+wb_sqlite = {git="https://github.com/wbcat/wb_sqlite"}
+rusqlite = { version = "0.36.0", features = ["bundled"] }
+serde_rusqlite = "0.39.0"

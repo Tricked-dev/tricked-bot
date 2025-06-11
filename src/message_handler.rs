@@ -1,21 +1,21 @@
 use openai_dive::v1::{
     api::Client,
-    models::Gpt35Engine,
     resources::chat::{ChatCompletionParameters, ChatMessage, ChatMessageContent, Role},
 };
 use rand::{
     prelude::{IteratorRandom, SliceRandom},
     Rng,
 };
+use serde_rusqlite::{from_row, from_rows};
+use std::{error::Error, sync::Arc, time::Instant};
 use tokio::sync::MutexGuard;
 use twilight_http::Client as HttpClient;
 use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id};
 use vesper::twilight_exports::UserMarker;
-
-use std::{error::Error, sync::Arc, time::Instant};
+use wb_sqlite::{CreateTableSql, InsertSync, UpdateSync};
 
 use crate::{
-    prisma::user,
+    database::User,
     structs::{Command, List, State},
     utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
@@ -39,14 +39,17 @@ pub async fn handle_message(
         }
     }
 
-    let user = locked_state
-        .db
-        .user()
-        .find_unique(user::UniqueWhereParam::IdEquals(msg.author.id.get().to_string()))
-        .exec()
-        .await?;
+    let user = {
+        let db = locked_state.db.lock();
+        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
+        statement
+            .query_one([msg.author.id.get().to_string()], |row| {
+                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+            })
+            .ok()
+    };
 
-    if let Some(user) = user {
+    if let Some(mut user) = user {
         //give some extra xp for every attachment
         let xp = msg
             .attachments
@@ -61,15 +64,10 @@ pub async fn handle_message(
         if new_xp >= xp_required {
             let new_level = level + 1;
             let _new_xp_required = xp_required_for_level(new_level);
-            locked_state
-                .db
-                .user()
-                .update(
-                    user::id::equals(user.id),
-                    vec![user::level::set(new_level), user::xp::set(0)],
-                )
-                .exec()
-                .await?;
+
+            user.level = new_level;
+            user.xp = 0;
+            user.update_sync(&locked_state.db.lock())?;
             tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(3000..8000))).await;
             return Ok(Command::text(format!(
                 "Congrats <@{}>! You are now level {}!",
@@ -79,20 +77,16 @@ pub async fn handle_message(
             .reply()
             .mention());
         } else {
-            locked_state
-                .db
-                .user()
-                .update(user::id::equals(user.id), vec![user::xp::set(new_xp)])
-                .exec()
-                .await?;
+            user.xp = new_xp;
+            user.update_sync(&locked_state.db.lock())?;
         }
     } else {
-        locked_state
-            .db
-            .user()
-            .create(msg.author.id.get().to_string(), vec![])
-            .exec()
-            .await?;
+        let new_user = User {
+            id: msg.author.id.get(),
+            level: 0,
+            xp: 0,
+        };
+        new_user.insert_sync(&locked_state.db.lock())?;
     }
     let content = msg.content.clone();
     match msg.content.to_lowercase().as_str() {
