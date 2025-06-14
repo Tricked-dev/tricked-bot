@@ -47,3 +47,5 @@ rusqlite = { version = "0.36.0", features = ["bundled"] }
 serde_rusqlite = "0.39.0"
 rig-core = "0.13.0"
 thiserror = "2.0.12"
+r2d2_sqlite = "0.30.0"
+r2d2 = "0.8.10"

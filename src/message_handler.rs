@@ -30,7 +30,7 @@ pub async fn handle_message(
     msg: &MessageCreate,
     mut locked_state: MutexGuard<'_, State>,
     http: &Arc<HttpClient>,
-) -> Result<Command, Box<dyn Error + Send + Sync>> {
+) -> color_eyre::Result<Command> {
     if let Some(responder) = RESPONDERS.get(msg.content.to_uppercase().as_str()) {
         if let Some(msg) = &responder.message {
             return Ok(Command::text(msg));
@@ -41,7 +41,7 @@ pub async fn handle_message(
     }
 
     let user = {
-        let db = locked_state.db.lock();
+        let db = locked_state.db.get()?;
         let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
         statement
             .query_one([msg.author.id.get().to_string()], |row| {
@@ -62,13 +62,14 @@ pub async fn handle_message(
         let level = user.level;
         let xp_required = xp_required_for_level(level);
         let new_xp = user.xp + xp;
+        user.name = msg.author.name.clone();
         if new_xp >= xp_required {
             let new_level = level + 1;
             let _new_xp_required = xp_required_for_level(new_level);
 
             user.level = new_level;
             user.xp = 0;
-            user.update_sync(&locked_state.db.lock())?;
+            user.update_sync(&*locked_state.db.get()?)?;
             tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(3000..8000))).await;
             return Ok(Command::text(format!(
                 "Congrats <@{}>! You are now level {}!",
@@ -79,15 +80,17 @@ pub async fn handle_message(
             .mention());
         } else {
             user.xp = new_xp;
-            user.update_sync(&locked_state.db.lock())?;
+            user.update_sync(&*locked_state.db.get()?)?;
         }
     } else {
         let new_user = User {
             id: msg.author.id.get(),
+            name: msg.author.name.clone(),
             level: 0,
             xp: 0,
+            social_credit: 0,
         };
-        new_user.insert_sync(&locked_state.db.lock())?;
+        new_user.insert_sync(&*locked_state.db.get()?)?;
     }
     let content = msg.content.clone();
     match msg.content.to_lowercase().as_str() {

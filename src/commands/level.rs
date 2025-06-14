@@ -19,7 +19,7 @@ pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandR
     let state = ctx.data.lock().await;
 
     let user = {
-        let db = state.db.lock();
+        let db = state.db.get()?;
         let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
         statement
             .query_row([id], |row| {
@@ -37,7 +37,7 @@ pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandR
     };
 
     let all_users = {
-        let db = state.db.lock();
+        let db = state.db.get()?;
         let mut statement = db
             .prepare("SELECT * FROM user WHERE level != 0 ORDER BY level DESC")
             .unwrap();
@@ -62,9 +62,10 @@ pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandR
         empty_bar.repeat((bar_count as f64 - (percent / 100.0 * bar_count as f64)) as usize)
     );
     let message = format!(
-        "Level: {}, position: {}\nXP: {xp_earned}/{xp_to_next_level}\n{bar}",
+        "Level: {}, position: {}\nXP: {xp_earned}/{xp_to_next_level}\n{bar}\nSocial Credit: {}",
         user.level,
         pos.unwrap_or_default() + 1,
+        user.social_credit,
     );
     tracing::info!("Level {message}");
     ctx.interaction_client

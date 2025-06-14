@@ -61,6 +61,12 @@ pub struct User {
     #[sql(constraint = "NOT NULL")]
     pub level: i32,
 
+    #[sql(constraint = "NOT NULL DEFAULT 0")]
+    pub social_credit: i64,
+
+    #[sql(constraint = "NOT NULL")]
+    pub name: String,
+
     #[sql(constraint = "NOT NULL")]
     pub xp: i32,
 }

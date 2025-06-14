@@ -5,6 +5,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
+use r2d2_sqlite::SqliteConnectionManager;
 use rand::prelude::ThreadRng;
 use reqwest::Client;
 use rusqlite::Connection;
@@ -92,7 +93,7 @@ pub struct State {
     /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
     /// Sqlite database connection
-    pub db: Arc<Mutex<Connection>>,
+    pub db: r2d2::Pool<SqliteConnectionManager> ,
     pub nick: String,
     pub nick_id: u64,
     /// The id of the last user that typed to not resend the indicator
@@ -108,11 +109,11 @@ pub struct State {
 unsafe impl Send for State {}
 
 impl State {
-    pub fn new(rng: ThreadRng, client: Client, db: Connection, config: Arc<Config>) -> Self {
+    pub fn new(rng: ThreadRng, client: Client, db: r2d2::Pool<SqliteConnectionManager>, config: Arc<Config>) -> Self {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         Self {
-            db: Arc::new(Mutex::new(db)),
+            db: db,
             rng,
             client,
             last_redesc: Instant::now(),

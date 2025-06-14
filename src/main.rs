@@ -14,6 +14,7 @@ use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use once_cell::sync::Lazy;
+use r2d2_sqlite::SqliteConnectionManager;
 use reqwest::Client;
 use serde_rusqlite::from_row;
 use tokio::sync::Mutex;
@@ -51,7 +52,7 @@ static RESPONDERS: Lazy<HashMap<String, Responder>> =
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
-async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> color_eyre::Result<()> {
     dotenv::dotenv().ok();
 
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
@@ -66,7 +67,11 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
         std::fs::write(&cfg.database_file, [])?;
     }
 
-    let rusqlite = rusqlite::Connection::open(&cfg.database_file)?;
+
+    let manager = SqliteConnectionManager::file(&cfg.database_file);
+    let pool = r2d2::Pool::new(manager).unwrap();
+    let rusqlite = pool.get().unwrap();
+
 
     if rusqlite.table_exists(None, "User")? {
         rusqlite.execute("ALTER TABLE User RENAME TO user1", [])?;
@@ -74,6 +79,15 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     } else if !rusqlite.table_exists(None, "user")? {
         rusqlite.execute(database::User::CREATE_TABLE_SQL, [])?;
     }
+    if !rusqlite.column_exists(None, "user", "social_credit")? {
+        rusqlite.execute("ALTER TABLE user ADD COLUMN social_credit INTEGER DEFAULT 0", [])?;
+    }
+    if !rusqlite.column_exists(None, "user", "name")? {
+        rusqlite.execute("ALTER TABLE user ADD COLUMN name TEXT DEFAULT ''", [])?;
+    }
+    
+    
+
     rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
 
     let config = Arc::new(cfg);
@@ -130,7 +144,7 @@ async fn main() -> color_eyre::Result<(), Box<dyn Error + Send + Sync>> {
     let state = Arc::new(Mutex::new(State::new(
         rand::thread_rng(),
         client,
-        rusqlite,
+        pool,
         Arc::clone(&config),
     )));
 
