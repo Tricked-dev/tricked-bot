@@ -4,21 +4,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use parking_lot::Mutex;
 use r2d2_sqlite::SqliteConnectionManager;
 use rand::prelude::ThreadRng;
 use reqwest::Client;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_model::{
-    channel::message::Embed, gateway::payload::incoming::InviteCreate, guild::invite::Invite,
+    channel::message::Embed,
     http::attachment::Attachment, id::Id,
 };
 use vesper::twilight_exports::ChannelMarker;
 
-use crate::{config::Config, };
+use crate::config::Config;
 
 #[derive(PartialEq, Default, Eq, Clone)]
 pub struct Command {
@@ -78,7 +76,6 @@ impl Command {
     }
 }
 
-/// This pubstruct is needed to deal with the invite create event.
 
 /// This struct is used to store the state of the bot.\
 /// It is used to store the cache, the database connection, the config and the http client.
@@ -93,7 +90,7 @@ pub struct State {
     /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
     /// Sqlite database connection
-    pub db: r2d2::Pool<SqliteConnectionManager> ,
+    pub db: r2d2::Pool<SqliteConnectionManager>,
     pub nick: String,
     pub nick_id: u64,
     /// The id of the last user that typed to not resend the indicator
@@ -113,7 +110,7 @@ impl State {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         Self {
-            db: db,
+            db,
             rng,
             client,
             last_redesc: Instant::now(),

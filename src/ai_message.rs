@@ -1,15 +1,13 @@
-use std::sync::Arc;
 
 use color_eyre::Result;
-use parking_lot::RwLock;
 use r2d2_sqlite::SqliteConnectionManager;
-use rig::prelude::*;
 use rig::{
     completion::{Prompt, ToolDefinition},
+    prelude::*,
     providers,
     tool::Tool,
 };
-use rusqlite::{params, Connection};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_rusqlite::from_row;
@@ -151,24 +149,34 @@ impl Tool for SocialCredit {
     async fn call(&self, mut args: Self::Args) -> Result<Self::Output, Self::Error> {
         let mut user = {
             let db = self.0.get()?;
-            let mut stm = db.prepare("SELECT * FROM user WHERE id = ?").map_err(|err| color_eyre::eyre::eyre!("Failed to prepare SQL query: {}", err))?;
+            let mut stm = db
+                .prepare("SELECT * FROM user WHERE id = ?")
+                .map_err(|err| color_eyre::eyre::eyre!("Failed to prepare SQL query: {}", err))?;
             stm.query_one([self.1.to_string()], |row| {
                 from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
             })
-            .map_err(|err| color_eyre::eyre::eyre!("Failed to query SQL query: {:?}", err)).unwrap()
+            .map_err(|err| color_eyre::eyre::eyre!("Failed to query SQL query: {:?}", err))
+            .unwrap()
         };
-        
+
         if args.remove == Some(true) && args.social_credit > 0 {
             args.social_credit = -args.social_credit;
         }
 
         user.social_credit += args.social_credit;
-        user.update_sync(&*self.0.get()?).map_err(|err| color_eyre::eyre::eyre!("Failed to update SQL query: {:?}", err)).unwrap();
+        user.update_sync(&*self.0.get()?)
+            .map_err(|err| color_eyre::eyre::eyre!("Failed to update SQL query: {:?}", err))
+            .unwrap();
         Ok(user.social_credit)
     }
 }
 
-pub async fn main(database: r2d2::Pool<SqliteConnectionManager>, user_id: u64, message: &str, context: &str) -> Result<String> {
+pub async fn main(
+    database: r2d2::Pool<SqliteConnectionManager>,
+    user_id: u64,
+    message: &str,
+    context: &str,
+) -> Result<String> {
     // Create OpenAI client
     let openai_client = providers::openai::Client::from_env();
 
@@ -177,12 +185,12 @@ pub async fn main(database: r2d2::Pool<SqliteConnectionManager>, user_id: u64, m
     {
         let db = database.get()?;
         let mut stm = db.prepare("SELECT * FROM memory WHERE user_id = ?")?;
-        let mut rows = stm
+        let rows = stm
             .query_map(params![user_id], |row| {
                 from_row::<database::Memory>(row).map_err(|err| rusqlite::Error::InvalidColumnName(err.to_string()))
             })?
             .flatten();
-        while let Some(row) = rows.next() {
+        for row in rows {
             memory.push_str(&format!("{}: {}\n", row.key, row.content));
         }
     }

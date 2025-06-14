@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wb_sqlite::{CreateTableSql, InsertSync, UpdateSync};
 
-use serde:: Deserializer;
+use serde::Deserializer;
 use std::fmt;
 
 fn u64_from_str_or_int<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -10,7 +10,7 @@ where
 {
     struct U64Visitor;
 
-    impl<'de> serde::de::Visitor<'de> for U64Visitor {
+    impl serde::de::Visitor<'_> for U64Visitor {
         type Value = u64;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

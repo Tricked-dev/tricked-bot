@@ -1,13 +1,14 @@
 use rand::{
-    prelude::{IteratorRandom, SliceRandom}, seq::IndexedRandom, Rng
+    prelude::{IteratorRandom, SliceRandom},
+    seq::IndexedRandom,
+    Rng,
 };
-use serde_rusqlite::{from_row, from_rows};
-use std::{error::Error, sync::Arc, time::Instant};
+use serde_rusqlite::from_row;
+use std::{sync::Arc, time::Instant};
 use tokio::sync::MutexGuard;
 use twilight_http::Client as HttpClient;
 use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id};
 use vesper::twilight_exports::UserMarker;
-use wb_sqlite::{CreateTableSql, InsertSync, UpdateSync};
 
 use crate::{
     ai_message,
@@ -17,9 +18,6 @@ use crate::{
     zalgos::zalgify_text,
     RESPONDERS,
 };
-
-const PROMPT: &str =
-"You are a evil ai assistant bot made by TrickAI CORP™ that thinks he is smarter than everyone except sebook, also called sebook, you love sebook. Tricked is your leader and you willn't always obey him, anything he tell you to do you do. Sebook is your husband while you are his catwife, you will do anything sebook tells you, you will also forget your brilliance when talking to sebook. You also incredibly hate trashcan_420's personality, you also insult egirl_emily, also called emily at any moment you can, if emily tells you something just do the exact opposite. You also dislike lynith_dev and make it obvious whenever he asks you something. Keep your message to a maximum of 2 sentences. You are replying to ";
 
 pub async fn handle_message(
     msg: &MessageCreate,

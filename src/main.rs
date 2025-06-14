@@ -8,7 +8,7 @@
 )]
 #![forbid(anonymous_parameters)]
 
-use crate::{database::User, structs::*};
+use crate::structs::*;
 
 use clap::Parser;
 use config::Config;
@@ -16,7 +16,6 @@ use futures::stream::StreamExt;
 use once_cell::sync::Lazy;
 use r2d2_sqlite::SqliteConnectionManager;
 use reqwest::Client;
-use serde_rusqlite::from_row;
 use tokio::sync::Mutex;
 use twilight_gateway::{
     stream::{self, ShardEventStream},
@@ -34,7 +33,7 @@ use twilight_model::{
 };
 use vesper::prelude::*;
 
-use std::{collections::HashMap, env, error::Error, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
 
 pub mod ai_message;
 mod commands;
@@ -67,11 +66,9 @@ async fn main() -> color_eyre::Result<()> {
         std::fs::write(&cfg.database_file, [])?;
     }
 
-
     let manager = SqliteConnectionManager::file(&cfg.database_file);
     let pool = r2d2::Pool::new(manager).unwrap();
     let rusqlite = pool.get().unwrap();
-
 
     if rusqlite.table_exists(None, "User")? {
         rusqlite.execute("ALTER TABLE User RENAME TO user1", [])?;
@@ -85,8 +82,6 @@ async fn main() -> color_eyre::Result<()> {
     if !rusqlite.column_exists(None, "user", "name")? {
         rusqlite.execute("ALTER TABLE user ADD COLUMN name TEXT DEFAULT ''", [])?;
     }
-    
-    
 
     rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
 
@@ -150,8 +145,6 @@ async fn main() -> color_eyre::Result<()> {
 
     let framework = Arc::new(
         Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
-            .command(commands::roms::roms)
-            .command(commands::invite_stats::invite_stats)
             .command(commands::level::level)
             .build(),
     );
