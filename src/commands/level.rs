@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_rusqlite::{from_row, from_rows};
 use tokio::sync::Mutex;
 
+use twilight_model::{gateway::presence::UserOrId, id::{marker::UserMarker, Id}};
 use vesper::{
     prelude::*,
     twilight_exports::{InteractionResponse, InteractionResponseData, InteractionResponseType},
@@ -14,8 +15,8 @@ use crate::{database::User, structs::State, utils::levels::xp_required_for_level
 
 #[command]
 #[description = "Level "]
-pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>) -> DefaultCommandResult {
-    let id = ctx.interaction.member.clone().unwrap().user.unwrap().id.get();
+pub async fn level(ctx: &SlashContext<'_, Arc<Mutex<State>>>, #[description = "The user to level up"] user: Option<Id<UserMarker>>) -> DefaultCommandResult {
+    let id = user.unwrap_or(ctx.interaction.member.clone().unwrap().user.unwrap().id).get();
     let state = ctx.data.lock().await;
 
     let user = {

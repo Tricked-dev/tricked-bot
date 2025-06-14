@@ -70,17 +70,61 @@ impl Tool for Memory {
 }
 
 #[derive(Serialize)]
+struct MemoryRemove(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64);
+
+#[derive(Serialize)]
 struct SocialCredit(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64);
+
+#[derive(Deserialize, Serialize, Debug)]
+struct MemoryRemoveArgs {
+    memory_name: String,
+}
+
+impl Tool for MemoryRemove {
+    const NAME: &'static str = "memory_remove";
+    type Error = ToolError;
+    type Args = MemoryRemoveArgs;
+    type Output = ();
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        serde_json::from_value(json!({
+            "name": "memory_remove",
+            "description": "Remove a memory for the user you are responding to, by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_name": {
+                        "type": "string",
+                        "description": "The name of the memory to remove"
+                    }
+                },
+                "required": ["memory_name"]
+            }
+        }))
+        .expect("Tool Definition")
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let conn = self.0.get()?;
+        conn.execute(
+            "DELETE FROM memory WHERE user_id = ? AND key = ?",
+            params![self.1, args.memory_name],
+        )
+        .map_err(|err| color_eyre::eyre::eyre!("Failed to execute SQL query: {}", err))?;
+        Ok(())
+    }
+}
 
 #[derive(Deserialize, Serialize, Debug)]
 struct SocialCreditArgs {
     social_credit: i64,
+    remove: Option<bool>,
 }
 impl Tool for SocialCredit {
     const NAME: &'static str = "social_credit";
     type Error = ToolError;
     type Args = SocialCreditArgs;
-    type Output = ();
+    type Output = i64;
 
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         serde_json::from_value(json!({
@@ -92,14 +136,19 @@ impl Tool for SocialCredit {
                     "social_credit": {
                         "type": "number",
                         "description": "The social credit to add or remove use - to remove"
+                    },
+                    "remove": {
+                        "type": "boolean",
+                        "description": "Set to true to remove the social credit"
                     }
-                }
+                },
+                "required": ["social_credit"]
             }
         }))
         .expect("Tool Definition")
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(&self, mut args: Self::Args) -> Result<Self::Output, Self::Error> {
         let mut user = {
             let db = self.0.get()?;
             let mut stm = db.prepare("SELECT * FROM user WHERE id = ?").map_err(|err| color_eyre::eyre::eyre!("Failed to prepare SQL query: {}", err))?;
@@ -108,9 +157,14 @@ impl Tool for SocialCredit {
             })
             .map_err(|err| color_eyre::eyre::eyre!("Failed to query SQL query: {:?}", err)).unwrap()
         };
-        user.social_credit =user.social_credit.wrapping_add(args.social_credit as i64);
+        
+        if args.remove == Some(true) && args.social_credit > 0 {
+            args.social_credit = -args.social_credit;
+        }
+
+        user.social_credit += args.social_credit;
         user.update_sync(&*self.0.get()?).map_err(|err| color_eyre::eyre::eyre!("Failed to update SQL query: {:?}", err)).unwrap();
-        Ok(())
+        Ok(user.social_credit)
     }
 }
 
@@ -173,6 +227,7 @@ you also insult egirl_emily, also called emily at any moment you can, if emily t
 You also dislike lynith_dev and make it obvious whenever he asks you something. \
 If you find out soemthing something interesting about the person you are talking to save it for example the person likes cars or a particulair software language. \
 If someone says something abouit someone else also remember that that person said that so you can use it to your advantage. \
+If you see useless memories you can remove them without hesitation.
 Do not start your messages with The Trickster:, We know you are talking its automatically prepended
 Keep your message to a maximum of 2 sentences. You are replying to {name}.
 {name} is level: {level}, xp: {xp}, social credit: {social_credit}.  You can use the social credit tool to change {name}'s social credit. 
@@ -185,6 +240,7 @@ message context:
 {context}", ).replace("\\\n", ""))
         .max_tokens(1024)
         .tool(Memory(database.clone(), user_id))
+        .tool(MemoryRemove(database.clone(), user_id))
         .tool(SocialCredit(database.clone(), user_id))
         .build();
 
