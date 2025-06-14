@@ -15,8 +15,8 @@ bytes = "1"
 futures = "0.3"
 log = "0.4"
 openssl = { version = "0.10" }
-rand = { version = "0.8", features = ["log", "serde"] }
-reqwest = { version = "0.11", features = ["json"] }
+rand = { version = "0.9", features = ["log", "serde"] }
+reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = [
@@ -25,27 +25,28 @@ tokio = { version = "1", features = [
   'macros',
   "parking_lot"
 ] }
-toml = "^0.5"
+toml = "^0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 twilight-bucket = "0.2"
 twilight-cache-inmemory = "0.15"
-twilight-gateway = { version = "0.15", features = ["native", "rustls-webpki-roots"] }
-twilight-http = { version = "0.15", features = ["native"] }
+twilight-gateway = { version = "0.15", features = ["rustls-webpki-roots"] }
+twilight-http = { version = "0.15", features = [] }
 twilight-model = "0.15"
 urlencoding = "2.1.0"
 clap = { version = "4.0.29", features = ["derive", "cargo", "env"] }
-base64 = "0.13.1"
+base64 = "0.22.1"
 parking_lot = "0.12.1"
 dotenv = { version = "0.15.0", features = ["clap"] }
-openai_dive = "0.4.6"
 color-eyre = "0.6.3"
 vesper = "0.13.0"
 once_cell = { version = "1.19.0", features = ["parking_lot"] }
-wb_sqlite = {git="https://github.com/wbcat/wb_sqlite"}
-rusqlite = { version = "0.36.0", features = ["bundled"] }
 serde_rusqlite = "0.39.0"
 rig-core = "0.13.0"
 thiserror = "2.0.12"
 r2d2_sqlite = "0.30.0"
 r2d2 = "0.8.10"
+# rig-sqlite = "0.1.11"
+sqlite-vec = "0.1.6"
+wb_sqlite = "0.2.1"
+rusqlite = { version = "0.36.0", features = ["bundled"] }

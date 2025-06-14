@@ -1,10 +1,5 @@
-use openai_dive::v1::{
-    api::Client,
-    resources::chat::{ChatCompletionParameters, ChatMessage, ChatMessageContent, Role},
-};
 use rand::{
-    prelude::{IteratorRandom, SliceRandom},
-    Rng,
+    prelude::{IteratorRandom, SliceRandom}, seq::IndexedRandom, Rng
 };
 use serde_rusqlite::{from_row, from_rows};
 use std::{error::Error, sync::Arc, time::Instant};
