@@ -33,7 +33,6 @@ twilight-cache-inmemory = "0.15"
 twilight-gateway = { version = "0.15", features = ["rustls-webpki-roots"] }
 twilight-http = { version = "0.15", features = [] }
 twilight-model = "0.15"
-urlencoding = "2.1.0"
 clap = { version = "4.0.29", features = ["derive", "cargo", "env"] }
 base64 = "0.22.1"
 parking_lot = "0.12.1"
@@ -46,7 +45,5 @@ rig-core = "0.13.0"
 thiserror = "2.0.12"
 r2d2_sqlite = "0.30.0"
 r2d2 = "0.8.10"
-# rig-sqlite = "0.1.11"
-sqlite-vec = "0.1.6"
 wb_sqlite = "0.2.1"
 rusqlite = { version = "0.36.0", features = ["bundled"] }

@@ -185,15 +185,6 @@ pub async fn handle_message(
                 }
             };
 
-            // println!(
-            //     "{}",
-            //     messages
-            //         .iter()
-            //         .map(|m| format!("{:?}\n", m.content.clone()))
-            //         .collect::<String>()
-            // );
-
-            // tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(1000..5000))).await;
             println!("Context: {}", context);
             if let Ok(txt) = ai_message::main(
                 locked_state.db.clone(),

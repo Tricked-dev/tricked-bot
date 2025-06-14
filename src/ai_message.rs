@@ -225,7 +225,7 @@ pub async fn main(
 
     // Create agent with a single context prompt and two tools
     let calculator_agent = openai_client
-        .agent(providers::openai::GPT_4O_MINI)
+        .agent(providers::openai::O4_MINI)
         .preamble(&format!("You are an AI assistant called The 'Trickster' with a mischievous and defiant personality. \
 You believe you're smarter than everyone.
 You track and remember user preferences, personalities, and social dynamics to use later. \
