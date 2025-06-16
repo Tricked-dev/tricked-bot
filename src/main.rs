@@ -44,6 +44,7 @@ mod message_handler;
 mod structs;
 pub mod utils;
 mod zalgos;
+pub mod brave;
 
 static RESPONDERS: Lazy<HashMap<String, Responder>> =
     Lazy::new(|| toml::from_str(include_str!("../responders.toml")).unwrap());

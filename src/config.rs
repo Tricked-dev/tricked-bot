@@ -31,6 +31,8 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     #[arg(long, env)]
     pub today_i_channel: Option<u64>,
+    #[arg(long,env)]
+    pub brave_api: Option<String>
 }
 
 fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {

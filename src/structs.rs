@@ -16,7 +16,7 @@ use twilight_model::{
 };
 use vesper::twilight_exports::ChannelMarker;
 
-use crate::config::Config;
+use crate::{brave::BraveApi, config::Config};
 
 #[derive(PartialEq, Default, Eq, Clone)]
 pub struct Command {
@@ -101,6 +101,8 @@ pub struct State {
     pub config: Arc<Config>,
     /// twilight cache
     pub cache: InMemoryCache,
+    /// Brave API
+    pub brave_api: BraveApi,
 }
 // i hate fixing error
 unsafe impl Send for State {}
@@ -109,6 +111,7 @@ impl State {
     pub fn new(rng: ThreadRng, client: Client, db: r2d2::Pool<SqliteConnectionManager>, config: Arc<Config>) -> Self {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
+        let client_clone = client.clone();
         Self {
             db,
             rng,
@@ -121,6 +124,7 @@ impl State {
             del: HashMap::new(),
             channel_bucket,
             cache: InMemoryCache::new(),
+            brave_api: BraveApi::new(client_clone, &config.brave_api.clone().unwrap_or_default()),
             config,
         }
     }
