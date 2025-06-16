@@ -1,5 +1,5 @@
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub struct BraveSearchResult {
@@ -18,8 +18,9 @@ pub struct WebResults {
     pub results: Vec<BraveSearchResult>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct BraveApi {
+    #[serde(skip)]
     client: Client,
     api_key: String,
 }
@@ -39,7 +40,12 @@ impl BraveApi {
             .get(url)
             .header("Accept", "application/json")
             .header("X-Subscription-Token", &self.api_key)
-            .query(&[("q", query)])
+            .query(&[
+                ("q", query),
+                ("count", "7"),
+                ("safesearch", "strict"),
+                ("text_decorations", "false"),
+            ])
             .send()
             .await?
             .json::<BraveApiResponse>()

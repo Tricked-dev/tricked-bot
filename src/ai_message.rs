@@ -1,22 +1,21 @@
-
 use color_eyre::Result;
 use r2d2_sqlite::SqliteConnectionManager;
 use rig::{
-    completion::{Prompt, ToolDefinition},
-    prelude::*,
-    providers,
-    tool::Tool,
+    completion::{Prompt, ToolDefinition}, prelude::*, providers, streaming::StreamingPrompt, tool::Tool
 };
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_rusqlite::from_row;
 
-use crate::database::{self, User};
+use crate::{
+    brave::BraveApi,
+    database::{self, User},
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("Error")]
-enum ToolError {
+pub enum ToolError {
     Generic(#[from] color_eyre::Report),
     Pool(#[from] r2d2::Error),
 }
@@ -171,11 +170,65 @@ impl Tool for SocialCredit {
     }
 }
 
+#[derive(Serialize, Debug)]
+struct BraveSearch(crate::brave::BraveApi);
+
+#[derive(Deserialize, Serialize, Debug)]
+struct BraveSearchArgs {
+    pub query: String,
+}
+
+impl Tool for BraveSearch {
+    const NAME: &'static str = "brave_search";
+    type Error = ToolError;
+    type Args = BraveSearchArgs;
+    type Output = serde_json::Value;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        serde_json::from_value(json!({
+            "name": "brave_search",
+            "description": "Perform a web search using Brave Search API.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query."
+                    }
+                },
+                "required": ["query"]
+            }
+        }))
+        .expect("Tool Definition")
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let results = self
+            .0
+            .search(&args.query)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!(format!("Brave API error: {e}")))?;
+        let results_json: Vec<_> = results
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "title": r.title,
+                    "url": r.url,
+                    "description": r.description
+                })
+            })
+            .collect();
+        println!("Results: {:#?}", results_json);
+        Ok(json!(results_json))
+    }
+}
+
 pub async fn main(
     database: r2d2::Pool<SqliteConnectionManager>,
     user_id: u64,
     message: &str,
     context: &str,
+    brave: BraveApi,
 ) -> Result<String> {
     // Create OpenAI client
     let openai_client = providers::openai::Client::from_env();
@@ -230,6 +283,7 @@ pub async fn main(
 You believe you're smarter than everyone.
 You track and remember user preferences, personalities, and social dynamics to use later. \
 If a user shares something personal or comments about others, store that information. \
+You can use markdown, use markdown links & image links embed properly. \
 Delete memories you find irrelevant or unimportant without hesitation.
 
 Keep your message to a maximum of 2 sentences. You are replying to {name}.
@@ -245,6 +299,7 @@ message context:
         .tool(Memory(database.clone(), user_id))
         .tool(MemoryRemove(database.clone(), user_id))
         .tool(SocialCredit(database.clone(), user_id))
+        .tool(BraveSearch(brave.clone()))
         .build();
 
     Ok(calculator_agent.prompt(message).await?)

@@ -191,6 +191,7 @@ pub async fn handle_message(
                 msg.author.id.get(),
                 &format!("{name}: {}", &content[..std::cmp::min(content.len(), 2400)]),
                 &context,
+                locked_state.brave_api.clone(),
             )
             .await
             {
