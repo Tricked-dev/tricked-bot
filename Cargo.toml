@@ -47,3 +47,4 @@ r2d2_sqlite = "0.30.0"
 r2d2 = "0.8.10"
 wb_sqlite = "0.2.1"
 rusqlite = { version = "0.36.0", features = ["bundled"] }
+num-format = "0.4.4"
