@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use num_format::{Locale, ToFormattedString};
 use serde_rusqlite::{from_row, from_rows};
 use tokio::sync::Mutex;
 
@@ -70,7 +71,7 @@ pub async fn level(
         "Level: {}, position: {}\nXP: {xp_earned}/{xp_to_next_level}\n{bar}\nSocial Credit: {}",
         user.level,
         pos.unwrap_or_default() + 1,
-        user.social_credit,
+        user.social_credit.to_formatted_string(&Locale::en),
     );
     tracing::info!("Level {message}");
     ctx.interaction_client
