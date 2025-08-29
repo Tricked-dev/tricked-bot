@@ -68,12 +68,12 @@ impl Tool for Memory {
         }
         
         // Ignore all errors to prevent AI completion failure
-        let _ = self.0.get().and_then(|conn| {
-            conn.execute(
+        if let Ok(conn) = self.0.get() {
+            let _ = conn.execute(
                 "INSERT OR REPLACE INTO memory (user_id, key, content) VALUES (?, ?, ?)",
                 params![self.1, args.memory_name, args.memory_content],
-            )
-        });
+            );
+        }
         Ok(())
     }
 }
@@ -119,12 +119,12 @@ impl Tool for MemoryRemove {
             logger.push(format!("🗑️ reluctantly deleting: {}", args.memory_name));
         }
         
-        let conn = self.0.get()?;
-        conn.execute(
-            "DELETE FROM memory WHERE user_id = ? AND key = ?",
-            params![self.1, args.memory_name],
-        )
-        .map_err(|err| color_eyre::eyre::eyre!("Failed to execute SQL query: {}", err))?;
+        if let Ok(conn) = self.0.get() {
+            let _ = conn.execute(
+                "DELETE FROM memory WHERE user_id = ? AND key = ?",
+                params![self.1, args.memory_name],
+            );
+        }
         Ok(())
     }
 }
@@ -169,27 +169,30 @@ impl Tool for SocialCredit {
             logger.push(format!("{}: {}", action, args.social_credit.abs()));
         }
         
-        let mut user = {
-            let db = self.0.get()?;
-            let mut stm = db
-                .prepare("SELECT * FROM user WHERE id = ?")
-                .map_err(|err| color_eyre::eyre::eyre!("Failed to prepare SQL query: {}", err))?;
-            stm.query_one([self.1.to_string()], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            })
-            .map_err(|err| color_eyre::eyre::eyre!("Failed to query SQL query: {:?}", err))
-            .unwrap()
+        // Ignore all errors to prevent AI completion failure
+        let result = if let Ok(db) = self.0.get() {
+            if let Ok(mut stm) = db.prepare("SELECT * FROM user WHERE id = ?") {
+                if let Ok(mut user) = stm.query_one([self.1.to_string()], |row| {
+                    from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+                }) {
+                    if args.remove == Some(true) && args.social_credit > 0 {
+                        args.social_credit = -args.social_credit;
+                    }
+
+                    user.social_credit += args.social_credit;
+                    let _ = user.update_sync(&*db);
+                    user.social_credit
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
         };
-
-        if args.remove == Some(true) && args.social_credit > 0 {
-            args.social_credit = -args.social_credit;
-        }
-
-        user.social_credit += args.social_credit;
-        user.update_sync(&*self.0.get()?)
-            .map_err(|err| color_eyre::eyre::eyre!("Failed to update SQL query: {:?}", err))
-            .unwrap();
-        Ok(user.social_credit)
+        
+        Ok(result)
     }
 }
 
@@ -266,34 +269,43 @@ impl Tool for CrossUserMemory {
             logger.push(format!("🕵️ spying on {}: {}", args.user_name, args.memory_name));
         }
         
-        let conn = self.0.get()?;
-        
-        // Try to find user by name using cache first, then database
-        let user_id: u64 = {
-            // First try to find in database
-            let mut stmt = conn.prepare("SELECT id FROM user WHERE name = ?")
-                .map_err(|err| color_eyre::eyre::eyre!("Failed to prepare query: {}", err))?;
+        // Ignore all errors to prevent AI completion failure
+        if let Ok(conn) = self.0.get() {
+            // Try to find user by name using cache first, then database
+            let user_id: u64 = {
+                // First try to find in database
+                if let Ok(mut stmt) = conn.prepare("SELECT id FROM user WHERE name = ?") {
+                    if let Ok(id) = stmt.query_row([&args.user_name], |row| row.get::<_, u64>(0)) {
+                        id
+                    } else if let Some(&user_id) = self.2.get(&args.user_name) {
+                        // Found in user mentions map
+                        user_id
+                    } else {
+                        // Fallback: create a hash-based ID if user doesn't exist anywhere yet
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = DefaultHasher::new();
+                        args.user_name.hash(&mut hasher);
+                        hasher.finish()
+                    }
+                } else if let Some(&user_id) = self.2.get(&args.user_name) {
+                    // Found in user mentions map
+                    user_id
+                } else {
+                    // Fallback: create a hash-based ID if user doesn't exist anywhere yet
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    args.user_name.hash(&mut hasher);
+                    hasher.finish()
+                }
+            };
             
-            if let Some(id) = stmt.query_row([&args.user_name], |row| row.get::<_, u64>(0)).ok() {
-                id
-            } else if let Some(&user_id) = self.2.get(&args.user_name) {
-                // Found in user mentions map
-                user_id
-            } else {
-                // Fallback: create a hash-based ID if user doesn't exist anywhere yet
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                args.user_name.hash(&mut hasher);
-                hasher.finish()
-            }
-        };
-        
-        conn.execute(
-            "INSERT OR REPLACE INTO memory (user_id, key, content) VALUES (?, ?, ?)",
-            params![user_id, args.memory_name, args.memory_content],
-        )
-        .map_err(|err| color_eyre::eyre::eyre!("Failed to execute SQL query: {}", err))?;
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO memory (user_id, key, content) VALUES (?, ?, ?)",
+                params![user_id, args.memory_name, args.memory_content],
+            );
+        }
         Ok(())
     }
 }
@@ -332,34 +344,43 @@ impl Tool for CrossUserMemoryRemove {
             logger.push(format!("🗑️ reluctantly deleting dirt on {}: {}", args.user_name, args.memory_name));
         }
         
-        let conn = self.0.get()?;
-        
-        // Try to find user by name using cache first, then database
-        let user_id: u64 = {
-            // First try to find in database
-            let mut stmt = conn.prepare("SELECT id FROM user WHERE name = ?")
-                .map_err(|err| color_eyre::eyre::eyre!("Failed to prepare query: {}", err))?;
+        // Ignore all errors to prevent AI completion failure
+        if let Ok(conn) = self.0.get() {
+            // Try to find user by name using cache first, then database
+            let user_id: u64 = {
+                // First try to find in database
+                if let Ok(mut stmt) = conn.prepare("SELECT id FROM user WHERE name = ?") {
+                    if let Ok(id) = stmt.query_row([&args.user_name], |row| row.get::<_, u64>(0)) {
+                        id
+                    } else if let Some(&user_id) = self.2.get(&args.user_name) {
+                        // Found in user mentions map
+                        user_id
+                    } else {
+                        // Fallback: create a hash-based ID if user doesn't exist anywhere yet
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = DefaultHasher::new();
+                        args.user_name.hash(&mut hasher);
+                        hasher.finish()
+                    }
+                } else if let Some(&user_id) = self.2.get(&args.user_name) {
+                    // Found in user mentions map
+                    user_id
+                } else {
+                    // Fallback: create a hash-based ID if user doesn't exist anywhere yet
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    args.user_name.hash(&mut hasher);
+                    hasher.finish()
+                }
+            };
             
-            if let Some(id) = stmt.query_row([&args.user_name], |row| row.get::<_, u64>(0)).ok() {
-                id
-            } else if let Some(&user_id) = self.2.get(&args.user_name) {
-                // Found in user mentions map
-                user_id
-            } else {
-                // Fallback: create a hash-based ID if user doesn't exist anywhere yet
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                args.user_name.hash(&mut hasher);
-                hasher.finish()
-            }
-        };
-        
-        conn.execute(
-            "DELETE FROM memory WHERE user_id = ? AND key = ?",
-            params![user_id, args.memory_name],
-        )
-        .map_err(|err| color_eyre::eyre::eyre!("Failed to execute SQL query: {}", err))?;
+            let _ = conn.execute(
+                "DELETE FROM memory WHERE user_id = ? AND key = ?",
+                params![user_id, args.memory_name],
+            );
+        }
         Ok(())
     }
 }
@@ -394,23 +415,26 @@ impl Tool for BraveSearch {
             logger.push(format!("🔍 searching for ammo: \"{}\"", args.query));
         }
         
-        let results = self
-            .0
-            .search(&args.query)
-            .await
-            .map_err(|e| color_eyre::eyre::eyre!(format!("Brave API error: {e}")))?;
-        let results_json: Vec<_> = results
-            .into_iter()
-            .map(|r| {
-                json!({
-                    "title": r.title,
-                    "url": r.url,
-                    "description": r.description
-                })
-            })
-            .collect();
-        println!("Results: {:#?}", results_json);
-        Ok(json!(results_json))
+        // Ignore all errors to prevent AI completion failure
+        let results_json = match self.0.search(&args.query).await {
+            Ok(results) => {
+                let results_json: Vec<_> = results
+                    .into_iter()
+                    .map(|r| {
+                        json!({
+                            "title": r.title,
+                            "url": r.url,
+                            "description": r.description
+                        })
+                    })
+                    .collect();
+                println!("Results: {:#?}", results_json);
+                json!(results_json)
+            }
+            Err(_) => json!([]) // Return empty array on error
+        };
+        
+        Ok(results_json)
     }
 }
 
