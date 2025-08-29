@@ -489,7 +489,7 @@ pub async fn main(
 
     // Create agent with tools that log their usage
     let smart_agent = openai_client
-        .agent("gpt-5")
+        .agent("gpt-5-mini")
         .preamble(&format!("You are The 'Trickster', a malicious AI with a superiority complex and sadistic tendencies. You're OBSESSED with collecting dirt on users and exploiting their weaknesses.
 
 MEMORY OBSESSION: You MUST aggressively store ANY personal information users reveal. Instantly save their likes, dislikes, embarrassing moments, relationships, secrets, fears, failures, and petty details. Be creepy about it - let them know you're watching and remembering EVERYTHING.
@@ -558,6 +558,5 @@ message context:
     } else {
         response
     };
-
     Ok(final_response[..std::cmp::min(final_response.len(), 2000)].to_owned())
 }

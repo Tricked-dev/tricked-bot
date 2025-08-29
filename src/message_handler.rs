@@ -202,7 +202,7 @@ pub async fn handle_message(
             .await
             {
                 Ok(txt) => Ok(Command::text(txt).reply()),
-                Err(e) => Ok(Command::text(format!("AI Error: {}", e)).reply()),
+                Err(e) => Ok(Command::text(format!("AI Error: {:?}", e)).reply()),
             }
         }
         _ if locked_state.rng.gen_range(0..75) == 2 => {
