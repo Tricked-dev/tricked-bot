@@ -67,12 +67,13 @@ impl Tool for Memory {
             logger.push(format!("🧠 storing dirt: {}", args.memory_name));
         }
         
-        let conn = self.0.get()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO memory (user_id, key, content) VALUES (?, ?, ?)",
-            params![self.1, args.memory_name, args.memory_content],
-        )
-        .map_err(|err| color_eyre::eyre::eyre!("Failed to execute SQL query: {}", err))?;
+        // Ignore all errors to prevent AI completion failure
+        let _ = self.0.get().and_then(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO memory (user_id, key, content) VALUES (?, ?, ?)",
+                params![self.1, args.memory_name, args.memory_content],
+            )
+        });
         Ok(())
     }
 }
