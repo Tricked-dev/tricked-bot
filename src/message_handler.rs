@@ -109,18 +109,6 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
-        x if (x.contains("anime") || x.contains("weeb") || x.contains("hentai")) && x.contains("http") => {
-            http.delete_message(msg.channel_id, msg.id).exec().await?;
-            if let Some(member) = msg.member.clone() {
-                if let Some(user) = member.user {
-                    return Ok(Command::text(format!("{} is a weeb", user.name)));
-                } else if let Some(nick) = member.nick {
-                    return Ok(Command::text(format!("{} is a weeb", nick)));
-                }
-            }
-
-            Ok(Command::nothing())
-        }
         x if (x.contains("im") || x.contains("i am")) && (x.split(' ').count() < 4) && !x.contains("https://") => {
             let text = match x.contains("im") {
                 true => msg.content.split("im").last().unwrap().trim(),
@@ -202,8 +190,8 @@ pub async fn handle_message(
                     }
                 }
             }
-            
-            if let Ok(txt) = ai_message::main(
+
+            match ai_message::main(
                 locked_state.db.clone(),
                 msg.author.id.get(),
                 &format!("{name}: {}", &content[..std::cmp::min(content.len(), 2400)]),
@@ -213,16 +201,8 @@ pub async fn handle_message(
             )
             .await
             {
-                if txt == "I'm sorry, I can't assist with that." {
-                    Ok(
-                        Command::text("I am sorry my lobotomized ass can't even fucking do your simple request")
-                            .reply(),
-                    )
-                } else {
-                    Ok(Command::text(txt).reply())
-                }
-            } else {
-                Ok(Command::nothing())
+                Ok(txt) => Ok(Command::text(txt).reply()),
+                Err(e) => Ok(Command::text(format!("AI Error: {}", e)).reply()),
             }
         }
         _ if locked_state.rng.gen_range(0..75) == 2 => {

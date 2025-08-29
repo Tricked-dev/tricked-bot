@@ -559,5 +559,5 @@ message context:
         response
     };
 
-    Ok(final_response)
+    Ok(final_response[..std::cmp::min(final_response.len(), 2000)].to_owned())
 }
