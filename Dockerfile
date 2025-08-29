@@ -9,6 +9,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder 
 COPY --from=planner /tricked-bot/recipe.json recipe.json
 
+# Install build dependencies
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    zlib1g-dev
+
 # Cache cargo registry and build artifacts
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/tricked-bot/target \
