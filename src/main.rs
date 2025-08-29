@@ -36,6 +36,7 @@ use vesper::prelude::*;
 use std::{collections::HashMap, env, sync::Arc};
 
 pub mod ai_message;
+pub mod brave;
 mod commands;
 mod config;
 mod database;
@@ -44,7 +45,6 @@ mod message_handler;
 mod structs;
 pub mod utils;
 mod zalgos;
-pub mod brave;
 
 static RESPONDERS: Lazy<HashMap<String, Responder>> =
     Lazy::new(|| toml::from_str(include_str!("../responders.toml")).unwrap());
@@ -153,7 +153,10 @@ async fn main() -> color_eyre::Result<()> {
     framework.register_guild_commands(Id::new(config.discord)).await?;
 
     while let Some(event) = shard_stream.next().await {
-        let ev = event.1?;
+        let ev = match event.1 {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         {
             state.lock().await.cache.update(&ev);
         }

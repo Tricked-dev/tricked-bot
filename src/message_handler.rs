@@ -186,12 +186,30 @@ pub async fn handle_message(
             };
 
             println!("Context: {}", context);
+            let mut user_mentions = std::collections::HashMap::new();
+            // Extract user IDs from the cache for users that appear in context
+            for line in context.lines() {
+                if let Some(colon_pos) = line.find(':') {
+                    let username = line[..colon_pos].trim();
+                    if !username.is_empty() && username != "The Trickster" {
+                        // Try to find the real user ID from cache
+                        for user_ref in locked_state.cache.iter().users() {
+                            if user_ref.name == username {
+                                user_mentions.insert(username.to_string(), user_ref.id.get());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
             if let Ok(txt) = ai_message::main(
                 locked_state.db.clone(),
                 msg.author.id.get(),
                 &format!("{name}: {}", &content[..std::cmp::min(content.len(), 2400)]),
                 &context,
                 locked_state.brave_api.clone(),
+                user_mentions,
             )
             .await
             {
