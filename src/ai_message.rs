@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use r2d2_sqlite::SqliteConnectionManager;
 use rig::{
-    completion::{Prompt, ToolDefinition}, prelude::*, providers, streaming::StreamingPrompt, tool::Tool
+    completion::{Prompt, ToolDefinition}, prelude::*, providers, tool::Tool
 };
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,11 @@ use crate::{
     database::{self, User},
 };
 
+use std::sync::{Arc, Mutex};
+
+// Tool call logger to track which tools are called
+type ToolCallLogger = Arc<Mutex<Vec<String>>>;
+
 #[derive(Debug, thiserror::Error)]
 #[error("Error")]
 pub enum ToolError {
@@ -21,7 +26,7 @@ pub enum ToolError {
 }
 
 #[derive(Serialize)]
-struct Memory(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64);
+struct Memory(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64, #[serde(skip)] ToolCallLogger);
 
 #[derive(Deserialize, Serialize, Debug)]
 struct MemoryArgs {
@@ -56,6 +61,11 @@ impl Tool for Memory {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        // Log tool call
+        if let Ok(mut logger) = self.2.lock() {
+            logger.push(format!("bot called memory with key: {}", args.memory_name));
+        }
+        
         let conn = self.0.get()?;
         conn.execute(
             "INSERT OR REPLACE INTO memory (user_id, key, content) VALUES (?, ?, ?)",
@@ -67,10 +77,10 @@ impl Tool for Memory {
 }
 
 #[derive(Serialize)]
-struct MemoryRemove(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64);
+struct MemoryRemove(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64, #[serde(skip)] ToolCallLogger);
 
 #[derive(Serialize)]
-struct SocialCredit(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64);
+struct SocialCredit(#[serde(skip)] r2d2::Pool<SqliteConnectionManager>, u64, #[serde(skip)] ToolCallLogger);
 
 #[derive(Deserialize, Serialize, Debug)]
 struct MemoryRemoveArgs {
@@ -102,6 +112,11 @@ impl Tool for MemoryRemove {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        // Log tool call
+        if let Ok(mut logger) = self.2.lock() {
+            logger.push(format!("bot called memory_remove with key: {}", args.memory_name));
+        }
+        
         let conn = self.0.get()?;
         conn.execute(
             "DELETE FROM memory WHERE user_id = ? AND key = ?",
@@ -146,6 +161,11 @@ impl Tool for SocialCredit {
     }
 
     async fn call(&self, mut args: Self::Args) -> Result<Self::Output, Self::Error> {
+        // Log tool call
+        if let Ok(mut logger) = self.2.lock() {
+            logger.push(format!("bot called social_credit with amount: {}", args.social_credit));
+        }
+        
         let mut user = {
             let db = self.0.get()?;
             let mut stm = db
@@ -171,7 +191,7 @@ impl Tool for SocialCredit {
 }
 
 #[derive(Serialize, Debug)]
-struct BraveSearch(crate::brave::BraveApi);
+struct BraveSearch(crate::brave::BraveApi, #[serde(skip)] ToolCallLogger);
 
 #[derive(Deserialize, Serialize, Debug)]
 struct BraveSearchArgs {
@@ -203,6 +223,11 @@ impl Tool for BraveSearch {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        // Log tool call
+        if let Ok(mut logger) = self.1.lock() {
+            logger.push(format!("bot called brave_search with query: {}", args.query));
+        }
+        
         let results = self
             .0
             .search(&args.query)
@@ -276,8 +301,11 @@ pub async fn main(
         ..
     } = user;
 
-    // Create agent with a single context prompt and two tools
-    let calculator_agent = openai_client
+    // Create tool call logger
+    let tool_call_logger = Arc::new(Mutex::new(Vec::new()));
+
+    // Create agent with tools that log their usage
+    let smart_agent = openai_client
         .agent("gpt-5")
         .preamble(&format!("You are an AI assistant called The 'Trickster' with a mischievous and defiant personality. \
 You believe you're smarter than everyone.
@@ -296,11 +324,36 @@ $$MEMORIES_END$$
 message context: 
 {context}", ).replace("\\\n", ""))
         .max_tokens(1024)
-        .tool(Memory(database.clone(), user_id))
-        .tool(MemoryRemove(database.clone(), user_id))
-        .tool(SocialCredit(database.clone(), user_id))
-        .tool(BraveSearch(brave.clone()))
+        .tool(Memory(database.clone(), user_id, tool_call_logger.clone()))
+        .tool(MemoryRemove(database.clone(), user_id, tool_call_logger.clone()))
+        .tool(SocialCredit(database.clone(), user_id, tool_call_logger.clone()))
+        .tool(BraveSearch(brave.clone(), tool_call_logger.clone()))
         .build();
 
-    Ok(calculator_agent.prompt(message).await?)
+    // Allow multiple tool calls by using multi-turn
+    let response = smart_agent
+        .prompt(message)
+        .multi_turn(5) // Allow up to 5 tool calling turns
+        .await?;
+    
+    // Extract logged tool calls
+    let tool_calls = if let Ok(logger) = tool_call_logger.lock() {
+        logger.clone()
+    } else {
+        Vec::new()
+    };
+    
+    // Format final response with tool call logs
+    let final_response = if !tool_calls.is_empty() {
+        let tool_log_text = tool_calls
+            .into_iter()
+            .map(|log| format!("-# {}", log))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{}\n{}", tool_log_text, response)
+    } else {
+        response
+    };
+
+    Ok(final_response)
 }
