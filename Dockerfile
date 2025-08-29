@@ -1,4 +1,5 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+# Use specific version to avoid toolchain updates
+FROM lukemathwalker/cargo-chef:latest-rust-1.89.0-slim AS chef
 WORKDIR /tricked-bot
 
 FROM chef AS planner
@@ -7,13 +8,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder 
 COPY --from=planner /tricked-bot/recipe.json recipe.json
-# Build dependencies - this is the caching Docker layer!
+
+# Cache Rust toolchain and cargo registry
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/rustup \
     --mount=type=cache,target=/tricked-bot/target \
     cargo chef cook --release --recipe-path recipe.json
-# Build tricked-botlication
+
+# Build application
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/rustup \
     --mount=type=cache,target=/tricked-bot/target \
     cargo build --release --bin tricked-bot && \
     cp /tricked-bot/target/release/tricked-bot /usr/local/bin/tricked-bot
