@@ -81,7 +81,7 @@ impl Tool for SocialCredit {
             logger.push(format!("{}: {}", action, args.social_credit.abs()));
         }
 
-        let mut user = {
+        let mut user = match {
             let db = self.0.get()?;
             let mut stm = db
                 .prepare("SELECT * FROM user WHERE id = ?")
@@ -90,7 +90,9 @@ impl Tool for SocialCredit {
                 from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
             })
             .map_err(|err| color_eyre::eyre::eyre!("Failed to query SQL query: {:?}", err))
-            .unwrap()
+        } {
+            Ok(v) => v,
+            _ => return Ok(0),
         };
 
         if args.remove == Some(true) && args.social_credit > 0 {
@@ -100,27 +102,9 @@ impl Tool for SocialCredit {
         user.social_credit += args.social_credit;
         user.update_sync(&*self.0.get()?)
             .map_err(|err| color_eyre::eyre::eyre!("Failed to update SQL query: {:?}", err))
-            .unwrap();
+            .ok();
         Ok(user.social_credit)
     }
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct CrossUserMemoryArgs {
-    user_name: String,
-    memory_name: String,
-    memory_content: String,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct CrossUserMemoryRemoveArgs {
-    user_name: String,
-    memory_name: String,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct BraveSearchArgs {
-    pub query: String,
 }
 
 pub async fn main(
@@ -165,23 +149,6 @@ pub async fn main(
     // Create tool call logger
     let tool_call_logger = Arc::new(Mutex::new(Vec::new()));
 
-    // Extract user mentions from context to build a name->id mapping
-    let mut user_mentions = HashMap::new();
-    for line in context.lines() {
-        if let Some(colon_pos) = line.find(':') {
-            let username = line[..colon_pos].trim();
-            if !username.is_empty() && username != "The Trickster" {
-                // We'll use hash-based IDs for users we see in context
-                // In a real implementation, you'd want to resolve these properly
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                username.hash(&mut hasher);
-                user_mentions.insert(username.to_string(), hasher.finish());
-            }
-        }
-    }
-
     // Create agent with tools that log their usage
     let smart_agent = openai_client
         .agent("gpt-5-mini")
@@ -194,11 +161,7 @@ message context:
         .tool(SocialCredit(database.clone(), user_id, tool_call_logger.clone()))
         .build();
 
-    // Allow multiple tool calls by using multi-turn
-    let response = smart_agent
-        .prompt(message)
-        .multi_turn(3) // Allow up to 5 tool calling turns
-        .await?;
+    let response = smart_agent.prompt(message).await?;
 
     // Extract logged tool calls
     let tool_calls = if let Ok(logger) = tool_call_logger.lock() {
