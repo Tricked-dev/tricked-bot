@@ -1,5 +1,5 @@
 {
-  description = "A devShell example";
+  description = "A Discord bot made for my discord server";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -22,8 +22,44 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+        rustToolchain = pkgs.rust-bin.beta.latest.default;
       in
       {
+        packages = {
+          default = self.packages.${system}.tricked-bot;
+
+          tricked-bot = pkgs.rustPlatform.buildRustPackage {
+            pname = "tricked-bot";
+            version = "1.4.0";
+
+            src = ./.;
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+              rustToolchain
+            ];
+
+            buildInputs = with pkgs; [
+              openssl
+            ];
+
+            meta = with pkgs.lib; {
+              description = "A simple discord bot made for my discord";
+              homepage = "https://discord.gg/mY8zTARu4g";
+              license = licenses.asl20;
+              maintainers = [ ];
+            };
+          };
+        };
+
+        overlays.default = final: prev: {
+          tricked-bot = self.packages.${system}.tricked-bot;
+        };
+
         devShells.default =
           with pkgs;
           mkShell {
@@ -34,7 +70,7 @@
               fd
               clang
               mold
-              rust-bin.beta.latest.default
+              rustToolchain
             ];
 
             LD_LIBRARY_PATH = lib.makeLibraryPath [
