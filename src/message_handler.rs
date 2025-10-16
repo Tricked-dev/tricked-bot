@@ -81,7 +81,6 @@ pub async fn handle_message(
             name: msg.author.name.clone(),
             level: 0,
             xp: 0,
-            social_credit: 0,
         };
         new_user.insert_sync(&*locked_state.db.get()?)?;
     }

@@ -77,9 +77,6 @@ async fn main() -> color_eyre::Result<()> {
     } else if !rusqlite.table_exists(None, "user")? {
         rusqlite.execute(database::User::CREATE_TABLE_SQL, [])?;
     }
-    if !rusqlite.column_exists(None, "user", "social_credit")? {
-        rusqlite.execute("ALTER TABLE user ADD COLUMN social_credit INTEGER DEFAULT 0", [])?;
-    }
     if !rusqlite.column_exists(None, "user", "name")? {
         rusqlite.execute("ALTER TABLE user ADD COLUMN name TEXT DEFAULT ''", [])?;
     }

@@ -32,12 +32,22 @@
               pkg-config
               eza
               fd
+              clang
+              mold
               rust-bin.beta.latest.default
             ];
 
+            LD_LIBRARY_PATH = lib.makeLibraryPath [
+              openssl
+            ];
+
             shellHook = ''
-              alias ls=eza
-              alias find=fd
+              if [ -f .env ]; then
+                set -a
+                source .env
+                set +a
+                echo "Loaded environment variables from .env"
+              fi
             '';
           };
       }

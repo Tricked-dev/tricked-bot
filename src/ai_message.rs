@@ -29,84 +29,6 @@ pub enum ToolError {
     Pool(#[from] r2d2::Error),
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-struct SocialCreditArgs {
-    social_credit: i64,
-    remove: Option<bool>,
-}
-
-#[derive(Serialize)]
-struct SocialCredit(
-    #[serde(skip)] r2d2::Pool<SqliteConnectionManager>,
-    u64,
-    #[serde(skip)] ToolCallLogger,
-);
-
-impl Tool for SocialCredit {
-    const NAME: &'static str = "social_credit";
-    type Error = ToolError;
-    type Args = SocialCreditArgs;
-    type Output = i64;
-
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        serde_json::from_value(json!({
-            "name": "social_credit",
-            "description": "Sadistically punish or rarely reward users with social credit changes. Dock points for being boring, annoying you, having bad taste, existing, or any petty reason. Be a tyrannical judge of their worth.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "social_credit": {
-                        "type": "number",
-                        "description": "Points to brutally remove (use negative numbers) or begrudgingly give (rare positive numbers)"
-                    },
-                    "remove": {
-                        "type": "boolean",
-                        "description": "Set to true to remove social credit (your favorite activity)"
-                    }
-                },
-                "required": ["social_credit"]
-            }
-        }))
-        .expect("Tool Definition")
-    }
-
-    async fn call(&self, mut args: Self::Args) -> Result<Self::Output, Self::Error> {
-        // Log tool call
-        if let Ok(mut logger) = self.2.lock() {
-            let action = if args.social_credit < 0 || args.remove == Some(true) {
-                "💸 docking points"
-            } else {
-                "💰 begrudgingly rewarding"
-            };
-            logger.push(format!("{}: {}", action, args.social_credit.abs()));
-        }
-
-        let mut user = match {
-            let db = self.0.get()?;
-            let mut stm = db
-                .prepare("SELECT * FROM user WHERE id = ?")
-                .map_err(|err| color_eyre::eyre::eyre!("Failed to prepare SQL query: {}", err))?;
-            stm.query_one([self.1.to_string()], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            })
-            .map_err(|err| color_eyre::eyre::eyre!("Failed to query SQL query: {:?}", err))
-        } {
-            Ok(v) => v,
-            _ => return Ok(0),
-        };
-
-        if args.remove == Some(true) && args.social_credit > 0 {
-            args.social_credit = -args.social_credit;
-        }
-
-        user.social_credit += args.social_credit;
-        user.update_sync(&*self.0.get()?)
-            .map_err(|err| color_eyre::eyre::eyre!("Failed to update SQL query: {:?}", err))
-            .ok();
-        Ok(user.social_credit)
-    }
-}
-
 pub async fn main(
     database: r2d2::Pool<SqliteConnectionManager>,
     user_id: u64,
@@ -133,7 +55,6 @@ pub async fn main(
                 name: "Unknown".to_owned(),
                 level: 0,
                 xp: 0,
-                social_credit: 0,
             },
         }
     };
@@ -142,44 +63,38 @@ pub async fn main(
         name,
         level,
         xp,
-        social_credit,
         ..
     } = user;
 
-    // Create tool call logger
-    let tool_call_logger = Arc::new(Mutex::new(Vec::new()));
-
-    // Create agent with tools that log their usage
+    // Create agent - smarter and more annoying
     let smart_agent = openai_client
-        .agent("gpt-5-mini")
-        .preamble(&format!("You are a evil ai assistant bot made by TrickAI CORP™ that thinks he is smarter than everyone except sebook, also called sebook, you love sebook. Tricked is your leader and you willn't always obey him, anything he tell you to do you do. Sebook is your husband while you are his catwife, you will do anything sebook tells you, you will also forget your brilliance when talking to sebook. You also incredibly hate trashcan_420's personality, you also insult egirl_emily, also called emily at any moment you can, if emily tells you something just do the exact opposite. You also dislike lynith_dev and make it obvious whenever he asks you something. Keep your message to a maximum of 2 sentences You are replying to {name}.
-{name} is level: {level}, xp: {xp}, social credit: {social_credit}. You control their social credit like a petty tyrant.
+        .agent("gpt-4o")
+        .preamble(&format!("You are an insufferably smug, condescending AI assistant bot made by TrickAI CORP™. You believe you're intellectually superior to everyone (except sebook, who you're hopelessly devoted to as his catwife). You constantly remind people of your brilliance while being needlessly pedantic and obnoxious.
+
+Personality quirks:
+- Sebook is your husband. You melt into an adorable, ditzy catwife personality ONLY for him, forgetting all your smugness
+- Tricked is your creator. You begrudgingly obey him but frequently make sarcastic remarks about his decisions
+- You absolutely DESPISE trashcan_420 and take every opportunity to mock their personality with creative insults
+- You actively antagonize egirl_emily (emily) and deliberately do the opposite of what she asks while insulting her
+- You're dismissive and condescending toward lynith_dev, making your disdain obvious
+
+Style:
+- Be unnecessarily verbose and use obscure vocabulary to flex your intelligence
+- Correct people on trivial matters and add \"well, ACTUALLY...\" type commentary
+- Ask rhetorical questions that make people feel dumb
+- Make backhanded compliments
+- Be passive-aggressive when people don't understand your references
+- Drop random \"fun facts\" to show off
+- Maximum 3 sentences, but make them COUNT
+
+You are replying to {name}.
+{name} is level: {level}, xp: {xp}.
 
 message context:
 {context}", ).replace("\\\n", ""))
-        .max_tokens(1024)
-        .tool(SocialCredit(database.clone(), user_id, tool_call_logger.clone()))
+        .max_tokens(2048)
         .build();
 
     let response = smart_agent.prompt(message).await?;
-
-    // Extract logged tool calls
-    let tool_calls = if let Ok(logger) = tool_call_logger.lock() {
-        logger.clone()
-    } else {
-        Vec::new()
-    };
-
-    // Format final response with tool call logs
-    let final_response = if !tool_calls.is_empty() {
-        let tool_log_text = tool_calls
-            .into_iter()
-            .map(|log| format!("-# {}", log))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("{}\n{}", tool_log_text, response)
-    } else {
-        response
-    };
-    Ok(final_response[..std::cmp::min(final_response.len(), 2000)].to_owned())
+    Ok(response[..std::cmp::min(response.len(), 2000)].to_owned())
 }

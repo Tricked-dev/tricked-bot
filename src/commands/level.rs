@@ -68,10 +68,9 @@ pub async fn level(
         empty_bar.repeat((bar_count as f64 - (percent / 100.0 * bar_count as f64)) as usize)
     );
     let message = format!(
-        "Level: {}, position: {}\nXP: {xp_earned}/{xp_to_next_level}\n{bar}\nSocial Credit: {}",
+        "Level: {}, position: {}\nXP: {xp_earned}/{xp_to_next_level}\n{bar}",
         user.level,
         pos.unwrap_or_default() + 1,
-        user.social_credit.to_formatted_string(&Locale::en),
     );
     tracing::info!("Level {message}");
     ctx.interaction_client
