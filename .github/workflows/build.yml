@@ -71,7 +71,7 @@ jobs:
           command: build
           args: --release --bin tricked-bot --target ${{ matrix.job.target }} ${{ matrix.job.args }}
       - name: Upload binary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: tricked-bot-${{ matrix.job.pretty }}
           path: target/${{ matrix.job.target }}/release/tricked-bot
