@@ -10,10 +10,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use twilight_bucket::{Bucket, Limit};
 use twilight_cache_inmemory::InMemoryCache;
-use twilight_model::{
-    channel::message::Embed,
-    http::attachment::Attachment, id::Id,
-};
+use twilight_model::{channel::message::Embed, http::attachment::Attachment, id::Id};
 use vesper::twilight_exports::ChannelMarker;
 
 use crate::{brave::BraveApi, config::Config};
@@ -75,7 +72,6 @@ impl Command {
         self
     }
 }
-
 
 /// This struct is used to store the state of the bot.\
 /// It is used to store the cache, the database connection, the config and the http client.

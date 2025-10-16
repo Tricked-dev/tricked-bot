@@ -51,6 +51,6 @@ impl BraveApi {
             .json::<BraveApiResponse>()
             .await?;
 
-        Ok(resp.web.and_then(|w| Some(w.results)).unwrap_or_default())
+        Ok(resp.web.map(|w| w.results).unwrap_or_default())
     }
 }

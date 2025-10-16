@@ -1,44 +1,34 @@
 use color_eyre::Result;
 use r2d2_sqlite::SqliteConnectionManager;
-use rig::{
-    completion::{Prompt, ToolDefinition},
-    prelude::*,
-    providers,
-    tool::Tool,
-};
-use rusqlite::params;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use rig::{completion::Prompt, prelude::*, providers};
 use serde_rusqlite::from_row;
 
-use crate::{
-    brave::BraveApi,
-    database::{self, User},
-};
+use crate::{brave::BraveApi, database::User};
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-// Tool call logger to track which tools are called
-type ToolCallLogger = Arc<Mutex<Vec<String>>>;
-
-#[derive(Debug, thiserror::Error)]
-#[error("Error")]
-pub enum ToolError {
-    Generic(#[from] color_eyre::Report),
-    Pool(#[from] r2d2::Error),
-}
 
 pub async fn main(
     database: r2d2::Pool<SqliteConnectionManager>,
     user_id: u64,
     message: &str,
     context: &str,
-    brave: BraveApi,
+    _brave: BraveApi,
     user_mentions: HashMap<String, u64>,
 ) -> Result<String> {
     // Create OpenAI client
     let openai_client = providers::openai::Client::from_env();
+
+    // Replace user mentions with usernames in context
+    let mut processed_context = context.to_string();
+    for (mention, mentioned_user_id) in &user_mentions {
+        let db = database.get()?;
+        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
+        if let Ok(mentioned_user) = statement.query_one([mentioned_user_id.to_string()], |row| {
+            from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+        }) {
+            processed_context = processed_context.replace(mention, &mentioned_user.name);
+        }
+    }
 
     let user = {
         let db = database.get()?;
@@ -59,12 +49,7 @@ pub async fn main(
         }
     };
 
-    let User {
-        name,
-        level,
-        xp,
-        ..
-    } = user;
+    let User { name, level, xp, .. } = user;
 
     // Create agent - smarter and more annoying
     let smart_agent = openai_client
@@ -91,7 +76,7 @@ You are replying to {name}.
 {name} is level: {level}, xp: {xp}.
 
 message context:
-{context}", ).replace("\\\n", ""))
+{}", processed_context).replace("\\\n", ""))
         .max_tokens(2048)
         .build();
 

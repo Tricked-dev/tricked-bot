@@ -4,21 +4,10 @@ use rand::Rng;
 use tokio::{join, sync::Mutex};
 use twilight_gateway::Event;
 use twilight_http::{request::channel::reaction::RequestReactionType, Client as HttpClient};
-use twilight_model::{
-    channel::message::AllowedMentions,
-    gateway::presence::Status,
-    id::{
-        marker::{ChannelMarker, UserMarker},
-        Id,
-    },
-};
+use twilight_model::{channel::message::AllowedMentions, id::Id};
 use vesper::prelude::*;
 
 use std::{sync::Arc, time::Duration};
-
-const AETHOR_ID: Id<UserMarker> = Id::new(870383692403593226);
-const GENERAL_ID: Id<ChannelMarker> = Id::new(748957504666599507);
-const TRICKED_ID: u64 = 336465356304678913;
 
 pub async fn handle_event(
     event: Event,
@@ -28,20 +17,6 @@ pub async fn handle_event(
 ) -> color_eyre::Result<()> {
     let mut locked_state = state.lock().await;
     match event {
-        Event::PresenceUpdate(p) => {
-            if p.user.id() == AETHOR_ID && p.status == Status::Offline {
-                for _ in 0..10 {
-                    http.create_message(GENERAL_ID)
-                        .content("AETHOR WENT OFFLINE <@{TRICKED_ID}> <@{TRICKED_ID}>")?
-                        .allowed_mentions(Some(&AllowedMentions {
-                            users: vec![Id::new(TRICKED_ID)],
-                            ..Default::default()
-                        }))
-                        .exec()
-                        .await?;
-                }
-            }
-        }
         Event::InteractionCreate(i) => {
             tracing::info!("Slash Command!");
             tokio::spawn(async move {
@@ -133,14 +108,6 @@ pub async fn handle_event(
         }
         Event::TypingStart(event) => {
             if rand::thread_rng().gen_range(0..100) != 1 {
-                return Ok(());
-            }
-
-            if !locked_state
-                .config
-                .message_indicator_channels
-                .contains(&event.channel_id.get())
-            {
                 return Ok(());
             }
             if event.user_id.get() == locked_state.last_typer {

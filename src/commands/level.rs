@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use num_format::{Locale, ToFormattedString};
 use serde_rusqlite::{from_row, from_rows};
 use tokio::sync::Mutex;
 

@@ -31,8 +31,8 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     #[arg(long, env)]
     pub today_i_channel: Option<u64>,
-    #[arg(long,env)]
-    pub brave_api: Option<String>
+    #[arg(long, env)]
+    pub brave_api: Option<String>,
 }
 
 fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {
@@ -44,7 +44,7 @@ fn parse_invites(src: &str) -> Result<HashMap<String, String>, io::Error> {
     for pair in src.split(',') {
         let (key, value) = match pair.split_once(':') {
             Some(v) => v,
-            None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid invite format")),
+            None => return Err(io::Error::other("Invalid invite format")),
         };
         map.insert(key.to_string(), value.parse().unwrap());
     }
