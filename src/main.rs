@@ -44,6 +44,7 @@ mod database;
 mod event_handler;
 mod math_test;
 mod message_handler;
+mod quiz_handler;
 mod structs;
 pub mod utils;
 mod zalgos;

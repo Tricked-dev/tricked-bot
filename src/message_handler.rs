@@ -1,27 +1,15 @@
-use rand::{
-    prelude::{IteratorRandom, SliceRandom},
-    seq::IndexedRandom,
-    Rng,
-};
+use rand::{prelude::{IteratorRandom, SliceRandom}, seq::IndexedRandom, Rng};
 use serde_rusqlite::from_row;
 use std::{sync::Arc, time::Instant};
 use tokio::sync::MutexGuard;
-use tokio::time::Instant as TokioInstant;
 use twilight_http::Client as HttpClient;
 use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id};
 use vesper::twilight_exports::UserMarker;
 
 use crate::{
-    ai_message,
-    color_quiz::ColorQuiz,
-    database::User,
-    math_test::MathTest,
-    structs::{Command, List, PendingColorTest, PendingMathTest, State},
-    utils::levels::xp_required_for_level,
-    zalgos::zalgify_text,
-    RESPONDERS,
+    ai_message, database::User, quiz_handler, structs::{Command, List, State},
+    utils::levels::xp_required_for_level, zalgos::zalgify_text, RESPONDERS,
 };
-use twilight_model::http::attachment::Attachment;
 
 pub async fn handle_message(
     msg: &MessageCreate,
@@ -37,276 +25,20 @@ pub async fn handle_message(
         }
     }
 
-    // Check if there's a pending math test in this channel (anyone can answer)
-    if let Some(pending_test) = locked_state.pending_math_tests.get(&msg.channel_id.get()) {
-        let elapsed = pending_test.started_at.elapsed();
-
-        // Clone values we need before mutable operations
-        let question = pending_test.question.clone();
-        let answer = pending_test.answer;
-        let original_user_id = pending_test.user_id;
-
-        // Check if 30 seconds have passed
-        if elapsed.as_secs() > 30 {
-            locked_state.pending_math_tests.remove(&msg.channel_id.get());
-
-            // Timeout the original user for 1 minute
-            let timeout_until = twilight_model::util::Timestamp::from_secs(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-                    + 60,
-            )
-            .unwrap();
-
-            if let Some(guild_id) = msg.guild_id {
-                match http
-                    .update_guild_member(guild_id, Id::new(original_user_id))
-                    .communication_disabled_until(Some(timeout_until))
-                {
-                    Ok(req) => {
-                        if let Err(e) = req.exec().await {
-                            tracing::error!("Failed to execute timeout: {:?}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to timeout user: {:?}", e);
-                    }
-                }
-            }
-
-            return Ok(Command::text(format!(
-                "<@{}> Time's up! The answer was `{:.1}`. You've been timed out for 1 minute.",
-                original_user_id, answer
-            )));
-        }
-
-        // Check if answer is correct (anyone in channel can answer)
-        let user_answer = msg.content.trim();
-        if (MathTest { question, answer }).validate_answer(user_answer) {
-            locked_state.pending_math_tests.remove(&msg.channel_id.get());
-
-            // Award 50x normal XP (normal is 5-20, so this is 250-1000)
-            let bonus_xp = locked_state.rng.gen_range(250..1000);
-
-            // Update user XP
-            let db = locked_state.db.get()?;
-            let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-            if let Ok(mut user) = statement.query_one([msg.author.id.get().to_string()], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            }) {
-                let level = user.level;
-                let xp_required = xp_required_for_level(level);
-                let new_xp = user.xp + bonus_xp;
-                user.name = msg.author.name.clone();
-
-                if new_xp >= xp_required {
-                    let new_level = level + 1;
-                    user.level = new_level;
-                    user.xp = new_xp - xp_required;
-                    user.update_sync(&db)?;
-
-                    return Ok(Command::text(format!(
-                        "<@{}> Correct! Well done. You earned {} XP and leveled up to level {}!",
-                        msg.author.id.get(),
-                        bonus_xp,
-                        new_level
-                    ))
-                    .reply());
-                } else {
-                    user.xp = new_xp;
-                    user.update_sync(&db)?;
-                }
-            }
-
-            return Ok(Command::text(format!(
-                "<@{}> Correct! Well done. You earned {} XP!",
-                msg.author.id.get(),
-                bonus_xp
-            ))
-            .reply());
-        }
-        // Wrong answer - silently ignore (don't reply)
+    if let Some(cmd) = quiz_handler::handle_math_quiz(msg, &mut locked_state, http).await {
+        return Ok(cmd);
     }
 
-    // Check if there's a pending color test in this channel (anyone can answer)
-    if let Some(pending_test) = locked_state.pending_color_tests.get(&msg.channel_id.get()) {
-        let elapsed = pending_test.started_at.elapsed();
-
-        let r = pending_test.r;
-        let g = pending_test.g;
-        let b = pending_test.b;
-        let original_user_id = pending_test.user_id;
-
-        if elapsed.as_secs() > 60 {
-            locked_state.pending_color_tests.remove(&msg.channel_id.get());
-
-            let timeout_until = twilight_model::util::Timestamp::from_secs(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-                    + 60,
-            )
-            .unwrap();
-
-            if let Some(guild_id) = msg.guild_id {
-                match http
-                    .update_guild_member(guild_id, Id::new(original_user_id))
-                    .communication_disabled_until(Some(timeout_until))
-                {
-                    Ok(req) => {
-                        if let Err(e) = req.exec().await {
-                            tracing::error!("Failed to execute timeout: {:?}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to timeout user: {:?}", e);
-                    }
-                }
-            }
-
-            return Ok(Command::text(format!(
-                "<@{}> Time's up! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You've been timed out for 1 minute.",
-                original_user_id,
-                r,
-                g,
-                b,
-                r,
-                g,
-                b
-            )));
-        }
-
-        let user_answer = msg.content.trim();
-        let quiz = ColorQuiz { r, g, b };
-
-        if quiz.validate_answer(user_answer) {
-            locked_state.pending_color_tests.remove(&msg.channel_id.get());
-
-            // Award same XP as math test (250-1000)
-            let bonus_xp = locked_state.rng.gen_range(250..1000);
-
-            // Update user XP
-            let db = locked_state.db.get()?;
-            let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-            if let Ok(mut user) = statement.query_one([msg.author.id.get().to_string()], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            }) {
-                let level = user.level;
-                let xp_required = xp_required_for_level(level);
-                let new_xp = user.xp + bonus_xp;
-                user.name = msg.author.name.clone();
-
-                if new_xp >= xp_required {
-                    let new_level = level + 1;
-                    user.level = new_level;
-                    user.xp = new_xp - xp_required;
-                    user.update_sync(&db)?;
-
-                    return Ok(Command::text(format!(
-                        "<@{}> Correct! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You earned {} XP and leveled up to level {}!",
-                        msg.author.id.get(),
-                        r,
-                        g,
-                        b,
-                        r,
-                        g,
-                        b,
-                        bonus_xp,
-                        new_level
-                    ))
-                    .reply());
-                } else {
-                    user.xp = new_xp;
-                    user.update_sync(&db)?;
-                }
-            }
-
-            return Ok(Command::text(format!(
-                "<@{}> Correct! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You earned {} XP!",
-                msg.author.id.get(),
-                r,
-                g,
-                b,
-                r,
-                g,
-                b,
-                bonus_xp
-            ))
-            .reply());
-        }
-        // Wrong answer - silently ignore (don't reply)
+    if let Some(cmd) = quiz_handler::handle_color_quiz(msg, &mut locked_state, http).await {
+        return Ok(cmd);
     }
 
-    // Random 1/100 chance to trigger math test
-    let should_trigger_math = locked_state.config.openai_api_key.is_some()
-        && locked_state.rng.gen_range(0..100) == 42
-        && !locked_state.pending_math_tests.contains_key(&msg.channel_id.get())
-        && !locked_state.pending_color_tests.contains_key(&msg.channel_id.get());
-
-    if should_trigger_math {
-        let api_key = locked_state.config.openai_api_key.clone().unwrap();
-        let db_clone = locked_state.db.clone();
-
-        // Use a new RNG for the async operation
-        let mut new_rng = rand::thread_rng();
-
-        match MathTest::generate(&api_key, &db_clone, &mut new_rng).await {
-            Ok(test) => {
-                let pending = PendingMathTest {
-                    user_id: msg.author.id.get(),
-                    channel_id: msg.channel_id.get(),
-                    question: test.question.clone(),
-                    answer: test.answer,
-                    started_at: TokioInstant::now(),
-                };
-
-                locked_state.pending_math_tests.insert(msg.channel_id.get(), pending);
-
-                return Ok(Command::text(format!(
-                    "**MATH TEST TIME!** Solve this in 30 seconds:\n`{}`\n(Answer to 1 decimal place)",
-                    test.question
-                )));
-            }
-            Err(e) => {
-                tracing::error!("Failed to generate math test: {:?}", e);
-            }
-        }
+    if let Some(cmd) = quiz_handler::trigger_math_quiz(msg, &mut locked_state).await {
+        return Ok(cmd);
     }
 
-    let should_trigger_color = locked_state.rng.gen_range(0..100) == 42
-        && !locked_state.pending_color_tests.contains_key(&msg.channel_id.get())
-        && !locked_state.pending_math_tests.contains_key(&msg.channel_id.get());
-
-    if should_trigger_color {
-        let quiz = ColorQuiz::generate(&mut locked_state.rng);
-
-        match quiz.generate_image() {
-            Ok(image_data) => {
-                let pending = PendingColorTest {
-                    user_id: msg.author.id.get(),
-                    channel_id: msg.channel_id.get(),
-                    r: quiz.r,
-                    g: quiz.g,
-                    b: quiz.b,
-                    started_at: TokioInstant::now(),
-                };
-
-                locked_state.pending_color_tests.insert(msg.channel_id.get(), pending);
-
-                return Ok(Command::text("**COLOR QUIZ TIME!** Guess this color in 60 seconds!\nFormat: `#RRGGBB`")
-                    .attachments(vec![Attachment::from_bytes(
-                        "color.png".to_string(),
-                        image_data,
-                        1
-                    )]));
-            }
-            Err(e) => {
-                tracing::error!("Failed to generate color quiz image: {:?}", e);
-            }
-        }
+    if let Some(cmd) = quiz_handler::trigger_color_quiz(msg, &mut locked_state).await {
+        return Ok(cmd);
     }
 
     let user = {
