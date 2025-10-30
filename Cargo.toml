@@ -41,10 +41,11 @@ color-eyre = "0.6.3"
 vesper = "0.13.0"
 once_cell = { version = "1.19.0", features = ["parking_lot"] }
 serde_rusqlite = "0.39.0"
-rig-core = "0.13.0"
+rig = { package = "rig-core", version = "0.13.0" }
 thiserror = "2.0.12"
 r2d2_sqlite = "0.30.0"
 r2d2 = "0.8.10"
 wb_sqlite = "0.2.1"
 rusqlite = { version = "0.36.0", features = ["bundled"] }
 num-format = "0.4.4"
+fasteval = "0.2.4"

@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::time::Instant as TokioInstant;
+
 use r2d2_sqlite::SqliteConnectionManager;
 use rand::prelude::ThreadRng;
 use reqwest::Client;
@@ -73,6 +75,16 @@ impl Command {
     }
 }
 
+/// Tracks a pending math test for a user
+#[derive(Debug, Clone)]
+pub struct PendingMathTest {
+    pub user_id: u64,
+    pub channel_id: u64,
+    pub question: String,
+    pub answer: f64,
+    pub started_at: TokioInstant,
+}
+
 /// This struct is used to store the state of the bot.\
 /// It is used to store the cache, the database connection, the config and the http client.
 pub struct State {
@@ -99,6 +111,8 @@ pub struct State {
     pub cache: InMemoryCache,
     /// Brave API
     pub brave_api: BraveApi,
+    /// Pending math tests
+    pub pending_math_tests: HashMap<u64, PendingMathTest>,
 }
 // i hate fixing error
 unsafe impl Send for State {}
@@ -122,6 +136,7 @@ impl State {
             cache: InMemoryCache::new(),
             brave_api: BraveApi::new(client_clone, &config.brave_api.clone().unwrap_or_default()),
             config,
+            pending_math_tests: HashMap::new(),
         }
     }
 }

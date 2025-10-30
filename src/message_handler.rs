@@ -6,6 +6,7 @@ use rand::{
 use serde_rusqlite::from_row;
 use std::{sync::Arc, time::Instant};
 use tokio::sync::MutexGuard;
+use tokio::time::Instant as TokioInstant;
 use twilight_http::Client as HttpClient;
 use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id};
 use vesper::twilight_exports::UserMarker;
@@ -13,7 +14,8 @@ use vesper::twilight_exports::UserMarker;
 use crate::{
     ai_message,
     database::User,
-    structs::{Command, List, State},
+    math_test::MathTest,
+    structs::{Command, List, PendingMathTest, State},
     utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
     RESPONDERS,
@@ -30,6 +32,146 @@ pub async fn handle_message(
         }
         if let Some(reaction) = &responder.react {
             return Ok(Command::react(reaction.chars().next().unwrap()));
+        }
+    }
+
+    // Check if user has a pending math test
+    if let Some(pending_test) = locked_state.pending_math_tests.get(&msg.author.id.get()) {
+        let elapsed = pending_test.started_at.elapsed();
+
+        // Check if 30 seconds have passed
+        if elapsed.as_secs() > 30 {
+            // Failed - timeout
+            locked_state.pending_math_tests.remove(&msg.author.id.get());
+
+            // Timeout the user for 1 minute
+            let timeout_until = twilight_model::util::Timestamp::from_secs(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64
+                    + 60,
+            )
+            .unwrap();
+
+            if let Some(guild_id) = msg.guild_id {
+                match http
+                    .update_guild_member(guild_id, msg.author.id)
+                    .communication_disabled_until(Some(timeout_until))
+                {
+                    Ok(req) => {
+                        if let Err(e) = req.exec().await {
+                            tracing::error!("Failed to execute timeout: {:?}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to timeout user: {:?}", e);
+                    }
+                }
+            }
+
+            return Ok(Command::text(format!(
+                "<@{}> Time's up! You took too long to answer. You've been timed out for 1 minute.",
+                msg.author.id.get()
+            ))
+            .reply());
+        }
+
+        // Check if answer is correct
+        let user_answer = msg.content.trim();
+        if (MathTest {
+            question: pending_test.question.clone(),
+            answer: pending_test.answer,
+        })
+        .validate_answer(user_answer)
+        {
+            locked_state.pending_math_tests.remove(&msg.author.id.get());
+
+            // Award 50x normal XP (normal is 5-20, so this is 250-1000)
+            let bonus_xp = locked_state.rng.gen_range(250..1000);
+
+            // Update user XP
+            let db = locked_state.db.get()?;
+            let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
+            if let Ok(mut user) = statement.query_one([msg.author.id.get().to_string()], |row| {
+                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+            }) {
+                let level = user.level;
+                let xp_required = xp_required_for_level(level);
+                let new_xp = user.xp + bonus_xp;
+                user.name = msg.author.name.clone();
+
+                if new_xp >= xp_required {
+                    let new_level = level + 1;
+                    user.level = new_level;
+                    user.xp = new_xp - xp_required;
+                    user.update_sync(&db)?;
+
+                    return Ok(Command::text(format!(
+                        "<@{}> Correct! Well done. You earned {} XP and leveled up to level {}!",
+                        msg.author.id.get(),
+                        bonus_xp,
+                        new_level
+                    ))
+                    .reply());
+                } else {
+                    user.xp = new_xp;
+                    user.update_sync(&db)?;
+                }
+            }
+
+            return Ok(Command::text(format!(
+                "<@{}> Correct! Well done. You earned {} XP!",
+                msg.author.id.get(),
+                bonus_xp
+            ))
+            .reply());
+        } else {
+            // Wrong answer - don't remove, they can keep trying until timeout
+            return Ok(Command::text(format!(
+                "<@{}> Wrong answer! Try again. (Time remaining: {} seconds)",
+                msg.author.id.get(),
+                30 - elapsed.as_secs()
+            ))
+            .reply());
+        }
+    }
+
+    // Random 1/100 chance to trigger math test
+    let should_trigger_math = locked_state.config.openai_api_key.is_some()
+        && locked_state.rng.gen_range(0..1) == 0
+        && !locked_state.pending_math_tests.contains_key(&msg.author.id.get());
+
+    if should_trigger_math {
+        let api_key = locked_state.config.openai_api_key.clone().unwrap();
+        let db_clone = locked_state.db.clone();
+
+        // Use a new RNG for the async operation
+        let mut new_rng = rand::thread_rng();
+
+        match MathTest::generate(&api_key, &db_clone, &mut new_rng).await {
+            Ok(test) => {
+                let pending = PendingMathTest {
+                    user_id: msg.author.id.get(),
+                    channel_id: msg.channel_id.get(),
+                    question: test.question.clone(),
+                    answer: test.answer,
+                    started_at: TokioInstant::now(),
+                };
+
+                locked_state.pending_math_tests.insert(msg.author.id.get(), pending);
+
+                return Ok(Command::text(format!(
+                    "<@{}> **MATH TEST TIME!** Solve this in 30 seconds:\n`{}`\n(Answer to 1 decimal place)",
+                    msg.author.id.get(),
+                    test.question
+                ))
+                .reply()
+                .mention());
+            }
+            Err(e) => {
+                tracing::error!("Failed to generate math test: {:?}", e);
+            }
         }
     }
 

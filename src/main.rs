@@ -41,6 +41,7 @@ mod commands;
 mod config;
 mod database;
 mod event_handler;
+mod math_test;
 mod message_handler;
 mod structs;
 pub mod utils;
@@ -82,6 +83,7 @@ async fn main() -> color_eyre::Result<()> {
     }
 
     rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
+    rusqlite.execute(database::MathQuestion::CREATE_TABLE_SQL, [])?;
 
     let config = Arc::new(cfg);
 

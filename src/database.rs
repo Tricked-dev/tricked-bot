@@ -81,3 +81,14 @@ pub struct Memory {
     #[sql(constraint = "NOT NULL")]
     pub key: String,
 }
+
+#[derive(CreateTableSql, InsertSync, UpdateSync, Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MathQuestion {
+    #[sql(constraint = "PRIMARY KEY AUTOINCREMENT")]
+    #[sql(typ = "INTEGER")]
+    pub id: i32,
+    #[sql(constraint = "NOT NULL")]
+    pub question: String,
+    #[sql(constraint = "NOT NULL")]
+    pub answer: f64,
+}
