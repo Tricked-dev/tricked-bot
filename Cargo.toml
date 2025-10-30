@@ -49,3 +49,4 @@ wb_sqlite = "0.2.1"
 rusqlite = { version = "0.36.0", features = ["bundled"] }
 num-format = "0.4.4"
 fasteval = "0.2.4"
+png = "0.17"

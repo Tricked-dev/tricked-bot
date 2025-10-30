@@ -85,6 +85,17 @@ pub struct PendingMathTest {
     pub started_at: TokioInstant,
 }
 
+/// Tracks a pending color test for a user
+#[derive(Debug, Clone)]
+pub struct PendingColorTest {
+    pub user_id: u64,
+    pub channel_id: u64,
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub started_at: TokioInstant,
+}
+
 /// This struct is used to store the state of the bot.\
 /// It is used to store the cache, the database connection, the config and the http client.
 pub struct State {
@@ -113,6 +124,8 @@ pub struct State {
     pub brave_api: BraveApi,
     /// Pending math tests
     pub pending_math_tests: HashMap<u64, PendingMathTest>,
+    /// Pending color tests
+    pub pending_color_tests: HashMap<u64, PendingColorTest>,
 }
 // i hate fixing error
 unsafe impl Send for State {}
@@ -137,6 +150,7 @@ impl State {
             brave_api: BraveApi::new(client_clone, &config.brave_api.clone().unwrap_or_default()),
             config,
             pending_math_tests: HashMap::new(),
+            pending_color_tests: HashMap::new(),
         }
     }
 }

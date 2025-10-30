@@ -37,6 +37,7 @@ use std::{collections::HashMap, env, sync::Arc};
 
 pub mod ai_message;
 pub mod brave;
+mod color_quiz;
 mod commands;
 mod config;
 mod database;

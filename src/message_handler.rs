@@ -13,13 +13,15 @@ use vesper::twilight_exports::UserMarker;
 
 use crate::{
     ai_message,
+    color_quiz::ColorQuiz,
     database::User,
     math_test::MathTest,
-    structs::{Command, List, PendingMathTest, State},
+    structs::{Command, List, PendingColorTest, PendingMathTest, State},
     utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
     RESPONDERS,
 };
+use twilight_model::http::attachment::Attachment;
 
 pub async fn handle_message(
     msg: &MessageCreate,
@@ -137,9 +139,97 @@ pub async fn handle_message(
         }
     }
 
+    // Check if user has a pending color test
+    if let Some(pending_test) = locked_state.pending_color_tests.get(&msg.author.id.get()) {
+        let elapsed = pending_test.started_at.elapsed();
+
+        // Clone the values we need before any mutable operations
+        let r = pending_test.r;
+        let g = pending_test.g;
+        let b = pending_test.b;
+
+        // Color test has 60 seconds timeout (no penalty for timeout)
+        if elapsed.as_secs() > 60 {
+            locked_state.pending_color_tests.remove(&msg.author.id.get());
+            return Ok(Command::text(format!(
+                "<@{}> Time's up! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`",
+                msg.author.id.get(),
+                r,
+                g,
+                b,
+                r,
+                g,
+                b
+            ))
+            .reply());
+        }
+
+        // Check if answer is correct
+        let user_answer = msg.content.trim();
+        let quiz = ColorQuiz { r, g, b };
+
+        if quiz.validate_answer(user_answer) {
+            locked_state.pending_color_tests.remove(&msg.author.id.get());
+
+            // Award same XP as math test (250-1000)
+            let bonus_xp = locked_state.rng.gen_range(250..1000);
+
+            // Update user XP
+            let db = locked_state.db.get()?;
+            let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
+            if let Ok(mut user) = statement.query_one([msg.author.id.get().to_string()], |row| {
+                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+            }) {
+                let level = user.level;
+                let xp_required = xp_required_for_level(level);
+                let new_xp = user.xp + bonus_xp;
+                user.name = msg.author.name.clone();
+
+                if new_xp >= xp_required {
+                    let new_level = level + 1;
+                    user.level = new_level;
+                    user.xp = new_xp - xp_required;
+                    user.update_sync(&db)?;
+
+                    return Ok(Command::text(format!(
+                        "<@{}> Correct! The color was `rgb({}, {}, {})`. You earned {} XP and leveled up to level {}!",
+                        msg.author.id.get(),
+                        r,
+                        g,
+                        b,
+                        bonus_xp,
+                        new_level
+                    ))
+                    .reply());
+                } else {
+                    user.xp = new_xp;
+                    user.update_sync(&db)?;
+                }
+            }
+
+            return Ok(Command::text(format!(
+                "<@{}> Correct! The color was `rgb({}, {}, {})`. You earned {} XP!",
+                msg.author.id.get(),
+                r,
+                g,
+                b,
+                bonus_xp
+            ))
+            .reply());
+        } else {
+            // Wrong answer - they can keep trying until timeout (no penalty)
+            return Ok(Command::text(format!(
+                "<@{}> Not quite! Try again. (Time remaining: {} seconds)\nSupported formats: `#RRGGBB` or `oklch(L% C H)` or `L% C H` or `L%, C, H`",
+                msg.author.id.get(),
+                60 - elapsed.as_secs()
+            ))
+            .reply());
+        }
+    }
+
     // Random 1/100 chance to trigger math test
     let should_trigger_math = locked_state.config.openai_api_key.is_some()
-        && locked_state.rng.gen_range(0..1) == 0
+        && locked_state.rng.gen_range(0..100) == 42
         && !locked_state.pending_math_tests.contains_key(&msg.author.id.get());
 
     if should_trigger_math {
@@ -171,6 +261,47 @@ pub async fn handle_message(
             }
             Err(e) => {
                 tracing::error!("Failed to generate math test: {:?}", e);
+            }
+        }
+    }
+
+    // Random 1/100 chance to trigger color test
+    let should_trigger_color = locked_state.rng.gen_range(0..1) == 0
+        && !locked_state.pending_color_tests.contains_key(&msg.author.id.get())
+        && !locked_state.pending_math_tests.contains_key(&msg.author.id.get());
+
+    if should_trigger_color {
+        // Generate color quiz
+        let quiz = ColorQuiz::generate(&mut locked_state.rng);
+
+        // Generate the image
+        match quiz.generate_image() {
+            Ok(image_data) => {
+                let pending = PendingColorTest {
+                    user_id: msg.author.id.get(),
+                    channel_id: msg.channel_id.get(),
+                    r: quiz.r,
+                    g: quiz.g,
+                    b: quiz.b,
+                    started_at: TokioInstant::now(),
+                };
+
+                locked_state.pending_color_tests.insert(msg.author.id.get(), pending);
+
+                return Ok(Command::text(format!(
+                    "<@{}> **COLOR QUIZ TIME!** Guess this color in 60 seconds!\nFormats: `#RRGGBB` (hex) or `oklch(L% C H)` / `L% C H` / `L%, C, H`",
+                    msg.author.id.get()
+                ))
+                .reply()
+                .mention()
+                .attachments(vec![Attachment::from_bytes(
+                    "color.png".to_string(),
+                    image_data,
+                    1
+                )]));
+            }
+            Err(e) => {
+                tracing::error!("Failed to generate color quiz image: {:?}", e);
             }
         }
     }
