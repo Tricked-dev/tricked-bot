@@ -37,16 +37,20 @@ pub async fn handle_message(
         }
     }
 
-    // Check if user has a pending math test
-    if let Some(pending_test) = locked_state.pending_math_tests.get(&msg.author.id.get()) {
+    // Check if there's a pending math test in this channel (anyone can answer)
+    if let Some(pending_test) = locked_state.pending_math_tests.get(&msg.channel_id.get()) {
         let elapsed = pending_test.started_at.elapsed();
+
+        // Clone values we need before mutable operations
+        let question = pending_test.question.clone();
+        let answer = pending_test.answer;
+        let original_user_id = pending_test.user_id;
 
         // Check if 30 seconds have passed
         if elapsed.as_secs() > 30 {
-            // Failed - timeout
-            locked_state.pending_math_tests.remove(&msg.author.id.get());
+            locked_state.pending_math_tests.remove(&msg.channel_id.get());
 
-            // Timeout the user for 1 minute
+            // Timeout the original user for 1 minute
             let timeout_until = twilight_model::util::Timestamp::from_secs(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -58,7 +62,7 @@ pub async fn handle_message(
 
             if let Some(guild_id) = msg.guild_id {
                 match http
-                    .update_guild_member(guild_id, msg.author.id)
+                    .update_guild_member(guild_id, Id::new(original_user_id))
                     .communication_disabled_until(Some(timeout_until))
                 {
                     Ok(req) => {
@@ -73,21 +77,15 @@ pub async fn handle_message(
             }
 
             return Ok(Command::text(format!(
-                "<@{}> Time's up! You took too long to answer. You've been timed out for 1 minute.",
-                msg.author.id.get()
-            ))
-            .reply());
+                "<@{}> Time's up! The answer was `{:.1}`. You've been timed out for 1 minute.",
+                original_user_id, answer
+            )));
         }
 
-        // Check if answer is correct
+        // Check if answer is correct (anyone in channel can answer)
         let user_answer = msg.content.trim();
-        if (MathTest {
-            question: pending_test.question.clone(),
-            answer: pending_test.answer,
-        })
-        .validate_answer(user_answer)
-        {
-            locked_state.pending_math_tests.remove(&msg.author.id.get());
+        if (MathTest { question, answer }).validate_answer(user_answer) {
+            locked_state.pending_math_tests.remove(&msg.channel_id.get());
 
             // Award 50x normal XP (normal is 5-20, so this is 250-1000)
             let bonus_xp = locked_state.rng.gen_range(250..1000);
@@ -128,48 +126,83 @@ pub async fn handle_message(
                 bonus_xp
             ))
             .reply());
-        } else {
-            // Wrong answer - don't remove, they can keep trying until timeout
-            return Ok(Command::text(format!(
-                "<@{}> Wrong answer! Try again. (Time remaining: {} seconds)",
-                msg.author.id.get(),
-                30 - elapsed.as_secs()
-            ))
-            .reply());
         }
+        // Wrong answer - silently ignore (don't reply)
     }
 
-    // Check if user has a pending color test
-    if let Some(pending_test) = locked_state.pending_color_tests.get(&msg.author.id.get()) {
+    // Check if there's a pending color test in this channel (anyone can answer)
+    if let Some(pending_test) = locked_state.pending_color_tests.get(&msg.channel_id.get()) {
         let elapsed = pending_test.started_at.elapsed();
 
         // Clone the values we need before any mutable operations
         let r = pending_test.r;
         let g = pending_test.g;
         let b = pending_test.b;
+        let original_user_id = pending_test.user_id;
 
-        // Color test has 60 seconds timeout (no penalty for timeout)
+        // Color test has 60 seconds timeout
         if elapsed.as_secs() > 60 {
-            locked_state.pending_color_tests.remove(&msg.author.id.get());
-            return Ok(Command::text(format!(
-                "<@{}> Time's up! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`",
-                msg.author.id.get(),
+            locked_state.pending_color_tests.remove(&msg.channel_id.get());
+
+            tracing::info!(
+                "Color quiz timeout - Answer was: RGB({}, {}, {}) = #{:02x}{:02x}{:02x}",
                 r,
                 g,
                 b,
                 r,
                 g,
                 b
-            ))
-            .reply());
+            );
+
+            // Timeout the original user for 1 minute
+            let timeout_until = twilight_model::util::Timestamp::from_secs(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64
+                    + 60,
+            )
+            .unwrap();
+
+            if let Some(guild_id) = msg.guild_id {
+                match http
+                    .update_guild_member(guild_id, Id::new(original_user_id))
+                    .communication_disabled_until(Some(timeout_until))
+                {
+                    Ok(req) => {
+                        if let Err(e) = req.exec().await {
+                            tracing::error!("Failed to execute timeout: {:?}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to timeout user: {:?}", e);
+                    }
+                }
+            }
+
+            return Ok(Command::text(format!(
+                "<@{}> Time's up! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You've been timed out for 1 minute.",
+                original_user_id,
+                r,
+                g,
+                b,
+                r,
+                g,
+                b
+            )));
         }
 
-        // Check if answer is correct
+        // Check if answer is correct (anyone in channel can answer)
         let user_answer = msg.content.trim();
         let quiz = ColorQuiz { r, g, b };
 
+        tracing::info!(
+            "Validating answer '{}' against RGB({}, {}, {}) = #{:02x}{:02x}{:02x}",
+            user_answer, r, g, b, r, g, b
+        );
+
         if quiz.validate_answer(user_answer) {
-            locked_state.pending_color_tests.remove(&msg.author.id.get());
+            locked_state.pending_color_tests.remove(&msg.channel_id.get());
 
             // Award same XP as math test (250-1000)
             let bonus_xp = locked_state.rng.gen_range(250..1000);
@@ -192,8 +225,11 @@ pub async fn handle_message(
                     user.update_sync(&db)?;
 
                     return Ok(Command::text(format!(
-                        "<@{}> Correct! The color was `rgb({}, {}, {})`. You earned {} XP and leveled up to level {}!",
+                        "<@{}> Correct! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You earned {} XP and leveled up to level {}!",
                         msg.author.id.get(),
+                        r,
+                        g,
+                        b,
                         r,
                         g,
                         b,
@@ -208,29 +244,26 @@ pub async fn handle_message(
             }
 
             return Ok(Command::text(format!(
-                "<@{}> Correct! The color was `rgb({}, {}, {})`. You earned {} XP!",
+                "<@{}> Correct! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You earned {} XP!",
                 msg.author.id.get(),
+                r,
+                g,
+                b,
                 r,
                 g,
                 b,
                 bonus_xp
             ))
             .reply());
-        } else {
-            // Wrong answer - they can keep trying until timeout (no penalty)
-            return Ok(Command::text(format!(
-                "<@{}> Not quite! Try again. (Time remaining: {} seconds)\nSupported formats: `#RRGGBB` or `oklch(L% C H)` or `L% C H` or `L%, C, H`",
-                msg.author.id.get(),
-                60 - elapsed.as_secs()
-            ))
-            .reply());
         }
+        // Wrong answer - silently ignore (don't reply)
     }
 
     // Random 1/100 chance to trigger math test
     let should_trigger_math = locked_state.config.openai_api_key.is_some()
         && locked_state.rng.gen_range(0..100) == 42
-        && !locked_state.pending_math_tests.contains_key(&msg.author.id.get());
+        && !locked_state.pending_math_tests.contains_key(&msg.channel_id.get())
+        && !locked_state.pending_color_tests.contains_key(&msg.channel_id.get());
 
     if should_trigger_math {
         let api_key = locked_state.config.openai_api_key.clone().unwrap();
@@ -249,15 +282,12 @@ pub async fn handle_message(
                     started_at: TokioInstant::now(),
                 };
 
-                locked_state.pending_math_tests.insert(msg.author.id.get(), pending);
+                locked_state.pending_math_tests.insert(msg.channel_id.get(), pending);
 
                 return Ok(Command::text(format!(
-                    "<@{}> **MATH TEST TIME!** Solve this in 30 seconds:\n`{}`\n(Answer to 1 decimal place)",
-                    msg.author.id.get(),
+                    "**MATH TEST TIME!** Solve this in 30 seconds:\n`{}`\n(Answer to 1 decimal place)",
                     test.question
-                ))
-                .reply()
-                .mention());
+                )));
             }
             Err(e) => {
                 tracing::error!("Failed to generate math test: {:?}", e);
@@ -267,14 +297,13 @@ pub async fn handle_message(
 
     // Random 1/100 chance to trigger color test
     let should_trigger_color = locked_state.rng.gen_range(0..1) == 0
-        && !locked_state.pending_color_tests.contains_key(&msg.author.id.get())
-        && !locked_state.pending_math_tests.contains_key(&msg.author.id.get());
+        && !locked_state.pending_color_tests.contains_key(&msg.channel_id.get())
+        && !locked_state.pending_math_tests.contains_key(&msg.channel_id.get());
 
     if should_trigger_color {
         // Generate color quiz
         let quiz = ColorQuiz::generate(&mut locked_state.rng);
 
-        // Generate the image
         match quiz.generate_image() {
             Ok(image_data) => {
                 let pending = PendingColorTest {
@@ -286,19 +315,14 @@ pub async fn handle_message(
                     started_at: TokioInstant::now(),
                 };
 
-                locked_state.pending_color_tests.insert(msg.author.id.get(), pending);
+                locked_state.pending_color_tests.insert(msg.channel_id.get(), pending);
 
-                return Ok(Command::text(format!(
-                    "<@{}> **COLOR QUIZ TIME!** Guess this color in 60 seconds!\nFormats: `#RRGGBB` (hex) or `oklch(L% C H)` / `L% C H` / `L%, C, H`",
-                    msg.author.id.get()
-                ))
-                .reply()
-                .mention()
-                .attachments(vec![Attachment::from_bytes(
-                    "color.png".to_string(),
-                    image_data,
-                    1
-                )]));
+                return Ok(Command::text("**COLOR QUIZ TIME!** Guess this color in 60 seconds!\nFormat: `#RRGGBB`")
+                    .attachments(vec![Attachment::from_bytes(
+                        "color.png".to_string(),
+                        image_data,
+                        1
+                    )]));
             }
             Err(e) => {
                 tracing::error!("Failed to generate color quiz image: {:?}", e);
