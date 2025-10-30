@@ -134,27 +134,14 @@ pub async fn handle_message(
     if let Some(pending_test) = locked_state.pending_color_tests.get(&msg.channel_id.get()) {
         let elapsed = pending_test.started_at.elapsed();
 
-        // Clone the values we need before any mutable operations
         let r = pending_test.r;
         let g = pending_test.g;
         let b = pending_test.b;
         let original_user_id = pending_test.user_id;
 
-        // Color test has 60 seconds timeout
         if elapsed.as_secs() > 60 {
             locked_state.pending_color_tests.remove(&msg.channel_id.get());
 
-            tracing::info!(
-                "Color quiz timeout - Answer was: RGB({}, {}, {}) = #{:02x}{:02x}{:02x}",
-                r,
-                g,
-                b,
-                r,
-                g,
-                b
-            );
-
-            // Timeout the original user for 1 minute
             let timeout_until = twilight_model::util::Timestamp::from_secs(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -192,14 +179,8 @@ pub async fn handle_message(
             )));
         }
 
-        // Check if answer is correct (anyone in channel can answer)
         let user_answer = msg.content.trim();
         let quiz = ColorQuiz { r, g, b };
-
-        tracing::info!(
-            "Validating answer '{}' against RGB({}, {}, {}) = #{:02x}{:02x}{:02x}",
-            user_answer, r, g, b, r, g, b
-        );
 
         if quiz.validate_answer(user_answer) {
             locked_state.pending_color_tests.remove(&msg.channel_id.get());
@@ -295,13 +276,11 @@ pub async fn handle_message(
         }
     }
 
-    // Random 1/100 chance to trigger color test
-    let should_trigger_color = locked_state.rng.gen_range(0..1) == 0
+    let should_trigger_color = locked_state.rng.gen_range(0..100) == 42
         && !locked_state.pending_color_tests.contains_key(&msg.channel_id.get())
         && !locked_state.pending_math_tests.contains_key(&msg.channel_id.get());
 
     if should_trigger_color {
-        // Generate color quiz
         let quiz = ColorQuiz::generate(&mut locked_state.rng);
 
         match quiz.generate_image() {
