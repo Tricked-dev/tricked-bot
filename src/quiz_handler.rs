@@ -100,19 +100,23 @@ pub async fn handle_math_quiz(
         let db = locked_state.db.get().ok()?;
         let (bonus_xp, new_level) = award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
 
+        let duration_secs = elapsed.as_secs_f64();
+
         return Some(
             Command::text(if let Some(level) = new_level {
                 format!(
-                    "<@{}> Correct! Well done. You earned {} XP and leveled up to level {}!",
+                    "<@{}> Correct! Well done. You earned {} XP and leveled up to level {}! (Solved in {:.3}s)",
                     msg.author.id.get(),
                     bonus_xp,
-                    level
+                    level,
+                    duration_secs
                 )
             } else {
                 format!(
-                    "<@{}> Correct! Well done. You earned {} XP!",
+                    "<@{}> Correct! Well done. You earned {} XP! (Solved in {:.3}s)",
                     msg.author.id.get(),
-                    bonus_xp
+                    bonus_xp,
+                    duration_secs
                 )
             })
             .reply(),
@@ -200,7 +204,8 @@ pub async fn trigger_math_quiz(
             locked_state.pending_math_tests.insert(msg.channel_id.get(), pending);
 
             Some(Command::text(format!(
-                "**MATH TEST TIME!** Solve this in 30 seconds:\n`{}`\n(Answer to 1 decimal place)",
+                "<@{}> **MATH TEST TIME!** Solve this in 30 seconds:\n`{}`\n(Answer to 1 decimal place)",
+                msg.author.id.get(),
                 test.question
             )))
         }
