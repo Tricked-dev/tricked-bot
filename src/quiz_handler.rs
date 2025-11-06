@@ -139,12 +139,8 @@ pub async fn handle_color_quiz(
     if elapsed.as_secs() > 60 {
         locked_state.pending_color_tests.remove(&msg.channel_id.get());
 
-        if let Some(guild_id) = msg.guild_id {
-            apply_timeout(http, guild_id, original_user_id).await;
-        }
-
         return Some(Command::text(format!(
-            "<@{}> Time's up! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`. You've been timed out for 1 minute.",
+            "<@{}> Time's up! The color was `rgb({}, {}, {})` or `#{:02x}{:02x}{:02x}`.",
             original_user_id, r, g, b, r, g, b
         )));
     }

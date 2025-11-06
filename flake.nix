@@ -22,7 +22,15 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        rustToolchain = pkgs.rust-bin.beta.latest.default;
+        rustToolchain = pkgs.rust-bin.beta.latest.default.override {
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+            "clippy"
+            "rustc-dev"
+            "llvm-tools-preview"
+          ];
+        };
       in
       {
         packages = {
