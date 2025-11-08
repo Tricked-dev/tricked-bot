@@ -98,7 +98,8 @@ pub async fn handle_math_quiz(
         locked_state.pending_math_tests.remove(&msg.channel_id.get());
 
         let db = locked_state.db.get().ok()?;
-        let (bonus_xp, new_level) = award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
+        let (bonus_xp, new_level) =
+            award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
 
         let duration_secs = elapsed.as_secs_f64();
 
@@ -150,7 +151,8 @@ pub async fn handle_color_quiz(
         locked_state.pending_color_tests.remove(&msg.channel_id.get());
 
         let db = locked_state.db.get().ok()?;
-        let (bonus_xp, new_level) = award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
+        let (bonus_xp, new_level) =
+            award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
 
         return Some(
             Command::text(if let Some(level) = new_level {
@@ -171,12 +173,9 @@ pub async fn handle_color_quiz(
     None
 }
 
-pub async fn trigger_math_quiz(
-    msg: &MessageCreate,
-    locked_state: &mut MutexGuard<'_, State>,
-) -> Option<Command> {
+pub async fn trigger_math_quiz(msg: &MessageCreate, locked_state: &mut MutexGuard<'_, State>) -> Option<Command> {
     if locked_state.config.openai_api_key.is_none()
-        || locked_state.rng.gen_range(0..100) != 42
+        || locked_state.rng.gen_range(0..100) == 42
         || locked_state.pending_math_tests.contains_key(&msg.channel_id.get())
         || locked_state.pending_color_tests.contains_key(&msg.channel_id.get())
     {
@@ -212,11 +211,8 @@ pub async fn trigger_math_quiz(
     }
 }
 
-pub async fn trigger_color_quiz(
-    msg: &MessageCreate,
-    locked_state: &mut MutexGuard<'_, State>,
-) -> Option<Command> {
-    if locked_state.rng.gen_range(0..100) != 42
+pub async fn trigger_color_quiz(msg: &MessageCreate, locked_state: &mut MutexGuard<'_, State>) -> Option<Command> {
+    if locked_state.rng.gen_range(0..100) == 42
         || locked_state.pending_color_tests.contains_key(&msg.channel_id.get())
         || locked_state.pending_math_tests.contains_key(&msg.channel_id.get())
     {
