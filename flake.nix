@@ -31,6 +31,7 @@
             "llvm-tools-preview"
           ];
         };
+        rustNightlyToolchain = pkgs.rust-bin.nightly.latest.default;
       in
       {
         packages = {
@@ -79,6 +80,8 @@
               clang
               mold
               rustToolchain
+              rustNightlyToolchain
+              cargo-udeps
             ];
 
             LD_LIBRARY_PATH = lib.makeLibraryPath [

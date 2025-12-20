@@ -1,7 +1,7 @@
 use crate::database::MathQuestion;
 use color_eyre::Result;
+use openrouter_api::{OpenRouterClient, types::chat::{ChatCompletionRequest, Message, MessageContent}};
 use rand::Rng;
-use rig::{completion::Prompt, providers, client::CompletionClient};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use serde_rusqlite::from_rows;
@@ -20,10 +20,11 @@ pub struct MathTest {
 impl MathTest {
     pub async fn generate(
         openai_api_key: &str,
+        model: &str,
         db: &Pool<SqliteConnectionManager>,
         rng: &mut impl Rng,
     ) -> Result<Self> {
-        let client = providers::openai::Client::new(openai_api_key);
+        let client = OpenRouterClient::from_api_key(openai_api_key)?;
 
         // Retry loop to avoid recursion
         for attempt in 0..5 {
@@ -69,26 +70,52 @@ impl MathTest {
 
             // Select a random prompt template and fill in the example questions
             let prompt_template = MATH_PROMPTS[rng.gen_range(0..MATH_PROMPTS.len())];
-            let prompt = prompt_template
+            let user_prompt = prompt_template
                 .replace("{ex1}", &ex1)
                 .replace("{ex2}", &ex2)
                 .replace("{ex3}", &ex3)
                 .replace("{ex4}", &ex4);
 
-            // Generate question using AI
-            let agent = client
-                .agent("gpt-4o")
-                .preamble(
-                    "You are a math expression generator for mental math challenges. \
-                    Generate simple arithmetic expressions that can be solved mentally. \
-                    Output ONLY the mathematical expression with numbers and operators, no explanations, no greetings, no additional text."
-                )
-                .temperature(0.9)
-                .max_tokens(50)
-                .build();
+            let system_prompt = "You are a math expression generator for mental math challenges. \
+                Generate simple arithmetic expressions that can be solved mentally. \
+                Output ONLY the mathematical expression with numbers and operators, no explanations, no greetings, no additional text.";
 
-            let question = match agent.prompt(&prompt).await {
-                Ok(q) => q.trim().to_string(),
+            // Generate question using AI
+            let request = ChatCompletionRequest {
+                model: model.to_string(),
+                messages: vec![
+                    Message {
+                        role: "system".to_string(),
+                        content: MessageContent::Text(system_prompt.to_string()),
+                        ..Default::default()
+                    },
+                    Message {
+                        role: "user".to_string(),
+                        content: MessageContent::Text(user_prompt),
+                        ..Default::default()
+                    },
+                ],
+                temperature: Some(0.9),
+                max_tokens: Some(50),
+                ..Default::default()
+            };
+
+            let question = match client.chat()?.chat_completion(request).await {
+                Ok(response) => {
+                    match response.choices.first() {
+                        Some(choice) => match &choice.message.content {
+                            MessageContent::Text(text) => text.trim().to_string(),
+                            MessageContent::Parts(_) => {
+                                tracing::error!("Unexpected multipart content in response");
+                                continue;
+                            }
+                        },
+                        None => {
+                            tracing::error!("No response from API");
+                            continue;
+                        }
+                    }
+                },
                 Err(e) => {
                     tracing::error!("AI generation failed on attempt {}: {:?}", attempt + 1, e);
                     continue;

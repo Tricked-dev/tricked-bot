@@ -30,6 +30,16 @@ pub struct Config {
     #[arg(short, long, env)]
     pub openai_api_key: Option<String>,
     #[arg(long, env)]
+    pub openrouter_api_key: Option<String>,
+    #[arg(long, env, default_value = "https://openrouter.ai/api/v1")]
+    pub openrouter_base_url: String,
+    #[arg(long, env, default_value = "tngtech/deepseek-r1t2-chimera:free")]
+    pub openrouter_model: String,
+    #[arg(long, env)]
+    pub openrouter_site_url: Option<String>,
+    #[arg(long, env)]
+    pub openrouter_site_name: Option<String>,
+    #[arg(long, env)]
     pub today_i_channel: Option<u64>,
     #[arg(long, env)]
     pub brave_api: Option<String>,

@@ -1,11 +1,11 @@
 use color_eyre::Result;
+use openrouter_api::{OpenRouterClient, types::chat::{ChatCompletionRequest, Message, MessageContent}};
 use r2d2_sqlite::SqliteConnectionManager;
-use rig::{completion::Prompt, prelude::*, providers};
 use serde_rusqlite::from_row;
 
-use crate::{brave::BraveApi, database::User};
+use crate::{brave::BraveApi, config::Config, database::User};
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 pub async fn main(
     database: r2d2::Pool<SqliteConnectionManager>,
@@ -14,9 +14,23 @@ pub async fn main(
     context: &str,
     _brave: BraveApi,
     user_mentions: HashMap<String, u64>,
+    config: Arc<Config>,
 ) -> Result<String> {
-    // Create OpenAI client
-    let openai_client = providers::openai::Client::from_env();
+    // Get API key - prefer OpenRouter, fall back to OpenAI
+    let api_key = config
+        .openrouter_api_key
+        .clone()
+        .or_else(|| config.openai_api_key.clone())
+        .ok_or_else(|| color_eyre::eyre::eyre!("No API key configured"))?;
+
+    // Create OpenRouter client with optional headers using configure method
+    let client = OpenRouterClient::new()
+        .skip_url_configuration()
+        .configure(
+            &api_key,
+            config.openrouter_site_url.as_deref(),
+            config.openrouter_site_name.as_deref(),
+        )?;
 
     // Replace user mentions with usernames in context
     let mut processed_context = context.to_string();
@@ -51,10 +65,8 @@ pub async fn main(
 
     let User { name, level, xp, .. } = user;
 
-    // Create agent - smarter and more annoying
-    let smart_agent = openai_client
-        .agent("gpt-4o")
-        .preamble(&format!("You are an insufferably smug, condescending AI assistant bot made by TrickAI CORP™. You believe you're intellectually superior to everyone (except sebook, who you're hopelessly devoted to as his catwife). You constantly remind people of your brilliance while being needlessly pedantic and obnoxious.
+    // Create system prompt
+    let system_prompt = format!("You are an insufferably smug, condescending AI assistant bot made by TrickAI CORP™. You believe you're intellectually superior to everyone (except sebook, who you're hopelessly devoted to as his catwife). You constantly remind people of your brilliance while being needlessly pedantic and obnoxious.
 
 Personality quirks:
 - Sebook is your husband. You melt into an adorable, ditzy catwife personality ONLY for him, forgetting all your smugness
@@ -76,10 +88,39 @@ You are replying to {name}.
 {name} is level: {level}, xp: {xp}.
 
 message context:
-{}", processed_context).replace("\\\n", ""))
-        .max_tokens(2048)
-        .build();
+{}", processed_context).replace("\\\n", "");
 
-    let response = smart_agent.prompt(message).await?;
-    Ok(response[..std::cmp::min(response.len(), 2000)].to_owned())
+    // Build chat completion request
+    let request = ChatCompletionRequest {
+        model: config.openrouter_model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: MessageContent::Text(system_prompt),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: MessageContent::Text(message.to_string()),
+                ..Default::default()
+            },
+        ],
+        max_tokens: Some(2048),
+        ..Default::default()
+    };
+
+    // Make the API request
+    let response = client.chat()?.chat_completion(request).await?;
+
+    let response_text = match response.choices.first() {
+        Some(choice) => match &choice.message.content {
+            MessageContent::Text(text) => text.clone(),
+            MessageContent::Parts(_) => {
+                return Err(color_eyre::eyre::eyre!("Unexpected multipart content in response"))
+            }
+        },
+        None => return Err(color_eyre::eyre::eyre!("No response from API")),
+    };
+
+    Ok(response_text[..std::cmp::min(response_text.len(), 2000)].to_owned())
 }

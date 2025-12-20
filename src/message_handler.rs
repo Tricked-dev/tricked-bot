@@ -205,6 +205,7 @@ pub async fn handle_message(
                 &context,
                 locked_state.brave_api.clone(),
                 user_mentions,
+                locked_state.config.clone(),
             )
             .await
             {

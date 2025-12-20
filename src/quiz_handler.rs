@@ -182,11 +182,14 @@ pub async fn trigger_math_quiz(msg: &MessageCreate, locked_state: &mut MutexGuar
         return None;
     }
 
-    let api_key = locked_state.config.openai_api_key.clone().unwrap();
+    let api_key = locked_state.config.openrouter_api_key.clone()
+        .or_else(|| locked_state.config.openai_api_key.clone())
+        .unwrap();
+    let model = &locked_state.config.openrouter_model;
     let db_clone = locked_state.db.clone();
     let mut new_rng = rand::thread_rng();
 
-    match MathTest::generate(&api_key, &db_clone, &mut new_rng).await {
+    match MathTest::generate(&api_key, model, &db_clone, &mut new_rng).await {
         Ok(test) => {
             let pending = PendingMathTest {
                 user_id: msg.author.id.get(),
