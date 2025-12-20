@@ -145,14 +145,12 @@ fn get_user_or_default(database: &r2d2::Pool<SqliteConnectionManager>, user_id: 
         .get()
         .ok()
         .and_then(|db| {
-            db.prepare("SELECT * FROM user WHERE id = ?")
-                .ok()
-                .and_then(|mut stmt| {
-                    stmt.query_one([user_id.to_string()], |row| {
-                        from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-                    })
-                    .ok()
+            db.prepare("SELECT * FROM user WHERE id = ?").ok().and_then(|mut stmt| {
+                stmt.query_one([user_id.to_string()], |row| {
+                    from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
                 })
+                .ok()
+            })
         })
         .unwrap_or_else(|| User {
             id: user_id,
@@ -247,11 +245,15 @@ pub async fn main(
         .ok_or_else(|| color_eyre::eyre::eyre!("OpenRouter API key not configured"))?;
 
     // Create client
-    let client = OpenRouterClient::new().skip_url_configuration().configure(
-        &api_key,
-        config.openrouter_site_url.as_deref(),
-        config.openrouter_site_name.as_deref(),
-    )?;
+    let client = OpenRouterClient::new()
+        .skip_url_configuration()
+        .with_retries(3, 1000)
+        .with_timeout_secs(120)
+        .configure(
+            &api_key,
+            config.openrouter_site_url.as_deref(),
+            config.openrouter_site_name.as_deref(),
+        )?;
 
     // Process context and get user info
     let processed_context = replace_mentions(context.to_string(), &user_mentions, &database);
@@ -260,13 +262,8 @@ pub async fn main(
     let formatted_memories = format_memories(&memories);
 
     // Build prompt
-    let system_prompt = build_character_prompt(
-        &user.name,
-        user.level,
-        user.xp,
-        &processed_context,
-        &formatted_memories,
-    );
+    let system_prompt =
+        build_character_prompt(&user.name, user.level, user.xp, &processed_context, &formatted_memories);
 
     log::info!("prompt = {system_prompt}");
 
