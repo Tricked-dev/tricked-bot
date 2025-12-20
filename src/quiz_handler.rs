@@ -174,7 +174,7 @@ pub async fn handle_color_quiz(
 }
 
 pub async fn trigger_math_quiz(msg: &MessageCreate, locked_state: &mut MutexGuard<'_, State>) -> Option<Command> {
-    if locked_state.config.openai_api_key.is_none()
+    if locked_state.config.openrouter_api_key.is_none()
         || locked_state.rng.gen_range(0..500) != 42
         || locked_state.pending_math_tests.contains_key(&msg.channel_id.get())
         || locked_state.pending_color_tests.contains_key(&msg.channel_id.get())
@@ -182,9 +182,7 @@ pub async fn trigger_math_quiz(msg: &MessageCreate, locked_state: &mut MutexGuar
         return None;
     }
 
-    let api_key = locked_state.config.openrouter_api_key.clone()
-        .or_else(|| locked_state.config.openai_api_key.clone())
-        .unwrap();
+    let api_key = locked_state.config.openrouter_api_key.clone().unwrap();
     let model = &locked_state.config.openrouter_model;
     let db_clone = locked_state.db.clone();
     let mut new_rng = rand::thread_rng();

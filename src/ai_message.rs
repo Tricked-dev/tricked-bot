@@ -1,9 +1,18 @@
 use color_eyre::Result;
-use openrouter_api::{OpenRouterClient, types::chat::{ChatCompletionRequest, Message, MessageContent}};
+use futures::StreamExt;
+use openrouter_api::{
+    types::chat::{ChatCompletionRequest, Message, MessageContent},
+    OpenRouterClient,
+};
 use r2d2_sqlite::SqliteConnectionManager;
 use serde_rusqlite::from_row;
+use tokio::sync::mpsc;
 
-use crate::{brave::BraveApi, config::Config, database::{Memory, User}};
+use crate::{
+    brave::BraveApi,
+    config::Config,
+    database::{Memory, User},
+};
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -63,10 +72,7 @@ fn build_authors_note() -> &'static str {
 
 /// Retrieves relevant memories for the user from the database
 /// Reference: AGENT_GUIDE.md section on Memory Context Injection
-fn get_user_memories(
-    database: &r2d2::Pool<SqliteConnectionManager>,
-    user_id: u64,
-) -> Result<Vec<Memory>> {
+fn get_user_memories(database: &r2d2::Pool<SqliteConnectionManager>, user_id: u64) -> Result<Vec<Memory>> {
     let db = database.get()?;
     let mut statement = db.prepare("SELECT * FROM memory WHERE user_id = ? ORDER BY id DESC LIMIT 5")?;
 
@@ -95,18 +101,13 @@ fn format_memories(memories: &[Memory]) -> String {
 
 /// Builds the complete character prompt using PList + Ali:Chat format
 /// This is the most effective format per AGENT_GUIDE.md
-fn build_character_prompt(
-    user_name: &str,
-    user_level: i32,
-    user_xp: i32,
-    context: &str,
-    memories: &str,
-) -> String {
+fn build_character_prompt(user_name: &str, user_level: i32, user_xp: i32, context: &str, memories: &str) -> String {
     format!(
         r#"### System
-You are {{{{char}}}}, roleplaying in a Discord server. Stay in character at all times.
-Your responses must be detailed, creative, immersive, and drive the scenario forward.
+You are {{{{char}}}}, chatting in a Discord server. Stay in character at all times.
+Your responses must be witty, impactful, and conversational.
 Never break character. Never speak for {{{{user}}}}.
+DO NOT use asterisks for actions or emotes. Speak naturally without roleplay actions.
 
 ### Character Definition
 {plist}
@@ -138,6 +139,98 @@ Respond in character. Maximum 3 sentences. Make every word count."#,
     )
 }
 
+/// Get user from database or return default
+fn get_user_or_default(database: &r2d2::Pool<SqliteConnectionManager>, user_id: u64) -> User {
+    database
+        .get()
+        .ok()
+        .and_then(|db| {
+            db.prepare("SELECT * FROM user WHERE id = ?")
+                .ok()
+                .and_then(|mut stmt| {
+                    stmt.query_one([user_id.to_string()], |row| {
+                        from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+                    })
+                    .ok()
+                })
+        })
+        .unwrap_or_else(|| User {
+            id: user_id,
+            name: "Unknown".to_owned(),
+            level: 0,
+            xp: 0,
+        })
+}
+
+/// Replace user mentions in context with actual usernames
+fn replace_mentions(
+    context: String,
+    user_mentions: &HashMap<String, u64>,
+    database: &r2d2::Pool<SqliteConnectionManager>,
+) -> String {
+    let mut processed = context;
+    for (mention, user_id) in user_mentions {
+        if let Ok(db) = database.get() {
+            if let Ok(mut stmt) = db.prepare("SELECT * FROM user WHERE id = ?") {
+                if let Ok(user) = stmt.query_one([user_id.to_string()], |row| {
+                    from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
+                }) {
+                    processed = processed.replace(mention, &user.name);
+                }
+            }
+        }
+    }
+    processed
+}
+
+/// Stream AI response chunks through a channel
+async fn stream_ai_response(
+    client: OpenRouterClient<openrouter_api::Ready>,
+    request: ChatCompletionRequest,
+    tx: mpsc::UnboundedSender<String>,
+) {
+    let Ok(chat_client) = client.chat() else {
+        let _ = tx.send("AI Error: Failed to create chat client".to_string());
+        return;
+    };
+
+    let mut stream = chat_client.chat_completion_stream(request);
+    let mut accumulated_text = String::new();
+    let mut last_send = std::time::Instant::now();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(chunk) => {
+                if let Some(choice) = chunk.choices.first() {
+                    if let Some(MessageContent::Text(text)) = &choice.delta.content {
+                        accumulated_text.push_str(text.as_str());
+
+                        // Send updates every 50ms
+                        if last_send.elapsed().as_millis() >= 50 {
+                            let truncated = &accumulated_text[..accumulated_text.len().min(2000)];
+                            if tx.send(truncated.to_string()).is_err() {
+                                return;
+                            }
+                            last_send = std::time::Instant::now();
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Stream error: {:?}", e);
+                let _ = tx.send(format!("AI Error: {:?}", e));
+                return;
+            }
+        }
+    }
+
+    // Send final update
+    if !accumulated_text.is_empty() {
+        let truncated = &accumulated_text[..accumulated_text.len().min(2000)];
+        let _ = tx.send(truncated.to_string());
+    }
+}
+
 pub async fn main(
     database: r2d2::Pool<SqliteConnectionManager>,
     user_id: u64,
@@ -146,72 +239,38 @@ pub async fn main(
     _brave: BraveApi,
     user_mentions: HashMap<String, u64>,
     config: Arc<Config>,
-) -> Result<String> {
-    // Get API key - prefer OpenRouter, fall back to OpenAI
+) -> Result<mpsc::UnboundedReceiver<String>> {
+    // Get API key
     let api_key = config
         .openrouter_api_key
         .clone()
-        .or_else(|| config.openai_api_key.clone())
-        .ok_or_else(|| color_eyre::eyre::eyre!("No API key configured"))?;
+        .ok_or_else(|| color_eyre::eyre::eyre!("OpenRouter API key not configured"))?;
 
-    // Create OpenRouter client with optional headers using configure method
-    let client = OpenRouterClient::new()
-        .skip_url_configuration()
-        .configure(
-            &api_key,
-            config.openrouter_site_url.as_deref(),
-            config.openrouter_site_name.as_deref(),
-        )?;
+    // Create client
+    let client = OpenRouterClient::new().skip_url_configuration().configure(
+        &api_key,
+        config.openrouter_site_url.as_deref(),
+        config.openrouter_site_name.as_deref(),
+    )?;
 
-    // Replace user mentions with usernames in context
-    let mut processed_context = context.to_string();
-    for (mention, mentioned_user_id) in &user_mentions {
-        let db = database.get()?;
-        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-        if let Ok(mentioned_user) = statement.query_one([mentioned_user_id.to_string()], |row| {
-            from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-        }) {
-            processed_context = processed_context.replace(mention, &mentioned_user.name);
-        }
-    }
-
-    let user = {
-        let db = database.get()?;
-        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-        match statement
-            .query_one([user_id.to_string()], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            })
-            .ok()
-        {
-            Some(user) => user,
-            None => User {
-                id: user_id,
-                name: "Unknown".to_owned(),
-                level: 0,
-                xp: 0,
-            },
-        }
-    };
-
-    let User { name, level, xp, .. } = user;
-
-    // Retrieve user memories from database
+    // Process context and get user info
+    let processed_context = replace_mentions(context.to_string(), &user_mentions, &database);
+    let user = get_user_or_default(&database, user_id);
     let memories = get_user_memories(&database, user_id)?;
     let formatted_memories = format_memories(&memories);
 
-    // Build system prompt using PList + Ali:Chat format (per AGENT_GUIDE.md)
+    // Build prompt
     let system_prompt = build_character_prompt(
-        &name,
-        level,
-        xp,
+        &user.name,
+        user.level,
+        user.xp,
         &processed_context,
         &formatted_memories,
     );
 
-    log::info!(prompt = system_prompt)
+    log::info!("prompt = {system_prompt}");
 
-    // Build chat completion request
+    // Build request
     let request = ChatCompletionRequest {
         model: config.openrouter_model.clone(),
         messages: vec![
@@ -227,21 +286,13 @@ pub async fn main(
             },
         ],
         max_tokens: Some(2048),
+        stream: Some(true),
         ..Default::default()
     };
 
-    // Make the API request
-    let response = client.chat()?.chat_completion(request).await?;
+    // Create channel and spawn streaming task
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(stream_ai_response(client, request, tx));
 
-    let response_text = match response.choices.first() {
-        Some(choice) => match &choice.message.content {
-            MessageContent::Text(text) => text.clone(),
-            MessageContent::Parts(_) => {
-                return Err(color_eyre::eyre::eyre!("Unexpected multipart content in response"))
-            }
-        },
-        None => return Err(color_eyre::eyre::eyre!("No response from API")),
-    };
-
-    Ok(response_text[..std::cmp::min(response_text.len(), 2000)].to_owned())
+    Ok(rx)
 }

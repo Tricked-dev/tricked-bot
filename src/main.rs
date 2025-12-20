@@ -58,7 +58,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 async fn main() -> color_eyre::Result<()> {
     dotenv::dotenv().ok();
 
-    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::new("debug,h2::codec::framed_read=off")
+        )
+        .init();
 
     let mut cfg = Config::parse();
     if cfg.id == 0 {

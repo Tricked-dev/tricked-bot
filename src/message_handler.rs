@@ -1,15 +1,100 @@
 use rand::{prelude::{IteratorRandom, SliceRandom}, seq::IndexedRandom, Rng};
 use serde_rusqlite::from_row;
 use std::{sync::Arc, time::Instant};
-use tokio::sync::MutexGuard;
+use tokio::sync::{mpsc, MutexGuard};
 use twilight_http::Client as HttpClient;
-use twilight_model::{gateway::payload::incoming::MessageCreate, id::Id};
+use twilight_model::{gateway::payload::incoming::MessageCreate, id::{marker::{ChannelMarker, MessageMarker}, Id}};
 use vesper::twilight_exports::UserMarker;
 
 use crate::{
     ai_message, database::User, quiz_handler, structs::{Command, List, State},
     utils::levels::xp_required_for_level, zalgos::zalgify_text, RESPONDERS,
 };
+
+/// Handle streaming AI response with periodic updates
+async fn handle_streaming_response(
+    mut stream_rx: mpsc::UnboundedReceiver<String>,
+    channel_id: Id<ChannelMarker>,
+    reply_to: Id<MessageMarker>,
+    http: Arc<HttpClient>,
+) {
+    const MIN_WORDS: usize = 3;
+    const UPDATE_INTERVAL_MS: u128 = 1500;
+    const POLL_INTERVAL_MS: u64 = 50;
+
+    let mut content = String::new();
+    let mut message_id = None;
+    let mut last_update = Instant::now();
+    let mut last_sent_content = String::new();
+
+    loop {
+        // Drain channel to get latest content
+        let mut got_update = false;
+        loop {
+            match stream_rx.try_recv() {
+                Ok(new_content) => {
+                    content = new_content;
+                    got_update = true;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    // Stream ended - send final update if needed
+                    if let Some(msg_id) = message_id {
+                        if !content.is_empty() && content != last_sent_content {
+                            if let Ok(req) = http.update_message(channel_id, msg_id).content(Some(&content)) {
+                                let _ = req.exec().await;
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        if !got_update {
+            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+            continue;
+        }
+
+        // Send initial message once we have enough words
+        if message_id.is_none() && content.split_whitespace().count() >= MIN_WORDS {
+            match http.create_message(channel_id).content(&content) {
+                Ok(req) => {
+                    match req.reply(reply_to).exec().await {
+                        Ok(response) => {
+                            if let Ok(msg) = response.model().await {
+                                message_id = Some(msg.id);
+                                last_sent_content = content.clone();
+                                last_update = Instant::now();
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to send initial message: {:?}", e);
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to create message: {:?}", e);
+                    return;
+                }
+            }
+        }
+        // Update existing message every 1.5 seconds
+        else if let Some(msg_id) = message_id {
+            if last_update.elapsed().as_millis() >= UPDATE_INTERVAL_MS && content != last_sent_content {
+                if let Ok(req) = http.update_message(channel_id, msg_id).content(Some(&content)) {
+                    if req.exec().await.is_ok() {
+                        last_sent_content = content.clone();
+                        last_update = Instant::now();
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+}
 
 pub async fn handle_message(
     msg: &MessageCreate,
@@ -127,7 +212,7 @@ pub async fn handle_message(
 
             Ok(Command::text(format!("Hi {text} i'm Tricked-bot")).reply())
         }
-        m if locked_state.config.openai_api_key.is_some()
+        m if locked_state.config.openrouter_api_key.is_some()
             && (
                 // Random event chance
                 locked_state.rng.gen_range(0..200) == 2
@@ -209,7 +294,15 @@ pub async fn handle_message(
             )
             .await
             {
-                Ok(txt) => Ok(Command::text(txt).reply()),
+                Ok(stream_rx) => {
+                    tokio::spawn(handle_streaming_response(
+                        stream_rx,
+                        msg.channel_id,
+                        msg.id,
+                        Arc::clone(http),
+                    ));
+                    Ok(Command::nothing())
+                }
                 Err(e) => Ok(Command::text(format!("AI Error: {:?}", e)).reply()),
             }
         }

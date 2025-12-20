@@ -27,7 +27,7 @@ tokio = { version = "1", features = [
 ] }
 toml = "^0.8"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 twilight-bucket = "0.2"
 twilight-cache-inmemory = "0.15"
 twilight-gateway = { version = "0.15", features = ["rustls-webpki-roots"] }
