@@ -65,7 +65,7 @@ pub struct User {
     pub xp: i32,
 
     #[sql(constraint = "DEFAULT 0")]
-    pub social_credit: i32,
+    pub social_credit: i64,
 
     #[sql(constraint = "DEFAULT ''")]
     pub name: String,
