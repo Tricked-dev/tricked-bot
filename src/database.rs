@@ -62,10 +62,13 @@ pub struct User {
     pub level: i32,
 
     #[sql(constraint = "NOT NULL")]
-    pub name: String,
-
-    #[sql(constraint = "NOT NULL")]
     pub xp: i32,
+
+    #[sql(constraint = "DEFAULT 0")]
+    pub social_credit: i32,
+
+    #[sql(constraint = "DEFAULT ''")]
+    pub name: String,
 }
 
 #[derive(CreateTableSql, InsertSync, UpdateSync, Serialize, Deserialize, Debug, PartialEq)]

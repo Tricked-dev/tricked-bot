@@ -154,9 +154,10 @@ fn get_user_or_default(database: &r2d2::Pool<SqliteConnectionManager>, user_id: 
         })
         .unwrap_or_else(|| User {
             id: user_id,
-            name: "Unknown".to_owned(),
             level: 0,
             xp: 0,
+            social_credit: 0,
+            name: "Unknown".to_owned(),
         })
 }
 

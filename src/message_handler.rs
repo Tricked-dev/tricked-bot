@@ -171,9 +171,10 @@ pub async fn handle_message(
     } else {
         let new_user = User {
             id: msg.author.id.get(),
-            name: msg.author.name.clone(),
             level: 0,
             xp: 0,
+            social_credit: 0,
+            name: msg.author.name.clone(),
         };
         new_user.insert_sync(&*locked_state.db.get()?)?;
     }
