@@ -31,6 +31,10 @@ pub async fn handle_event(
                 return Ok(());
             }
 
+            // Increment message count for this channel
+            let count = locked_state.channel_message_counts.entry(msg.channel_id).or_insert(0);
+            *count += 1;
+
             if let Some(today_i) = locked_state.config.today_i_channel {
                 if msg.channel_id == Id::new(today_i) && !msg.content.clone().to_lowercase().starts_with("today i") {
                     http.delete_message(msg.channel_id, msg.id).exec().await?;

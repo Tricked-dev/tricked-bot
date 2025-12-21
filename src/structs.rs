@@ -126,6 +126,8 @@ pub struct State {
     pub pending_math_tests: HashMap<u64, PendingMathTest>,
     /// Pending color tests
     pub pending_color_tests: HashMap<u64, PendingColorTest>,
+    /// Message count per channel since last memory creation
+    pub channel_message_counts: HashMap<Id<ChannelMarker>, i32>,
 }
 // i hate fixing error
 unsafe impl Send for State {}
@@ -151,6 +153,7 @@ impl State {
             config,
             pending_math_tests: HashMap::new(),
             pending_color_tests: HashMap::new(),
+            channel_message_counts: HashMap::new(),
         }
     }
 }

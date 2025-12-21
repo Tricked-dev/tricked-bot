@@ -222,6 +222,11 @@ pub async fn handle_message(
                 || msg.referenced_message.clone().map(|msg| msg.author.id) == Some(Id::<UserMarker>::new(locked_state.config.id))
             ) =>
         {
+            // Check if we should create memories based on message count
+            let should_create_memory = locked_state.channel_message_counts
+                .get(&msg.channel_id)
+                .map(|count| *count >= 30)
+                .unwrap_or(false);
             let name = msg.author.name.clone();
 
             let mut context = String::new();
@@ -303,13 +308,18 @@ pub async fn handle_message(
                         Arc::clone(http),
                     ));
 
-                    // Spawn background task to create memories
-                    tokio::spawn(memory_creator::create_memories_background(
-                        locked_state.db.clone(),
-                        context.clone(),
-                        user_mentions_clone,
-                        locked_state.config.clone(),
-                    ));
+                    // Spawn background task to create memories only if we've reached the threshold
+                    if should_create_memory {
+                        tokio::spawn(memory_creator::create_memories_background(
+                            locked_state.db.clone(),
+                            context.clone(),
+                            user_mentions_clone,
+                            locked_state.config.clone(),
+                        ));
+
+                        // Reset the message counter for this channel
+                        locked_state.channel_message_counts.insert(msg.channel_id, 0);
+                    }
 
                     Ok(Command::nothing())
                 }
