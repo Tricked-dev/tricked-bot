@@ -43,6 +43,7 @@ mod config;
 mod database;
 mod event_handler;
 mod math_test;
+mod memory_creator;
 mod message_handler;
 mod quiz_handler;
 mod structs;

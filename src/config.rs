@@ -34,6 +34,8 @@ pub struct Config {
     #[arg(long, env, default_value = "tngtech/deepseek-r1t2-chimera:free")]
     pub openrouter_model: String,
     #[arg(long, env)]
+    pub openrouter_memory_model: Option<String>,
+    #[arg(long, env)]
     pub openrouter_site_url: Option<String>,
     #[arg(long, env)]
     pub openrouter_site_name: Option<String>,

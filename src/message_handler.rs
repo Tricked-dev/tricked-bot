@@ -7,7 +7,7 @@ use twilight_model::{gateway::payload::incoming::MessageCreate, id::{marker::{Ch
 use vesper::twilight_exports::UserMarker;
 
 use crate::{
-    ai_message, database::User, quiz_handler, structs::{Command, List, State},
+    ai_message, database::User, memory_creator, quiz_handler, structs::{Command, List, State},
     utils::levels::xp_required_for_level, zalgos::zalgify_text, RESPONDERS,
 };
 
@@ -283,6 +283,7 @@ pub async fn handle_message(
                 }
             }
 
+            let user_mentions_clone = user_mentions.clone();
             match ai_message::main(
                 locked_state.db.clone(),
                 msg.author.id.get(),
@@ -301,6 +302,15 @@ pub async fn handle_message(
                         msg.id,
                         Arc::clone(http),
                     ));
+
+                    // Spawn background task to create memories
+                    tokio::spawn(memory_creator::create_memories_background(
+                        locked_state.db.clone(),
+                        context.clone(),
+                        user_mentions_clone,
+                        locked_state.config.clone(),
+                    ));
+
                     Ok(Command::nothing())
                 }
                 Err(e) => Ok(Command::text(format!("AI Error: {:?}", e)).reply()),
