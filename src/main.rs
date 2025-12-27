@@ -45,6 +45,7 @@ mod event_handler;
 mod math_test;
 mod memory_creator;
 mod message_handler;
+mod pfp_updater;
 mod quiz_handler;
 mod structs;
 pub mod utils;
@@ -157,6 +158,22 @@ async fn main() -> color_eyre::Result<()> {
     );
 
     framework.register_guild_commands(Id::new(config.discord)).await?;
+
+    // Start daily profile picture updates
+    pfp_updater::schedule_daily_updates(Arc::clone(&http), Arc::clone(&state)).await;
+
+    // Update profile picture on startup if configured
+    if config.pfp_on_startup {
+        if let Some(channel_id) = config.pfp_channel {
+            let http_clone = Arc::clone(&http);
+            let state_clone = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Err(e) = pfp_updater::update_profile_picture(&http_clone, &state_clone, channel_id).await {
+                    tracing::error!("Failed to update profile picture on startup: {:?}", e);
+                }
+            });
+        }
+    }
 
     while let Some(event) = shard_stream.next().await {
         let ev = match event.1 {

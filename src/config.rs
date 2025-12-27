@@ -43,6 +43,10 @@ pub struct Config {
     pub today_i_channel: Option<u64>,
     #[arg(long, env)]
     pub brave_api: Option<String>,
+    #[arg(long, env)]
+    pub pfp_channel: Option<u64>,
+    #[arg(long, env, default_value = "false")]
+    pub pfp_on_startup: bool,
 }
 
 fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {
