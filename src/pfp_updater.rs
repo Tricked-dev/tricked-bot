@@ -190,13 +190,28 @@ pub async fn schedule_daily_updates(http: Arc<HttpClient>, state: Arc<Mutex<Stat
     };
 
     tokio::spawn(async move {
-        loop {
-            // Wait 24 hours
-            tokio::time::sleep(tokio::time::Duration::from_secs(24 * 60 * 60)).await;
+        let now = std::time::SystemTime::now();
+        let since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
 
+        let seconds_today = since_epoch.as_secs() % (24 * 60 * 60);
+        let seconds_until_midnight = (24 * 60 * 60) - seconds_today;
+        let duration_until_midnight = std::time::Duration::from_secs(seconds_until_midnight);
+
+        tracing::info!(
+            "Waiting {} seconds until midnight for first profile picture update",
+            seconds_until_midnight
+        );
+
+        // Wait until midnight
+        tokio::time::sleep(duration_until_midnight).await;
+
+        loop {
             if let Err(e) = update_profile_picture(&http, &state, channel_id).await {
                 tracing::error!("Failed to update profile picture: {:?}", e);
             }
+
+            // Wait 24 hours until next midnight
+            tokio::time::sleep(tokio::time::Duration::from_secs(24 * 60 * 60)).await;
         }
     });
 }
