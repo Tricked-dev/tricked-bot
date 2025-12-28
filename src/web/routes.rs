@@ -6,10 +6,29 @@ use axum::{
     Form,
 };
 use rusqlite::params;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tera::Context;
 
 use super::server::AppState;
+
+#[derive(Debug, Serialize)]
+struct UserExport {
+    id: String,
+    name: String,
+    level: i32,
+    xp: i32,
+    social_credit: i64,
+    relationship: String,
+    example_input: String,
+    example_output: String,
+    memories: Vec<MemoryExport>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryExport {
+    key: String,
+    content: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct UserUpdateForm {
@@ -23,19 +42,6 @@ pub struct UserUpdateForm {
 pub struct MemoryForm {
     pub key: String,
     pub content: String,
-}
-
-pub async fn index(State(state): State<AppState>) -> Response {
-    let mut context = Context::new();
-    context.insert("title", "Memory Manager");
-
-    match state.templates.render("index.html", &context) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!("Template error: {:?}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
-        }
-    }
 }
 
 pub async fn list_users(State(state): State<AppState>) -> Response {
@@ -486,6 +492,147 @@ pub async fn serve_css() -> Response {
     (
         [(axum::http::header::CONTENT_TYPE, "text/css")],
         css,
+    )
+        .into_response()
+}
+
+// Helper function to get all user exports with memories
+fn get_all_user_exports(conn: &rusqlite::Connection) -> Result<Vec<UserExport>, String> {
+    // Get all users with their data
+    let mut stmt = conn.prepare(
+        "SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user ORDER BY id"
+    ).map_err(|e| format!("Database error: {}", e))?;
+
+    let users_result: Result<Vec<(String, i32, i32, i64, String, String, String, String)>, _> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        })
+        .and_then(|mapped| mapped.collect());
+
+    let users = users_result.map_err(|e| format!("Database error: {}", e))?;
+
+    // Create user exports without memories
+    let exports: Vec<UserExport> = users
+        .into_iter()
+        .map(|(id, level, xp, social_credit, name, relationship, example_input, example_output)| {
+            UserExport {
+                id,
+                name,
+                level,
+                xp,
+                social_credit,
+                relationship,
+                example_input,
+                example_output,
+                memories: Vec::new(),
+            }
+        })
+        .collect();
+
+    Ok(exports)
+}
+
+pub async fn export_prompts_json(State(state): State<AppState>) -> Response {
+    let conn = match state.db.get() {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
+        }
+    };
+
+    let exports = match get_all_user_exports(&conn) {
+        Ok(exports) => exports,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
+        }
+    };
+
+    match serde_json::to_string_pretty(&exports) {
+        Ok(json) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"prompts_export.json\"",
+                ),
+            ],
+            json,
+        )
+            .into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {}", e)).into_response()
+        }
+    }
+}
+
+pub async fn export_users_csv(State(state): State<AppState>) -> Response {
+    let conn = match state.db.get() {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
+        }
+    };
+
+    let exports = match get_all_user_exports(&conn) {
+        Ok(exports) => exports,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
+        }
+    };
+
+    // Helper to escape CSV fields
+    let escape_csv = |s: &str| -> String {
+        if s.contains(',') || s.contains('"') || s.contains('\n') {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    };
+
+    // Build CSV with memories
+    let mut csv = String::from("user_id,name,level,xp,social_credit,relationship,example_input,example_output,memories\n");
+
+    for user in exports {
+        // Serialize memories as JSON for the CSV field
+        let memories_json = match serde_json::to_string(&user.memories) {
+            Ok(json) => json,
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {}", e)).into_response()
+            }
+        };
+
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{}\n",
+            escape_csv(&user.id),
+            escape_csv(&user.name),
+            user.level,
+            user.xp,
+            user.social_credit,
+            escape_csv(&user.relationship),
+            escape_csv(&user.example_input),
+            escape_csv(&user.example_output),
+            escape_csv(&memories_json),
+        ));
+    }
+
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"users_export.csv\"",
+            ),
+        ],
+        csv,
     )
         .into_response()
 }

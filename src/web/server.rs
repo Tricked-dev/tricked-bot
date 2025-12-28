@@ -39,7 +39,7 @@ pub async fn run_web_server(db: Pool<SqliteConnectionManager>, port: u16) -> Res
     };
 
     let app = Router::new()
-        .route("/", get(super::routes::index))
+        .route("/", get(super::routes::list_users))
         .route("/users", get(super::routes::list_users))
         .route("/user/{id}", get(super::routes::view_user))
         .route("/user/{id}/edit", get(super::routes::edit_user_form))
@@ -50,6 +50,8 @@ pub async fn run_web_server(db: Pool<SqliteConnectionManager>, port: u16) -> Res
         .route("/memory/{id}/edit", get(super::routes::edit_memory_form))
         .route("/memory/{id}/edit", post(super::routes::update_memory))
         .route("/memory/{id}/delete", post(super::routes::delete_memory))
+        .route("/export/prompts.json", get(super::routes::export_prompts_json))
+        .route("/export/users.csv", get(super::routes::export_users_csv))
         .route("/static/style.css", get(super::routes::serve_css))
         .with_state(state);
 
