@@ -56,6 +56,11 @@
               openssl
             ];
 
+            postInstall = ''
+              mkdir -p $out/share/tricked-bot
+              cp -r web $out/share/tricked-bot/
+            '';
+
             meta = with pkgs.lib; {
               description = "A simple discord bot made for my discord";
               homepage = "https://discord.gg/mY8zTARu4g";

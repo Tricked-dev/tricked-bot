@@ -14,7 +14,23 @@ pub struct AppState {
 }
 
 pub async fn run_web_server(db: Pool<SqliteConnectionManager>, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let mut tera = Tera::new("web/templates/**/*")?;
+    // Determine template path based on environment
+    // For Nix builds: try to find data directory relative to executable
+    let template_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+        .and_then(|bin_dir| bin_dir.parent().map(|p| p.to_path_buf()))
+        .and_then(|out_dir| {
+            let nix_path = out_dir.join("share/tricked-bot/web/templates");
+            if nix_path.exists() {
+                Some(format!("{}/**/*", nix_path.display()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "web/templates/**/*".to_string());
+
+    let mut tera = Tera::new(&template_path)?;
     tera.autoescape_on(vec!["html"]);
 
     let state = AppState {
