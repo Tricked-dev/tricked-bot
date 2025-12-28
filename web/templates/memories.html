@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Memories for {{ user.name or "User " ~ user.id }}</h1>
+    <div class="actions">
+        <a href="/user/{{ user.id }}/memory/new" class="btn btn-primary">New Memory</a>
+        <a href="/user/{{ user.id }}" class="btn">Back to User</a>
+    </div>
+</div>
+
+<div class="memories-list">
+    {% for memory in memories %}
+    <div class="memory-card">
+        <div class="memory-header">
+            <h3>{{ memory.key }}</h3>
+            <span class="memory-id">ID: {{ memory.id }}</span>
+        </div>
+        <div class="memory-content">
+            <pre>{{ memory.content }}</pre>
+        </div>
+        <div class="memory-actions">
+            <a href="/memory/{{ memory.id }}/edit" class="btn btn-sm btn-primary">Edit</a>
+            <form method="post" action="/memory/{{ memory.id }}/delete" style="display: inline;">
+                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete this memory?')">Delete</button>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if memories | length == 0 %}
+<div class="no-data">
+    <p>No memories found for this user.</p>
+    <a href="/user/{{ user.id }}/memory/new" class="btn btn-primary">Create First Memory</a>
+</div>
+{% endif %}
+{% endblock %}

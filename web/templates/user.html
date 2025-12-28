@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{% if user.name and user.name != "" %}{{ user.name }}{% else %}User {{ user.id }}{% endif %}</h1>
+    <div class="actions">
+        <a href="/user/{{ user.id }}/edit" class="btn btn-primary">Edit User</a>
+        <a href="/user/{{ user.id }}/memories" class="btn btn-secondary">View Memories</a>
+    </div>
+</div>
+
+<div class="detail-card">
+    <h2>User Information</h2>
+    <dl class="detail-list">
+        <dt>User ID:</dt>
+        <dd>{{ user.id }}</dd>
+
+        <dt>Name:</dt>
+        <dd>{% if user.name and user.name != "" %}{{ user.name }}{% else %}Not set{% endif %}</dd>
+
+        <dt>Level:</dt>
+        <dd>{{ user.level }}</dd>
+
+        <dt>XP:</dt>
+        <dd>{{ user.xp }}</dd>
+
+        <dt>Social Credit:</dt>
+        <dd>{{ user.social_credit }}</dd>
+
+        <dt>Relationship:</dt>
+        <dd>{% if user.relationship and user.relationship != "" %}{{ user.relationship }}{% else %}Not set{% endif %}</dd>
+    </dl>
+</div>
+
+<div class="detail-card">
+    <h2>Example Interactions</h2>
+
+    <div class="example-section">
+        <h3>Example Input:</h3>
+        <pre>{% if user.example_input and user.example_input != "" %}{{ user.example_input }}{% else %}Not set{% endif %}</pre>
+    </div>
+
+    <div class="example-section">
+        <h3>Example Output:</h3>
+        <pre>{% if user.example_output and user.example_output != "" %}{{ user.example_output }}{% else %}Not set{% endif %}</pre>
+    </div>
+</div>
+{% endblock %}

@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use rand::Rng;
 use reqwest::Client;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -135,7 +136,6 @@ pub async fn update_profile_picture(http: &Arc<HttpClient>, state: &Arc<Mutex<St
 
     // Select a random image
     let selected_url: String = {
-        use rand::Rng;
         let mut locked_state = state.lock().await;
         let index = locked_state.rng.gen_range(0..image_urls.len());
         image_urls[index].clone()

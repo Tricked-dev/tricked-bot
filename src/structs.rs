@@ -108,6 +108,8 @@ pub struct State {
     pub user_bucket: Bucket,
     /// Ratelimit for channel creation
     pub channel_bucket: Bucket,
+    /// Ratelimit for DM messages (30 messages per hour)
+    pub dm_bucket: Bucket,
     /// Sqlite database connection
     pub db: r2d2::Pool<SqliteConnectionManager>,
     pub nick: String,
@@ -126,8 +128,8 @@ pub struct State {
     pub pending_math_tests: HashMap<u64, PendingMathTest>,
     /// Pending color tests
     pub pending_color_tests: HashMap<u64, PendingColorTest>,
-    /// Message count per channel since last memory creation
-    pub channel_message_counts: HashMap<Id<ChannelMarker>, i32>,
+    /// Message count per channel/user since last memory creation (channel_id or user_id -> message count)
+    pub channel_message_counts: HashMap<u64, i32>,
 }
 // i hate fixing error
 unsafe impl Send for State {}
@@ -136,6 +138,7 @@ impl State {
     pub fn new(rng: ThreadRng, client: Client, db: r2d2::Pool<SqliteConnectionManager>, config: Arc<Config>) -> Self {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
+        let dm_bucket = Bucket::new(Limit::new(Duration::from_secs(3600), 30)); // 30 messages per hour
         let client_clone = client.clone();
         Self {
             db,
@@ -154,6 +157,7 @@ impl State {
             pending_math_tests: HashMap::new(),
             pending_color_tests: HashMap::new(),
             channel_message_counts: HashMap::new(),
+            dm_bucket,
         }
     }
 }

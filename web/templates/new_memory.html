@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>New Memory for {{ user.name or "User " ~ user.id }}</h1>
+    <a href="/user/{{ user.id }}/memories" class="btn">Cancel</a>
+</div>
+
+<form method="post" class="form">
+    <div class="form-group">
+        <label for="key">Memory Key:</label>
+        <input type="text" id="key" name="key" required placeholder="e.g., favorite_color, job, hobby">
+        <p class="form-help">A short identifier for this memory (must be unique for this user)</p>
+    </div>
+
+    <div class="form-group">
+        <label for="content">Memory Content:</label>
+        <textarea id="content" name="content" rows="8" required placeholder="Enter the memory content..."></textarea>
+        <p class="form-help">The actual information to remember about this user</p>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Create Memory</button>
+        <a href="/user/{{ user.id }}/memories" class="btn">Cancel</a>
+    </div>
+</form>
+{% endblock %}

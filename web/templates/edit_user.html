@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Edit User {{ user.id }}</h1>
+    <a href="/user/{{ user.id }}" class="btn">Cancel</a>
+</div>
+
+<form method="post" class="form">
+    <div class="form-group">
+        <label for="name">Name:</label>
+        <input type="text" id="name" name="name" value="{{ user.name }}" placeholder="Enter user's name">
+    </div>
+
+    <div class="form-group">
+        <label for="relationship">Relationship:</label>
+        <input type="text" id="relationship" name="relationship" value="{{ user.relationship }}" placeholder="e.g., friend, colleague, acquaintance">
+    </div>
+
+    <div class="form-group">
+        <label for="example_input">Example Input:</label>
+        <textarea id="example_input" name="example_input" rows="6" placeholder="Example of how this user might interact with the bot">{{ user.example_input }}</textarea>
+        <p class="form-help">Provide an example of this user's typical message or question to the bot</p>
+    </div>
+
+    <div class="form-group">
+        <label for="example_output">Example Output:</label>
+        <textarea id="example_output" name="example_output" rows="6" placeholder="Example of how the bot should respond to this user">{{ user.example_output }}</textarea>
+        <p class="form-help">Provide an example of how the bot should respond to this user</p>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="/user/{{ user.id }}" class="btn">Cancel</a>
+    </div>
+</form>
+{% endblock %}

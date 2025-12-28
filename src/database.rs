@@ -69,6 +69,15 @@ pub struct User {
 
     #[sql(constraint = "DEFAULT ''")]
     pub name: String,
+
+    #[sql(constraint = "DEFAULT ''")]
+    pub relationship: String,
+
+    #[sql(constraint = "DEFAULT ''")]
+    pub example_input: String,
+
+    #[sql(constraint = "DEFAULT ''")]
+    pub example_output: String,
 }
 
 #[derive(CreateTableSql, InsertSync, UpdateSync, Serialize, Deserialize, Debug, PartialEq)]

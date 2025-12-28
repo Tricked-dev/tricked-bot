@@ -47,6 +47,8 @@ pub struct Config {
     pub pfp_channel: Option<u64>,
     #[arg(long, env, default_value = "false")]
     pub pfp_on_startup: bool,
+    #[arg(long, env)]
+    pub web_port: Option<u16>,
 }
 
 fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {

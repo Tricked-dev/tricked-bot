@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Users</h1>
+
+<div class="users-grid">
+    {% for user in users %}
+    <div class="user-card">
+        <div class="user-header">
+            <h3>{% if user.name %}{{ user.name }}{% else %}User {{ user.id }}{% endif %}</h3>
+            <span class="user-id">ID: {{ user.id }}</span>
+        </div>
+        <div class="user-stats">
+            <div class="stat">
+                <span class="stat-label">Level:</span>
+                <span class="stat-value">{{ user.level }}</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">XP:</span>
+                <span class="stat-value">{{ user.xp }}</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Social Credit:</span>
+                <span class="stat-value">{{ user.social_credit }}</span>
+            </div>
+        </div>
+        {% if user.relationship and user.relationship != "" %}
+        <p class="relationship"><strong>Relationship:</strong> {{ user.relationship }}</p>
+        {% endif %}
+        <div class="user-actions">
+            <a href="/user/{{ user.id }}" class="btn btn-sm">View</a>
+            <a href="/user/{{ user.id }}/edit" class="btn btn-sm btn-primary">Edit</a>
+            <a href="/user/{{ user.id }}/memories" class="btn btn-sm btn-secondary">Memories</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if users | length == 0 %}
+<p class="no-data">No users found.</p>
+{% endif %}
+{% endblock %}

@@ -49,6 +49,7 @@ mod pfp_updater;
 mod quiz_handler;
 mod structs;
 pub mod utils;
+mod web;
 mod zalgos;
 
 static RESPONDERS: Lazy<HashMap<String, Responder>> =
@@ -89,6 +90,15 @@ async fn main() -> color_eyre::Result<()> {
     if !rusqlite.column_exists(None, "user", "name")? {
         rusqlite.execute("ALTER TABLE user ADD COLUMN name TEXT DEFAULT ''", [])?;
     }
+    if !rusqlite.column_exists(None, "user", "relationship")? {
+        rusqlite.execute("ALTER TABLE user ADD COLUMN relationship TEXT DEFAULT ''", [])?;
+    }
+    if !rusqlite.column_exists(None, "user", "example_input")? {
+        rusqlite.execute("ALTER TABLE user ADD COLUMN example_input TEXT DEFAULT ''", [])?;
+    }
+    if !rusqlite.column_exists(None, "user", "example_output")? {
+        rusqlite.execute("ALTER TABLE user ADD COLUMN example_output TEXT DEFAULT ''", [])?;
+    }
 
     rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
     rusqlite.execute(database::MathQuestion::CREATE_TABLE_SQL, [])?;
@@ -120,7 +130,8 @@ async fn main() -> color_eyre::Result<()> {
             | Intents::GUILDS
             | Intents::GUILD_PRESENCES
             | Intents::MESSAGE_CONTENT
-            | Intents::GUILD_MESSAGE_TYPING,
+            | Intents::GUILD_MESSAGE_TYPING
+            | Intents::DIRECT_MESSAGES,
     );
     let mut shards = stream::create_recommended(&http, tl_config, |_, builder| {
         builder
@@ -147,7 +158,7 @@ async fn main() -> color_eyre::Result<()> {
     let state = Arc::new(Mutex::new(State::new(
         rand::thread_rng(),
         client,
-        pool,
+        pool.clone(),
         Arc::clone(&config),
     )));
 
@@ -158,6 +169,16 @@ async fn main() -> color_eyre::Result<()> {
     );
 
     framework.register_guild_commands(Id::new(config.discord)).await?;
+
+    // Start web server if port is configured
+    if let Some(web_port) = config.web_port {
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            if let Err(e) = web::run_web_server(pool_clone, web_port).await {
+                tracing::error!("Web server error: {:?}", e);
+            }
+        });
+    }
 
     // Start daily profile picture updates
     pfp_updater::schedule_daily_updates(Arc::clone(&http), Arc::clone(&state)).await;

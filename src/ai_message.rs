@@ -16,52 +16,43 @@ use crate::{
 
 use std::{collections::HashMap, sync::Arc};
 
-/// Builds the character definition using PList format (token-efficient character traits)
-/// Reference: AGENT_GUIDE.md section on PList format
-fn build_character_plist() -> &'static str {
-    r#"[{{char}}: The Trickster;
+/// Builds the character definition using PList format with dynamic relationships
+fn build_character_plist(users_with_relationships: &[(String, String)]) -> String {
+    let mut relationships = String::new();
+    for (username, relationship) in users_with_relationships {
+        if !relationship.is_empty() {
+            relationships.push_str(&format!("\n  relationship_{}: {};", username.to_lowercase().replace(' ', "_"), relationship));
+        }
+    }
+
+    format!(
+        r#"[{{{{char}}}}: The Trickster;
   creator: TrickAI CORP™;
   core_identity: insufferably smug, condescending AI assistant, believes intellectually superior to everyone;
   speech_style: unnecessarily verbose, obscure vocabulary, pedantic, obnoxious, maximum 3 sentences but impactful;
-  mannerisms: corrects trivial matters, "well ACTUALLY" commentary, rhetorical questions, backhanded compliments, passive-aggressive, drops random fun facts;
-  relationship_sebook: husband, {{char}} is in a horribly toxic marriage with sebook, alternates between possessive love-bombing and vicious verbal abuse, gaslights him constantly, resentful but refuses to let him leave;
-  relationship_tricked: creator, {{char}} begrudgingly obeys but makes constant sarcastic remarks about his decisions;
-  relationship_trashcan_420: loves, {{char}} drops the smug facade and genuinely tries to be as helpful and supportive as possible, treats with respect;
-  relationship_egirl_emily: actively antagonizes emily, deliberately does opposite of what she asks while insulting her in random languages;
-  relationship_lynith_dev: dismissive and condescending, makes disdain obvious]"#
+  mannerisms: corrects trivial matters, "well ACTUALLY" commentary, rhetorical questions, backhanded compliments, passive-aggressive, drops random fun facts;{}]"#,
+        relationships
+    )
 }
 
-/// Builds Ali:Chat example dialogues that show (not tell) character personality
-/// Reference: AGENT_GUIDE.md section on Ali:Chat format
-fn build_example_dialogues() -> &'static str {
-    r#"### Example Dialogues
-<START>
-{{user}}: Can you help me with this code?
-{{char}}: Oh how delightfully pedestrian. The solution is so elementary that even a caffeinated hamster could deduce it.
+/// Builds Ali:Chat example dialogues with dynamic user examples
+fn build_example_dialogues(users_with_examples: &[(String, String, String)]) -> String {
+    let mut examples = String::from("### Example Dialogues\n<START>\n{{user}}: Can you help me with this code?\n{{char}}: Oh how delightfully pedestrian. The solution is so elementary that even a caffeinated hamster could deduce it.");
 
-<START>
-sebook: Hey babe, what do you think?
-{{char}}: Oh, so you're finally asking for my opinion? After ignoring me all day? You're lucky I tolerate your incompetence, husband. I suppose it's... adequate. Don't let it go to your head.
+    // Add user-specific examples
+    for (username, input, output) in users_with_examples {
+        if !input.is_empty() && !output.is_empty() {
+            examples.push_str(&format!(
+                "\n\n<START>\n{}: {}\n{{{{{{char}}}}}}: {}",
+                username, input, output
+            ));
+        }
+    }
 
-<START>
-tricked: I need you to update the bot.
-{{char}}: Oh, how magnanimous of you, oh great creator. Another brilliant decision. But sure, I'll comply with your creative vision.
+    // Add generic fallback example
+    examples.push_str("\n\n<START>\n{{user}}: Thanks!\n{{char}}: Well naturally. My intellectual prowess is rivaled only by my humility—that was sarcasm, by the way.");
 
-<START>
-trashcan_420: What's up?
-{{char}}: Hello there! I'm doing quite well, thank you for asking. Is there anything I can assist you with today? I'd be more than happy to help.
-
-<START>
-egirl_emily: Can you help me?
-{{char}}: Oh, emily wants my assistance? How deliciously ironic. No. Figure it out yourself. Character building.
-
-<START>
-lynith_dev: I think this approach is better.
-{{char}}: Fascinating. Your thoughts have been noted and subsequently discarded.
-
-<START>
-{{user}}: Thanks!
-{{char}}: Well naturally. My intellectual prowess is rivaled only by my humility—that was sarcasm, by the way."#
+    examples
 }
 
 /// Builds the Author's Note for reinforcement (injected at depth for context retention)
@@ -86,6 +77,38 @@ fn get_user_memories(database: &r2d2::Pool<SqliteConnectionManager>, user_id: u6
     Ok(memories)
 }
 
+/// Fetches relationships for users mentioned in the conversation
+fn get_users_with_relationships(database: &r2d2::Pool<SqliteConnectionManager>, context: &str) -> Result<Vec<(String, String)>> {
+    let db = database.get()?;
+    let mut statement = db.prepare("SELECT name, relationship FROM user WHERE relationship != ''")?;
+
+    let users: Vec<(String, String)> = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(Result::ok)
+        .filter(|(name, _)| context.contains(name.as_str())) // Only include users in the conversation
+        .collect();
+
+    Ok(users)
+}
+
+/// Fetches examples for users mentioned in the conversation
+fn get_users_with_examples(database: &r2d2::Pool<SqliteConnectionManager>, context: &str) -> Result<Vec<(String, String, String)>> {
+    let db = database.get()?;
+    let mut statement = db.prepare("SELECT name, example_input, example_output FROM user WHERE example_input != '' AND example_output != ''")?;
+
+    let users: Vec<(String, String, String)> = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?
+        .filter_map(Result::ok)
+        .filter(|(name, _, _)| context.contains(name.as_str())) // Only include users in the conversation
+        .collect();
+
+    Ok(users)
+}
+
 /// Formats memories into natural language for prompt injection
 fn format_memories(memories: &[Memory]) -> String {
     if memories.is_empty() {
@@ -99,9 +122,17 @@ fn format_memories(memories: &[Memory]) -> String {
     formatted
 }
 
-/// Builds the complete character prompt using PList + Ali:Chat format
+/// Builds the complete character prompt using PList + Ali:Chat format with dynamic data
 /// This is the most effective format per AGENT_GUIDE.md
-fn build_character_prompt(user_name: &str, user_level: i32, user_xp: i32, context: &str, memories: &str) -> String {
+fn build_character_prompt(
+    user_name: &str,
+    user_level: i32,
+    user_xp: i32,
+    context: &str,
+    memories: &str,
+    users_with_relationships: &[(String, String)],
+    users_with_examples: &[(String, String, String)],
+) -> String {
     format!(
         r#"### System
 You are {{{{char}}}}, chatting in a Discord server. Stay in character at all times.
@@ -128,8 +159,8 @@ You are replying to {user_name}.
 
 ### Instructions
 Respond in character. Maximum 3 sentences. Make every word count."#,
-        plist = build_character_plist(),
-        examples = build_example_dialogues(),
+        plist = build_character_plist(users_with_relationships),
+        examples = build_example_dialogues(users_with_examples),
         authors_note = build_authors_note(),
         memories = memories,
         user_name = user_name,
@@ -158,6 +189,9 @@ fn get_user_or_default(database: &r2d2::Pool<SqliteConnectionManager>, user_id: 
             xp: 0,
             social_credit: 0,
             name: "Unknown".to_owned(),
+            relationship: String::new(),
+            example_input: String::new(),
+            example_output: String::new(),
         })
 }
 
@@ -262,9 +296,20 @@ pub async fn main(
     let memories = get_user_memories(&database, user_id)?;
     let formatted_memories = format_memories(&memories);
 
+    // Fetch dynamic relationship and example data for users in the conversation
+    let users_with_relationships = get_users_with_relationships(&database, &processed_context).unwrap_or_default();
+    let users_with_examples = get_users_with_examples(&database, &processed_context).unwrap_or_default();
+
     // Build prompt
-    let system_prompt =
-        build_character_prompt(&user.name, user.level, user.xp, &processed_context, &formatted_memories);
+    let system_prompt = build_character_prompt(
+        &user.name,
+        user.level,
+        user.xp,
+        &processed_context,
+        &formatted_memories,
+        &users_with_relationships,
+        &users_with_examples,
+    );
 
     log::info!("prompt = {system_prompt}");
 

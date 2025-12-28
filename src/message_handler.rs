@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Handle streaming AI response with periodic updates
-async fn handle_streaming_response(
+pub async fn handle_streaming_response(
     mut stream_rx: mpsc::UnboundedReceiver<String>,
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
@@ -175,6 +175,9 @@ pub async fn handle_message(
             xp: 0,
             social_credit: 0,
             name: msg.author.name.clone(),
+            relationship: String::new(),
+            example_input: String::new(),
+            example_output: String::new(),
         };
         new_user.insert_sync(&*locked_state.db.get()?)?;
     }
@@ -225,7 +228,7 @@ pub async fn handle_message(
         {
             // Check if we should create memories based on message count
             let should_create_memory = locked_state.channel_message_counts
-                .get(&msg.channel_id)
+                .get(&msg.channel_id.get())
                 .map(|count| *count >= 30)
                 .unwrap_or(false);
             let name = msg.author.name.clone();
@@ -319,7 +322,7 @@ pub async fn handle_message(
                         ));
 
                         // Reset the message counter for this channel
-                        locked_state.channel_message_counts.insert(msg.channel_id, 0);
+                        locked_state.channel_message_counts.insert(msg.channel_id.get(), 0);
                     }
 
                     Ok(Command::nothing())
