@@ -50,10 +50,12 @@
             nativeBuildInputs = with pkgs; [
               pkg-config
               rustToolchain
+              ffmpeg
             ];
 
             buildInputs = with pkgs; [
               openssl
+              ffmpeg
             ];
 
             postInstall = ''
@@ -87,6 +89,7 @@
               rustToolchain
               rustNightlyToolchain
               cargo-udeps
+              ffmpeg
             ];
 
             LD_LIBRARY_PATH = lib.makeLibraryPath [
