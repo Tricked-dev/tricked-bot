@@ -1,14 +1,29 @@
-use rand::{prelude::{IteratorRandom, SliceRandom}, seq::IndexedRandom, Rng};
+use rand::{
+    prelude::{IteratorRandom, SliceRandom},
+    seq::IndexedRandom,
+    Rng,
+};
 use serde_rusqlite::from_row;
 use std::{sync::Arc, time::Instant};
 use tokio::sync::{mpsc, MutexGuard};
 use twilight_http::Client as HttpClient;
-use twilight_model::{gateway::payload::incoming::MessageCreate, id::{marker::{ChannelMarker, MessageMarker}, Id}};
+use twilight_model::{
+    gateway::payload::incoming::MessageCreate,
+    id::{
+        marker::{ChannelMarker, MessageMarker},
+        Id,
+    },
+};
 use vesper::twilight_exports::UserMarker;
 
 use crate::{
-    ai_message, database::User, memory_creator, quiz_handler, structs::{Command, List, State},
-    utils::levels::xp_required_for_level, zalgos::zalgify_text, RESPONDERS,
+    ai_message,
+    database::User,
+    memory_creator, quiz_handler,
+    structs::{Command, List, State},
+    utils::levels::xp_required_for_level,
+    zalgos::zalgify_text,
+    RESPONDERS,
 };
 
 /// Handle streaming AI response with periodic updates
@@ -59,21 +74,19 @@ pub async fn handle_streaming_response(
         // Send initial message once we have enough words
         if message_id.is_none() && content.split_whitespace().count() >= MIN_WORDS {
             match http.create_message(channel_id).content(&content) {
-                Ok(req) => {
-                    match req.reply(reply_to).exec().await {
-                        Ok(response) => {
-                            if let Ok(msg) = response.model().await {
-                                message_id = Some(msg.id);
-                                last_sent_content = content.clone();
-                                last_update = Instant::now();
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Failed to send initial message: {:?}", e);
-                            return;
+                Ok(req) => match req.reply(reply_to).exec().await {
+                    Ok(response) => {
+                        if let Ok(msg) = response.model().await {
+                            message_id = Some(msg.id);
+                            last_sent_content = content.clone();
+                            last_update = Instant::now();
                         }
                     }
-                }
+                    Err(e) => {
+                        log::error!("Failed to send initial message: {:?}", e);
+                        return;
+                    }
+                },
                 Err(e) => {
                     log::error!("Failed to create message: {:?}", e);
                     return;
@@ -227,7 +240,8 @@ pub async fn handle_message(
             ) =>
         {
             // Check if we should create memories based on message count
-            let should_create_memory = locked_state.channel_message_counts
+            let should_create_memory = locked_state
+                .channel_message_counts
                 .get(&msg.channel_id.get())
                 .map(|count| *count >= 30)
                 .unwrap_or(false);
@@ -374,9 +388,15 @@ pub async fn handle_message(
                 .children
                 .into_iter()
                 .filter(|x| !x.data.over_18)
-                .filter(|x| x.data.url_overridden_by_dest.contains("i."))
+                .filter(|x| {
+                    x.data
+                        .url_overridden_by_dest
+                        .as_ref()
+                        .map(|url| url.contains("i."))
+                        .unwrap_or(false)
+                })
                 .choose(&mut locked_state.rng)
-                .map(|x| x.data.url_overridden_by_dest);
+                .and_then(|x| x.data.url_overridden_by_dest);
             if let Some(pic) = res {
                 Ok(Command::text(pic))
             } else {

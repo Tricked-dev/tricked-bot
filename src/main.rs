@@ -63,7 +63,7 @@ async fn main() -> color_eyre::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "debug,h2::codec::framed_read=off,twilight_gateway::shard=off,twilight_http_ratelimiting::in_memory=info,rustls::client=info,hyper::client::connect=info",
+            "debug,h2::codec::framed_read=off,twilight_gateway::shard=off,twilight_http_ratelimiting::in_memory=info,rustls::client=info,hyper::client::connect=info,h2::codec::framed_write=info",
         ))
         .init();
 

@@ -106,12 +106,19 @@ pub async fn handle_event(
             if is_dm {
                 // Handle DM with rate limiting
                 if let Some(dm_limit_duration) = locked_state.dm_bucket.limit_duration(msg.author.id.get()) {
-                    tracing::info!("DM rate limit reached for user {}, {} seconds remaining", msg.author.id.get(), dm_limit_duration.as_secs());
+                    tracing::info!(
+                        "DM rate limit reached for user {}, {} seconds remaining",
+                        msg.author.id.get(),
+                        dm_limit_duration.as_secs()
+                    );
 
                     // Send a message to the user about the rate limit
                     let _ = http
                         .create_message(msg.channel_id)
-                        .content(&format!("You've reached the DM rate limit. Please wait {} seconds before sending more messages.", dm_limit_duration.as_secs()))?
+                        .content(&format!(
+                            "You've reached the DM rate limit. Please wait {} seconds before sending more messages.",
+                            dm_limit_duration.as_secs()
+                        ))?
                         .reply(msg.id)
                         .exec()
                         .await;
@@ -119,7 +126,10 @@ pub async fn handle_event(
                 }
 
                 // Track message count for memory creation using the DM user ID as key
-                let count = locked_state.channel_message_counts.entry(msg.author.id.get()).or_insert(0);
+                let count = locked_state
+                    .channel_message_counts
+                    .entry(msg.author.id.get())
+                    .or_insert(0);
                 *count += 1;
 
                 // Check if we should create memories (every 15 messages)
@@ -198,7 +208,10 @@ pub async fn handle_event(
             }
 
             // Increment message count for this channel
-            let count = locked_state.channel_message_counts.entry(msg.channel_id.get()).or_insert(0);
+            let count = locked_state
+                .channel_message_counts
+                .entry(msg.channel_id.get())
+                .or_insert(0);
             *count += 1;
 
             if let Some(today_i) = locked_state.config.today_i_channel {
@@ -245,7 +258,7 @@ pub async fn handle_event(
                         )
                         .exec()
                         .await?;
-                    } else {
+                    } else if text.is_some() || !embeds.is_empty() || !attachments.is_empty() {
                         let mut req = http
                             .create_message(msg.channel_id)
                             .embeds(&embeds)?

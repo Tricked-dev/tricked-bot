@@ -191,7 +191,7 @@ pub struct Children {
 #[serde(rename_all = "camelCase")]
 pub struct Data2 {
     #[serde(rename = "url_overridden_by_dest")]
-    pub url_overridden_by_dest: String,
+    pub url_overridden_by_dest: Option<String>,
     #[serde(rename = "over_18")]
     pub over_18: bool,
 }
