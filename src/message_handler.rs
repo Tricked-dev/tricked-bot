@@ -403,6 +403,22 @@ pub async fn handle_message(
                 Ok(Command::nothing())
             }
         }
+        x if x.starts_with("qalc ") || x.starts_with("calc ") => {
+            let expr = if x.starts_with("qalc ") {
+                x.strip_prefix("qalc ").unwrap_or("")
+            } else {
+                x.strip_prefix("calc ").unwrap_or("")
+            };
+
+            if expr.is_empty() {
+                return Ok(Command::nothing());
+            }
+
+            match crate::qalc::qalc(expr) {
+                Ok(result) => Ok(Command::text(result).reply()),
+                Err(e) => Ok(Command::text(format!("Error: {}", e)).reply()),
+            }
+        }
         _ => {
             if let Some(member) = &msg.member {
                 let user_name = member.nick.clone().unwrap_or_else(|| msg.author.name.clone());

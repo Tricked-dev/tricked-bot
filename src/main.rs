@@ -40,12 +40,14 @@ pub mod brave;
 mod color_quiz;
 mod commands;
 mod config;
+mod currency_fetcher;
 mod database;
 mod event_handler;
 mod math_test;
 mod memory_creator;
 mod message_handler;
 mod pfp_updater;
+mod qalc;
 mod quiz_handler;
 mod structs;
 pub mod utils;
@@ -157,14 +159,40 @@ async fn main() -> color_eyre::Result<()> {
 
     let state = Arc::new(Mutex::new(State::new(
         rand::thread_rng(),
-        client,
+        client.clone(),
         pool.clone(),
         Arc::clone(&config),
     )));
 
+    // Fetch currency rates at startup
+    match currency_fetcher::fetch_currency_rates(&client).await {
+        Ok(rates) => {
+            tracing::info!(
+                "Successfully loaded {} currency exchange rates (base: {})",
+                rates.rates.len(),
+                rates.base
+            );
+            state.lock().await.currency_rates = rates;
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch currency rates at startup: {}. Using defaults.", e);
+        }
+    }
+
+    // Update qalc exchange rates at startup
+    if let Err(e) = qalc::update_rates() {
+        tracing::warn!("Failed to update qalc exchange rates: {}", e);
+    }
+
     let framework = Arc::new(
         Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
             .command(commands::level::level)
+            .command(commands::currency::usd)
+            .command(commands::currency::euro)
+            .command(commands::currency::yen)
+            .command(commands::currency::pln)
+            .command(commands::translate::translate)
+            .command(commands::qalc::qalc)
             .build(),
     );
 

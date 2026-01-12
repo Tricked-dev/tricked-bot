@@ -50,17 +50,20 @@
             nativeBuildInputs = with pkgs; [
               pkg-config
               rustToolchain
-              ffmpeg
+              makeWrapper
             ];
 
             buildInputs = with pkgs; [
               openssl
               ffmpeg
+              libqalculate
             ];
 
             postInstall = ''
               mkdir -p $out/share/tricked-bot
               cp -r web $out/share/tricked-bot/
+              wrapProgram $out/bin/tricked-bot \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.libqalculate ]}
             '';
 
             meta = with pkgs.lib; {
@@ -90,6 +93,7 @@
               rustNightlyToolchain
               cargo-udeps
               ffmpeg
+              libqalculate
             ];
 
             LD_LIBRARY_PATH = lib.makeLibraryPath [

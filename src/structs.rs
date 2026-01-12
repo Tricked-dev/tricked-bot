@@ -96,6 +96,24 @@ pub struct PendingColorTest {
     pub started_at: TokioInstant,
 }
 
+/// Currency exchange rates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrencyRates {
+    pub rates: HashMap<String, f64>,
+    pub base: String,
+    pub last_updated: u64,
+}
+
+impl Default for CurrencyRates {
+    fn default() -> Self {
+        Self {
+            rates: HashMap::new(),
+            base: "USD".to_string(),
+            last_updated: 0,
+        }
+    }
+}
+
 /// This struct is used to store the state of the bot.\
 /// It is used to store the cache, the database connection, the config and the http client.
 pub struct State {
@@ -130,6 +148,8 @@ pub struct State {
     pub pending_color_tests: HashMap<u64, PendingColorTest>,
     /// Message count per channel/user since last memory creation (channel_id or user_id -> message count)
     pub channel_message_counts: HashMap<u64, i32>,
+    /// Currency exchange rates
+    pub currency_rates: CurrencyRates,
 }
 // i hate fixing error
 unsafe impl Send for State {}
@@ -158,6 +178,7 @@ impl State {
             pending_color_tests: HashMap::new(),
             channel_message_counts: HashMap::new(),
             dm_bucket,
+            currency_rates: CurrencyRates::default(),
         }
     }
 }

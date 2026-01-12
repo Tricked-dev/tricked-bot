@@ -3059,6 +3059,7 @@ dependencies = [
  "twilight-gateway",
  "twilight-http",
  "twilight-model",
+ "urlencoding",
  "vesper",
  "wb_sqlite",
 ]
