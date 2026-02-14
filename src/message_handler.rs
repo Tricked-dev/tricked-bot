@@ -368,7 +368,7 @@ pub async fn handle_message(
             Ok(Command::text(text.join(" ")).reply())
         }
 
-        _ if locked_state.rng.gen_range(0..30) == 2 && !locked_state.config.shit_reddits.is_empty() => {
+        _ if locked_state.rng.gen_range(0..80) == 2 && !locked_state.config.shit_reddits.is_empty() => {
             let res = locked_state
                 .client
                 .get(format!(
