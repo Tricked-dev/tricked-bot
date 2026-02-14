@@ -23,43 +23,64 @@ struct MemoryEntry {
     content: String,
 }
 
-/// Build the system prompt for memory creation
+/// Build the enhanced system prompt for memory creation with quality guidelines
 fn build_memory_prompt(context: &str, participants: &str) -> String {
     format!(
-        r#"You are a memory creation system for a Discord bot. Your job is to extract important facts, preferences, and information about users from conversations.
+        r#"You are a memory creation system for a Discord bot. Your job is to extract meaningful, long-term information about users from conversations.
 
-Analyze the following conversation and create memories for each participant. Focus on:
-- Personal preferences and interests
-- Facts about their life, work, or hobbies
-- Relationships with other users
-- Behaviors and patterns
-- Important events or milestones
+**What makes a GOOD memory:**
+- Persistent facts (hobbies, preferences, job, relationships, personality traits)
+- Important life events or milestones
+- Recurring patterns or behaviors
+- Strong opinions or beliefs
+- Personal context that helps future interactions
 
-Participants in this conversation: {participants}
+**What makes a BAD memory:**
+- Temporary status ("is busy today", "feeling tired")
+- One-off jokes or comments with no lasting relevance
+- Information already implied by context
+- Vague or generic statements
+- Duplicates of existing information
 
-Conversation:
+**Participants in this conversation:** {participants}
+
+**Conversation:**
 {context}
 
-Respond ONLY with valid JSON in this exact format:
+**Output Format** - Respond ONLY with valid JSON:
 {{
   "memories": [
     {{
       "username": "exact_username_from_conversation",
       "key": "category_or_topic",
-      "content": "the actual memory content"
+      "content": "comprehensive memory content"
     }}
   ]
 }}
 
-IMPORTANT GUIDELINES:
-- Only create memories if there's meaningful information from THIS conversation
-- Each user should have AT MOST ONE memory entry per unique "key" category
-- The "key" should be a broad category like "preferences", "hobbies", "work", "personality", "relationships", "recent_activity" but can be anything like outside_hobbies could work too
-- The "content" should combine ALL related facts for that category into ONE comprehensive entry
-- Use exact usernames as they appear in the conversation
-- If there's nothing meaningful to remember, return an empty memories array
+**Critical Guidelines:**
+1. **Quality over quantity** - Only create memories for meaningful, lasting information
+2. **One entry per category** - Combine ALL related facts into ONE comprehensive entry per "key"
+3. **Broad categories** - Use keys like: "preferences", "hobbies", "work", "personality", "relationships", "technical_skills", "life_context", "communication_style"
+4. **Exact usernames** - Must match exactly as they appear in the conversation
+5. **Combine and deduplicate** - If this conversation adds to an existing category, write a complete updated entry that includes both old and new info
+6. **Empty when appropriate** - If there's nothing worth remembering long-term, return {{"memories": []}}
 
-Remember: Output ONLY valid JSON, nothing else. Combine related information under the same key."#,
+**Examples:**
+
+GOOD:
+{{"username": "Alice", "key": "hobbies", "content": "Passionate about rock climbing and photography. Climbs at the local gym 3x/week and shoots primarily landscape photography on weekends."}}
+
+BAD:
+{{"username": "Alice", "key": "today", "content": "went climbing"}}
+
+GOOD:
+{{"username": "Bob", "key": "work", "content": "Senior software engineer at a fintech startup. Specializes in backend systems and distributed databases. Currently working on migrating to microservices architecture."}}
+
+BAD:
+{{"username": "Bob", "key": "current_task", "content": "debugging code"}}
+
+Remember: Output ONLY valid JSON, nothing else. Focus on persistent, meaningful information."#,
         context = context,
         participants = participants
     )
