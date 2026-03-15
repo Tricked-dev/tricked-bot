@@ -1,0 +1,12 @@
+LOAD DATABASE
+    FROM sqlite:///path/to/database.db
+    INTO postgresql://user:pass@localhost/trickedbot
+
+WITH include drop, create tables, create indexes, reset sequences
+
+CAST
+    type integer to bigint,
+    column user.id to bigint using (lambda (v) (parse-integer v)),
+    column memory.user_id to bigint
+
+ALTER SCHEMA 'main' RENAME TO 'public';

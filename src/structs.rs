@@ -6,8 +6,9 @@ use std::{
 
 use tokio::time::Instant as TokioInstant;
 
-use r2d2_sqlite::SqliteConnectionManager;
-use rand::prelude::ThreadRng;
+use deadpool_postgres::Pool;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use twilight_bucket::{Bucket, Limit};
@@ -119,7 +120,7 @@ impl Default for CurrencyRates {
 pub struct State {
     pub last_redesc: Instant,
     /// Rng
-    pub rng: ThreadRng,
+    pub rng: SmallRng,
     /// Reqwest client
     pub client: Client,
     /// Bucket for user messages
@@ -128,8 +129,8 @@ pub struct State {
     pub channel_bucket: Bucket,
     /// Ratelimit for DM messages (30 messages per hour)
     pub dm_bucket: Bucket,
-    /// Sqlite database connection
-    pub db: r2d2::Pool<SqliteConnectionManager>,
+    /// Postgres database connection pool
+    pub db: Pool,
     pub nick: String,
     pub nick_id: u64,
     /// The id of the last user that typed to not resend the indicator
@@ -151,18 +152,15 @@ pub struct State {
     /// Currency exchange rates
     pub currency_rates: CurrencyRates,
 }
-// i hate fixing error
-unsafe impl Send for State {}
-
 impl State {
-    pub fn new(rng: ThreadRng, client: Client, db: r2d2::Pool<SqliteConnectionManager>, config: Arc<Config>) -> Self {
+    pub fn new(client: Client, db: Pool, config: Arc<Config>) -> Self {
         let user_bucket = Bucket::new(Limit::new(Duration::from_secs(30), 10));
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         let dm_bucket = Bucket::new(Limit::new(Duration::from_secs(3600), 30)); // 30 messages per hour
         let client_clone = client.clone();
         Self {
             db,
-            rng,
+            rng: SmallRng::from_os_rng(),
             client,
             last_redesc: Instant::now(),
             user_bucket,

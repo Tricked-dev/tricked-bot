@@ -3,7 +3,6 @@ use rand::{
     seq::IndexedRandom,
     Rng,
 };
-use serde_rusqlite::from_row;
 use std::{sync::Arc, time::Instant};
 use tokio::sync::{mpsc, MutexGuard};
 use twilight_http::Client as HttpClient;
@@ -19,7 +18,7 @@ use vesper::twilight_exports::UserMarker;
 use crate::{
     ai_message,
     database::User,
-    memory_creator, quiz_handler,
+    db, memory_creator, quiz_handler,
     structs::{Command, List, State},
     utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
@@ -139,15 +138,7 @@ pub async fn handle_message(
         return Ok(cmd);
     }
 
-    let user = {
-        let db = locked_state.db.get()?;
-        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-        statement
-            .query_one([msg.author.id.get().to_string()], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            })
-            .ok()
-    };
+    let user = db::get_user(&locked_state.db, msg.author.id.get()).await?;
 
     if let Some(mut user) = user {
         //give some extra xp for every attachment
@@ -168,7 +159,7 @@ pub async fn handle_message(
 
             user.level = new_level;
             user.xp = 0;
-            user.update_sync(&*locked_state.db.get()?)?;
+            db::update_user_xp(&locked_state.db, &user).await?;
             tokio::time::sleep(std::time::Duration::from_millis(locked_state.rng.gen_range(3000..8000))).await;
             return Ok(Command::text(format!(
                 "Congrats <@{}>! You are now level {}!",
@@ -179,11 +170,11 @@ pub async fn handle_message(
             .mention());
         } else {
             user.xp = new_xp;
-            user.update_sync(&*locked_state.db.get()?)?;
+            db::update_user_xp(&locked_state.db, &user).await?;
         }
     } else {
         let new_user = User {
-            id: msg.author.id.get(),
+            id: msg.author.id.get() as i64,
             level: 0,
             xp: 0,
             social_credit: 0,
@@ -192,7 +183,7 @@ pub async fn handle_message(
             example_input: String::new(),
             example_output: String::new(),
         };
-        new_user.insert_sync(&*locked_state.db.get()?)?;
+        db::insert_user(&locked_state.db, &new_user).await?;
     }
     let content = msg.content.clone();
     match msg.content.to_lowercase().as_str() {
@@ -369,20 +360,10 @@ pub async fn handle_message(
         }
 
         _ if locked_state.rng.gen_range(0..80) == 2 && !locked_state.config.shit_reddits.is_empty() => {
-            let res = locked_state
-                .client
-                .get(format!(
-                    "https://www.reddit.com/r/{}/.json",
-                    locked_state
-                        .config
-                        .shit_reddits
-                        .choose(&mut rand::thread_rng())
-                        .unwrap()
-                ))
-                .send()
-                .await?
-                .json::<List>()
-                .await?;
+            let shit_reddits = locked_state.config.shit_reddits.clone();
+            let subreddit = shit_reddits.choose(&mut locked_state.rng).unwrap().clone();
+            let url = format!("https://www.reddit.com/r/{}/.json", subreddit);
+            let res = locked_state.client.get(url).send().await?.json::<List>().await?;
             let res = res
                 .data
                 .children

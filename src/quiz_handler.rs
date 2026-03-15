@@ -1,12 +1,11 @@
 use crate::{
     color_quiz::ColorQuiz,
-    database::User,
+    db,
     math_test::MathTest,
     structs::{Command, PendingColorTest, PendingMathTest, State},
     utils::levels::xp_required_for_level,
 };
 use rand::Rng;
-use serde_rusqlite::from_row;
 use std::sync::Arc;
 use tokio::sync::MutexGuard;
 use tokio::time::Instant as TokioInstant;
@@ -38,18 +37,15 @@ async fn apply_timeout(http: &HttpClient, guild_id: Id<twilight_model::id::marke
     }
 }
 
-fn award_quiz_xp(
-    db: &r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>,
-    rng: &mut rand::rngs::ThreadRng,
+async fn award_quiz_xp(
+    pool: &deadpool_postgres::Pool,
+    rng: &mut impl Rng,
     user_id: u64,
     user_name: &str,
 ) -> color_eyre::Result<(i32, Option<i32>)> {
     let bonus_xp = rng.gen_range(250..1000);
 
-    let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-    if let Ok(mut user) = statement.query_one([user_id.to_string()], |row| {
-        from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-    }) {
+    if let Some(mut user) = db::get_user(pool, user_id).await? {
         let level = user.level;
         let xp_required = xp_required_for_level(level);
         let new_xp = user.xp + bonus_xp;
@@ -59,11 +55,11 @@ fn award_quiz_xp(
             let new_level = level + 1;
             user.level = new_level;
             user.xp = new_xp - xp_required;
-            user.update_sync(db)?;
+            db::update_user_xp(pool, &user).await?;
             return Ok((bonus_xp, Some(new_level)));
         } else {
             user.xp = new_xp;
-            user.update_sync(db)?;
+            db::update_user_xp(pool, &user).await?;
         }
     }
 
@@ -97,9 +93,9 @@ pub async fn handle_math_quiz(
     if (MathTest { question, answer }).validate_answer(msg.content.trim()) {
         locked_state.pending_math_tests.remove(&msg.channel_id.get());
 
-        let db = locked_state.db.get().ok()?;
+        let db = locked_state.db.clone();
         let (bonus_xp, new_level) =
-            award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
+            award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).await.ok()?;
 
         let duration_secs = elapsed.as_secs_f64();
 
@@ -150,9 +146,9 @@ pub async fn handle_color_quiz(
     if quiz.validate_answer(msg.content.trim()) {
         locked_state.pending_color_tests.remove(&msg.channel_id.get());
 
-        let db = locked_state.db.get().ok()?;
+        let db = locked_state.db.clone();
         let (bonus_xp, new_level) =
-            award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).ok()?;
+            award_quiz_xp(&db, &mut locked_state.rng, msg.author.id.get(), &msg.author.name).await.ok()?;
 
         return Some(
             Command::text(if let Some(level) = new_level {
@@ -183,11 +179,10 @@ pub async fn trigger_math_quiz(msg: &MessageCreate, locked_state: &mut MutexGuar
     }
 
     let api_key = locked_state.config.openrouter_api_key.clone().unwrap();
-    let model = &locked_state.config.openrouter_model;
+    let model = locked_state.config.openrouter_model.clone();
     let db_clone = locked_state.db.clone();
-    let mut new_rng = rand::thread_rng();
 
-    match MathTest::generate(&api_key, model, &db_clone, &mut new_rng).await {
+    match MathTest::generate(&api_key, &model, &db_clone, &mut locked_state.rng).await {
         Ok(test) => {
             let pending = PendingMathTest {
                 user_id: msg.author.id.get(),

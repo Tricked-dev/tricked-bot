@@ -14,7 +14,6 @@ use clap::Parser;
 use config::Config;
 use futures::stream::StreamExt;
 use once_cell::sync::Lazy;
-use r2d2_sqlite::SqliteConnectionManager;
 use reqwest::Client;
 use tokio::sync::Mutex;
 use twilight_gateway::{
@@ -42,6 +41,7 @@ mod commands;
 mod config;
 mod currency_fetcher;
 mod database;
+mod db;
 mod event_handler;
 mod math_test;
 mod memory_creator;
@@ -75,35 +75,12 @@ async fn main() -> color_eyre::Result<()> {
             String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap()).parse::<u64>()?;
     }
 
-    if std::fs::metadata(&cfg.database_file).is_err() {
-        std::fs::write(&cfg.database_file, [])?;
-    }
-
-    let manager = SqliteConnectionManager::file(&cfg.database_file);
-    let pool = r2d2::Pool::new(manager).unwrap();
-    let rusqlite = pool.get().unwrap();
-
-    if rusqlite.table_exists(None, "User")? {
-        rusqlite.execute("ALTER TABLE User RENAME TO user1", [])?;
-        rusqlite.execute("ALTER TABLE user1 RENAME TO user", [])?;
-    } else if !rusqlite.table_exists(None, "user")? {
-        rusqlite.execute(database::User::CREATE_TABLE_SQL, [])?;
-    }
-    if !rusqlite.column_exists(None, "user", "name")? {
-        rusqlite.execute("ALTER TABLE user ADD COLUMN name TEXT DEFAULT ''", [])?;
-    }
-    if !rusqlite.column_exists(None, "user", "relationship")? {
-        rusqlite.execute("ALTER TABLE user ADD COLUMN relationship TEXT DEFAULT ''", [])?;
-    }
-    if !rusqlite.column_exists(None, "user", "example_input")? {
-        rusqlite.execute("ALTER TABLE user ADD COLUMN example_input TEXT DEFAULT ''", [])?;
-    }
-    if !rusqlite.column_exists(None, "user", "example_output")? {
-        rusqlite.execute("ALTER TABLE user ADD COLUMN example_output TEXT DEFAULT ''", [])?;
-    }
-
-    rusqlite.execute(database::Memory::CREATE_TABLE_SQL, [])?;
-    rusqlite.execute(database::MathQuestion::CREATE_TABLE_SQL, [])?;
+    let pg_config = cfg.database_url.parse::<tokio_postgres::Config>()?;
+    let mgr = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
+    let pool = deadpool_postgres::Pool::builder(mgr)
+        .max_size(16)
+        .build()?;
+    db::run_migrations(&pool).await?;
 
     let config = Arc::new(cfg);
 
@@ -158,7 +135,6 @@ async fn main() -> color_eyre::Result<()> {
     let mut shard_stream = ShardEventStream::new(shards.iter_mut());
 
     let state = Arc::new(Mutex::new(State::new(
-        rand::thread_rng(),
         client.clone(),
         pool.clone(),
         Arc::clone(&config),

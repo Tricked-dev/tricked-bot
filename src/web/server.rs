@@ -2,18 +2,17 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
+use deadpool_postgres::Pool;
 use std::sync::Arc;
 use tera::Tera;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Pool<SqliteConnectionManager>,
+    pub db: Pool,
     pub templates: Arc<Tera>,
 }
 
-pub async fn run_web_server(db: Pool<SqliteConnectionManager>, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_web_server(db: Pool, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // Determine template path based on environment
     // For Nix builds: try to find data directory relative to executable
     let template_path = std::env::current_exe()

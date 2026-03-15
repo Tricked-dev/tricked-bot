@@ -1,6 +1,6 @@
-use rand::{prelude::ThreadRng, Rng};
+use rand::Rng;
 
-pub fn zalgify_text(mut rng: ThreadRng, s: String) -> String {
+pub fn zalgify_text(mut rng: impl Rng, s: String) -> String {
     let mut new_text = String::with_capacity(s.len() * 2);
     for c in s.chars() {
         new_text.push(c);

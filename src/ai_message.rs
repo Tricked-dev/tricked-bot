@@ -4,8 +4,8 @@ use openrouter_api::{
     types::chat::{ChatCompletionRequest, Message, MessageContent},
     OpenRouterClient,
 };
-use r2d2_sqlite::SqliteConnectionManager;
-use serde_rusqlite::from_row;
+use deadpool_postgres::Pool;
+use crate::db;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -77,54 +77,6 @@ fn build_authors_note() -> &'static str {
 - "Sebook" mention → Complete personality shift to adorable catwife mode
 
 **Current Mode:** Trickster (unless Sebook detected)]"#
-}
-
-/// Retrieves relevant memories for the user from the database
-/// Reference: AGENT_GUIDE.md section on Memory Context Injection
-fn get_user_memories(database: &r2d2::Pool<SqliteConnectionManager>, user_id: u64) -> Result<Vec<Memory>> {
-    let db = database.get()?;
-    let mut statement = db.prepare("SELECT * FROM memory WHERE user_id = ? ORDER BY id DESC LIMIT 5")?;
-
-    let memories: Vec<Memory> = statement
-        .query_map([user_id.to_string()], |row| {
-            from_row::<Memory>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-        })?
-        .filter_map(Result::ok)
-        .collect();
-
-    Ok(memories)
-}
-
-/// Fetches relationships for users mentioned in the conversation
-fn get_users_with_relationships(database: &r2d2::Pool<SqliteConnectionManager>, context: &str) -> Result<Vec<(String, String)>> {
-    let db = database.get()?;
-    let mut statement = db.prepare("SELECT name, relationship FROM user WHERE relationship != ''")?;
-
-    let users: Vec<(String, String)> = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .filter_map(Result::ok)
-        .filter(|(name, _)| context.contains(name.as_str())) // Only include users in the conversation
-        .collect();
-
-    Ok(users)
-}
-
-/// Fetches examples for users mentioned in the conversation
-fn get_users_with_examples(database: &r2d2::Pool<SqliteConnectionManager>, context: &str) -> Result<Vec<(String, String, String)>> {
-    let db = database.get()?;
-    let mut statement = db.prepare("SELECT name, example_input, example_output FROM user WHERE example_input != '' AND example_output != ''")?;
-
-    let users: Vec<(String, String, String)> = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        })?
-        .filter_map(Result::ok)
-        .filter(|(name, _, _)| context.contains(name.as_str())) // Only include users in the conversation
-        .collect();
-
-    Ok(users)
 }
 
 /// Formats memories into natural language for prompt injection with usage guidelines
@@ -218,52 +170,6 @@ Quality over quantity - one great response beats three mediocre fragments."#,
     )
 }
 
-/// Get user from database or return default
-fn get_user_or_default(database: &r2d2::Pool<SqliteConnectionManager>, user_id: u64) -> User {
-    database
-        .get()
-        .ok()
-        .and_then(|db| {
-            db.prepare("SELECT * FROM user WHERE id = ?").ok().and_then(|mut stmt| {
-                stmt.query_one([user_id.to_string()], |row| {
-                    from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-                })
-                .ok()
-            })
-        })
-        .unwrap_or_else(|| User {
-            id: user_id,
-            level: 0,
-            xp: 0,
-            social_credit: 0,
-            name: "Unknown".to_owned(),
-            relationship: String::new(),
-            example_input: String::new(),
-            example_output: String::new(),
-        })
-}
-
-/// Replace user mentions in context with actual usernames
-fn replace_mentions(
-    context: String,
-    user_mentions: &HashMap<String, u64>,
-    database: &r2d2::Pool<SqliteConnectionManager>,
-) -> String {
-    let mut processed = context;
-    for (mention, user_id) in user_mentions {
-        if let Ok(db) = database.get() {
-            if let Ok(mut stmt) = db.prepare("SELECT * FROM user WHERE id = ?") {
-                if let Ok(user) = stmt.query_one([user_id.to_string()], |row| {
-                    from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-                }) {
-                    processed = processed.replace(mention, &user.name);
-                }
-            }
-        }
-    }
-    processed
-}
-
 /// Stream AI response chunks through a channel
 async fn stream_ai_response(
     client: OpenRouterClient<openrouter_api::Ready>,
@@ -313,7 +219,7 @@ async fn stream_ai_response(
 }
 
 pub async fn main(
-    database: r2d2::Pool<SqliteConnectionManager>,
+    database: Pool,
     user_id: u64,
     message: &str,
     context: &str,
@@ -339,14 +245,32 @@ pub async fn main(
         )?;
 
     // Process context and get user info
-    let processed_context = replace_mentions(context.to_string(), &user_mentions, &database);
-    let user = get_user_or_default(&database, user_id);
-    let memories = get_user_memories(&database, user_id)?;
+    // Replace user mentions with names
+    let mut processed_context = context.to_string();
+    for (mention, &user_id_ref) in &user_mentions {
+        if let Ok(Some(u)) = db::get_user(&database, user_id_ref).await {
+            processed_context = processed_context.replace(mention, &u.name);
+        }
+    }
+
+    let user = db::get_user(&database, user_id).await?.unwrap_or_else(|| crate::database::User {
+        id: user_id as i64,
+        level: 0,
+        xp: 0,
+        social_credit: 0,
+        name: "Unknown".to_owned(),
+        relationship: String::new(),
+        example_input: String::new(),
+        example_output: String::new(),
+    });
+    let memories = db::get_memories(&database, user_id).await.unwrap_or_default();
     let formatted_memories = format_memories(&memories);
 
     // Fetch dynamic relationship and example data for users in the conversation
-    let users_with_relationships = get_users_with_relationships(&database, &processed_context).unwrap_or_default();
-    let users_with_examples = get_users_with_examples(&database, &processed_context).unwrap_or_default();
+    let users_with_relationships = db::get_users_with_relationships(&database).await.unwrap_or_default()
+        .into_iter().filter(|(name, _)| processed_context.contains(name.as_str())).collect::<Vec<_>>();
+    let users_with_examples = db::get_users_with_examples(&database).await.unwrap_or_default()
+        .into_iter().filter(|(name, _, _)| processed_context.contains(name.as_str())).collect::<Vec<_>>();
 
     // Build prompt
     let system_prompt = build_character_prompt(

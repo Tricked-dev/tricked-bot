@@ -1,10 +1,8 @@
 use crate::database::MathQuestion;
 use color_eyre::Result;
+use deadpool_postgres::Pool;
 use openrouter_api::{OpenRouterClient, types::chat::{ChatCompletionRequest, Message, MessageContent}};
 use rand::Rng;
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
-use serde_rusqlite::from_rows;
 
 const MATH_PROMPTS: [&str; 3] = [
     "Generate a simple mental math expression that can be solved in your head. Use basic operations like addition, subtraction, multiplication, or division with small numbers (prefer numbers under 20, maximum 100). Output ONLY the mathematical expression, nothing else. Examples: {ex1}, {ex2}, {ex3}, {ex4}",
@@ -21,7 +19,7 @@ impl MathTest {
     pub async fn generate(
         openai_api_key: &str,
         model: &str,
-        db: &Pool<SqliteConnectionManager>,
+        db: &Pool,
         rng: &mut impl Rng,
     ) -> Result<Self> {
         let client = OpenRouterClient::from_api_key(openai_api_key)?;
@@ -133,21 +131,28 @@ impl MathTest {
             };
 
             // Check if this question already exists in the database
-            let conn = db.get()?;
-            let mut stmt = conn.prepare("SELECT * FROM math_question WHERE question = ?")?;
-            let existing: Result<Vec<MathQuestion>, _> = from_rows(stmt.query([&question])?).collect();
+            let conn = db.get().await?;
+            let existing: Vec<MathQuestion> = conn
+                .query(
+                    "SELECT * FROM math_question WHERE question = $1",
+                    &[&question],
+                )
+                .await?
+                .iter()
+                .map(postgres_from_row::FromRow::from_row)
+                .collect();
 
             // If question exists, try again
-            if existing.is_ok() && !existing.as_ref().unwrap().is_empty() {
+            if !existing.is_empty() {
                 tracing::debug!("Question '{}' already exists, retrying", question);
                 continue;
             }
 
-            // Store in database - use manual INSERT to let SQLite handle autoincrement
+            // Store in database
             conn.execute(
-                "INSERT INTO math_question (question, answer) VALUES (?, ?)",
-                rusqlite::params![&question, &answer],
-            )?;
+                "INSERT INTO math_question (question, answer) VALUES ($1, $2)",
+                &[&question, &answer],
+            ).await?;
 
             return Ok(MathTest { question, answer });
         }

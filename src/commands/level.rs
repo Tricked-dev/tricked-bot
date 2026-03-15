@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use serde_rusqlite::{from_row, from_rows};
+use crate::db;
 use tokio::sync::Mutex;
 
 use twilight_model::id::{marker::UserMarker, Id};
@@ -24,15 +24,7 @@ pub async fn level(
         .get();
     let state = ctx.data.lock().await;
 
-    let user = {
-        let db = state.db.get()?;
-        let mut statement = db.prepare("SELECT * FROM user WHERE id = ?").unwrap();
-        statement
-            .query_row([id], |row| {
-                from_row::<User>(row).map_err(|_| rusqlite::Error::QueryReturnedNoRows)
-            })
-            .ok()
-    };
+    let user = db::get_user(&state.db, id).await?;
 
     let user = match user {
         Some(user) => user,
@@ -42,17 +34,9 @@ pub async fn level(
         }
     };
 
-    let all_users = {
-        let db = state.db.get()?;
-        let mut statement = db
-            .prepare("SELECT * FROM user WHERE level != 0 ORDER BY level DESC")
-            .unwrap();
-        from_rows::<User>(statement.query([]).unwrap())
-            .flatten()
-            .collect::<Vec<User>>()
-    };
+    let all_users = db::get_all_users_ranked(&state.db).await?;
 
-    let pos = all_users.into_iter().position(|x| x.id == id);
+    let pos = all_users.into_iter().position(|x| x.id as u64 == id);
 
     let xp_to_next_level = xp_required_for_level(user.level);
     let xp_earned = user.xp;

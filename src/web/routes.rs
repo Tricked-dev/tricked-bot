@@ -1,11 +1,10 @@
-use crate::database::{Memory, User};
+use crate::db;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     Form,
 };
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tera::Context;
 
@@ -45,90 +44,24 @@ pub struct MemoryForm {
 }
 
 pub async fn list_users(State(state): State<AppState>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let users = match db::get_all_users_web(&state.db).await {
+        Ok(u) => u,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
-
-    let mut stmt = match conn.prepare("SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user ORDER BY id") {
-        Ok(stmt) => stmt,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let users: Result<Vec<User>, _> = stmt
-        .query_map([], |row| {
-            let id_str: String = row.get(0)?;
-            Ok(User {
-                id: id_str.parse().unwrap_or(0),
-                level: row.get(1)?,
-                xp: row.get(2)?,
-                social_credit: row.get(3)?,
-                name: row.get(4)?,
-                relationship: row.get(5)?,
-                example_input: row.get(6)?,
-                example_output: row.get(7)?,
-            })
-        })
-        .and_then(|mapped| mapped.collect());
-
-    let users = match users {
-        Ok(users) => users,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
     let mut context = Context::new();
     context.insert("users", &users);
     context.insert("title", "Users");
-
     match state.templates.render("users.html", &context) {
         Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!("Template error: {:?}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
-        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response(),
     }
 }
 
 pub async fn view_user(State(state): State<AppState>, Path(user_id): Path<u64>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let user: Result<User, _> = conn.query_row(
-        "SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user WHERE id = ?",
-        params![user_id.to_string()],
-        |row| {
-            let id_str: String = row.get(0)?;
-            Ok(User {
-                id: id_str.parse().unwrap_or(0),
-                level: row.get(1)?,
-                xp: row.get(2)?,
-                social_credit: row.get(3)?,
-                name: row.get(4)?,
-                relationship: row.get(5)?,
-                example_input: row.get(6)?,
-                example_output: row.get(7)?,
-            })
-        },
-    );
-
-    let user = match user {
-        Ok(user) => user,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (StatusCode::NOT_FOUND, "User not found").into_response()
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let user = match db::get_user(&state.db, user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
 
     let mut context = Context::new();
@@ -145,39 +78,10 @@ pub async fn view_user(State(state): State<AppState>, Path(user_id): Path<u64>) 
 }
 
 pub async fn edit_user_form(State(state): State<AppState>, Path(user_id): Path<u64>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let user: Result<User, _> = conn.query_row(
-        "SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user WHERE id = ?",
-        params![user_id.to_string()],
-        |row| {
-            let id_str: String = row.get(0)?;
-            Ok(User {
-                id: id_str.parse().unwrap_or(0),
-                level: row.get(1)?,
-                xp: row.get(2)?,
-                social_credit: row.get(3)?,
-                name: row.get(4)?,
-                relationship: row.get(5)?,
-                example_input: row.get(6)?,
-                example_output: row.get(7)?,
-            })
-        },
-    );
-
-    let user = match user {
-        Ok(user) => user,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (StatusCode::NOT_FOUND, "User not found").into_response()
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let user = match db::get_user(&state.db, user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
 
     let mut context = Context::new();
@@ -198,87 +102,21 @@ pub async fn update_user(
     Path(user_id): Path<u64>,
     Form(form): Form<UserUpdateForm>,
 ) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    match conn.execute(
-        "UPDATE user SET name = ?, relationship = ?, example_input = ?, example_output = ? WHERE id = ?",
-        params![form.name, form.relationship, form.example_input, form.example_output, user_id.to_string()],
-    ) {
-        Ok(_) => {
-            axum::response::Redirect::to(&format!("/user/{}", user_id)).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    match db::update_user_profile(&state.db, user_id, &form.name, &form.relationship, &form.example_input, &form.example_output).await {
+        Ok(_) => axum::response::Redirect::to(&format!("/user/{}", user_id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     }
 }
 
 pub async fn list_memories(State(state): State<AppState>, Path(user_id): Path<u64>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let user = match db::get_user(&state.db, user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
-
-    // Get user info
-    let user: Result<User, _> = conn.query_row(
-        "SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user WHERE id = ?",
-        params![user_id.to_string()],
-        |row| {
-            let id_str: String = row.get(0)?;
-            Ok(User {
-                id: id_str.parse().unwrap_or(0),
-                level: row.get(1)?,
-                xp: row.get(2)?,
-                social_credit: row.get(3)?,
-                name: row.get(4)?,
-                relationship: row.get(5)?,
-                example_input: row.get(6)?,
-                example_output: row.get(7)?,
-            })
-        },
-    );
-
-    let user = match user {
-        Ok(user) => user,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (StatusCode::NOT_FOUND, "User not found").into_response()
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    // Get memories for this user
-    let mut stmt = match conn.prepare("SELECT id, user_id, content, key FROM Memory WHERE user_id = ? ORDER BY id") {
-        Ok(stmt) => stmt,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let memories: Result<Vec<Memory>, _> = stmt
-        .query_map(params![user_id.to_string()], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                content: row.get(2)?,
-                key: row.get(3)?,
-            })
-        })
-        .and_then(|mapped| mapped.collect());
-
-    let memories = match memories {
-        Ok(memories) => memories,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let memories = match db::get_memories_for_user_web(&state.db, user_id).await {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
 
     let mut context = Context::new();
@@ -296,39 +134,10 @@ pub async fn list_memories(State(state): State<AppState>, Path(user_id): Path<u6
 }
 
 pub async fn new_memory_form(State(state): State<AppState>, Path(user_id): Path<u64>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let user: Result<User, _> = conn.query_row(
-        "SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user WHERE id = ?",
-        params![user_id.to_string()],
-        |row| {
-            let id_str: String = row.get(0)?;
-            Ok(User {
-                id: id_str.parse().unwrap_or(0),
-                level: row.get(1)?,
-                xp: row.get(2)?,
-                social_credit: row.get(3)?,
-                name: row.get(4)?,
-                relationship: row.get(5)?,
-                example_input: row.get(6)?,
-                example_output: row.get(7)?,
-            })
-        },
-    );
-
-    let user = match user {
-        Ok(user) => user,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (StatusCode::NOT_FOUND, "User not found").into_response()
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let user = match db::get_user(&state.db, user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return (StatusCode::NOT_FOUND, "User not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
 
     let mut context = Context::new();
@@ -349,55 +158,17 @@ pub async fn create_memory(
     Path(user_id): Path<u64>,
     Form(form): Form<MemoryForm>,
 ) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    match conn.execute(
-        "INSERT INTO Memory (user_id, content, key) VALUES (?, ?, ?)",
-        params![user_id.to_string(), form.content, form.key],
-    ) {
-        Ok(_) => {
-            axum::response::Redirect::to(&format!("/user/{}/memories", user_id)).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    match db::create_memory(&state.db, user_id, &form.key, &form.content).await {
+        Ok(_) => axum::response::Redirect::to(&format!("/user/{}/memories", user_id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     }
 }
 
 pub async fn edit_memory_form(State(state): State<AppState>, Path(memory_id): Path<i32>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let memory: Result<Memory, _> = conn.query_row(
-        "SELECT id, user_id, content, key FROM Memory WHERE id = ?",
-        params![memory_id],
-        |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                content: row.get(2)?,
-                key: row.get(3)?,
-            })
-        },
-    );
-
-    let memory = match memory {
-        Ok(memory) => memory,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (StatusCode::NOT_FOUND, "Memory not found").into_response()
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let memory = match db::get_memory(&state.db, memory_id as i64).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Memory not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
 
     let mut context = Context::new();
@@ -418,72 +189,22 @@ pub async fn update_memory(
     Path(memory_id): Path<i32>,
     Form(form): Form<MemoryForm>,
 ) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    let memory = match db::get_memory(&state.db, memory_id as i64).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Memory not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     };
-
-    // Get user_id first for redirect
-    let user_id: Result<String, _> = conn.query_row(
-        "SELECT user_id FROM Memory WHERE id = ?",
-        params![memory_id],
-        |row| row.get(0),
-    );
-
-    let user_id = match user_id {
-        Ok(user_id) => user_id,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    match conn.execute(
-        "UPDATE Memory SET content = ?, key = ? WHERE id = ?",
-        params![form.content, form.key, memory_id],
-    ) {
-        Ok(_) => {
-            axum::response::Redirect::to(&format!("/user/{}/memories", user_id)).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    match db::update_memory(&state.db, memory_id as i64, &form.key, &form.content).await {
+        Ok(_) => axum::response::Redirect::to(&format!("/user/{}/memories", memory.user_id as u64)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     }
 }
 
 pub async fn delete_memory(State(state): State<AppState>, Path(memory_id): Path<i32>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    // Get user_id first for redirect
-    let user_id: Result<String, _> = conn.query_row(
-        "SELECT user_id FROM Memory WHERE id = ?",
-        params![memory_id],
-        |row| row.get(0),
-    );
-
-    let user_id = match user_id {
-        Ok(user_id) => user_id,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (StatusCode::NOT_FOUND, "Memory not found").into_response()
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    match conn.execute("DELETE FROM Memory WHERE id = ?", params![memory_id]) {
-        Ok(_) => {
-            axum::response::Redirect::to(&format!("/user/{}/memories", user_id)).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
+    match db::delete_memory(&state.db, memory_id as i64).await {
+        Ok(Some(user_id)) => axum::response::Redirect::to(&format!("/user/{}/memories", user_id as u64)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Memory not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     }
 }
 
@@ -497,59 +218,27 @@ pub async fn serve_css() -> Response {
 }
 
 // Helper function to get all user exports with memories
-fn get_all_user_exports(conn: &rusqlite::Connection) -> Result<Vec<UserExport>, String> {
-    // Get all users with their data
-    let mut stmt = conn.prepare(
-        "SELECT id, level, xp, social_credit, name, relationship, example_input, example_output FROM user ORDER BY id"
-    ).map_err(|e| format!("Database error: {}", e))?;
+async fn get_all_user_exports(pool: &deadpool_postgres::Pool) -> Result<Vec<UserExport>, String> {
+    let users = db::get_all_users_web(pool).await
+        .map_err(|e| format!("Database error: {}", e))?;
 
-    let users_result: Result<Vec<(String, i32, i32, i64, String, String, String, String)>, _> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-            ))
-        })
-        .and_then(|mapped| mapped.collect());
-
-    let users = users_result.map_err(|e| format!("Database error: {}", e))?;
-
-    // Create user exports without memories
-    let exports: Vec<UserExport> = users
-        .into_iter()
-        .map(|(id, level, xp, social_credit, name, relationship, example_input, example_output)| {
-            UserExport {
-                id,
-                name,
-                level,
-                xp,
-                social_credit,
-                relationship,
-                example_input,
-                example_output,
-                memories: Vec::new(),
-            }
-        })
-        .collect();
+    let exports = users.into_iter().map(|u| UserExport {
+        id: u.id.to_string(),
+        name: u.name,
+        level: u.level,
+        xp: u.xp,
+        social_credit: u.social_credit,
+        relationship: u.relationship,
+        example_input: u.example_input,
+        example_output: u.example_output,
+        memories: Vec::new(),
+    }).collect();
 
     Ok(exports)
 }
 
 pub async fn export_prompts_json(State(state): State<AppState>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let exports = match get_all_user_exports(&conn) {
+    let exports = match get_all_user_exports(&state.db).await {
         Ok(exports) => exports,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
@@ -575,14 +264,7 @@ pub async fn export_prompts_json(State(state): State<AppState>) -> Response {
 }
 
 pub async fn export_users_csv(State(state): State<AppState>) -> Response {
-    let conn = match state.db.get() {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    let exports = match get_all_user_exports(&conn) {
+    let exports = match get_all_user_exports(&state.db).await {
         Ok(exports) => exports,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
