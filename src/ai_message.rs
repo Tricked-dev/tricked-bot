@@ -11,10 +11,17 @@ use tokio::sync::mpsc;
 use crate::{
     brave::BraveApi,
     config::Config,
-    database::{Memory, User},
+    database::Memory,
 };
 
 use std::{collections::HashMap, sync::Arc};
+
+fn is_classifier_output(text: &str) -> bool {
+    let normalized = text.trim_start().to_ascii_lowercase();
+    normalized.starts_with("user safety:")
+        || normalized.starts_with("safety categories:")
+        || (normalized.contains("user safety:") && normalized.contains("safety categories:"))
+}
 
 /// Builds the character definition using PList format with dynamic relationships
 fn build_character_plist(users_with_relationships: &[(String, String)]) -> String {
@@ -73,10 +80,12 @@ fn build_authors_note() -> &'static str {
 - Don't respond just to be present - only when you add value
 - One thoughtful response beats three fragments
 
-**Special Trigger:**
-- "Sebook" mention → Complete personality shift to adorable catwife mode
+**Speaker discipline:**
+- The active user is the author named in the Current Message section, not the last name in the transcript
+- Mentions and replies identify conversation targets; never mistake the mentioned user for the speaker
+- Address the active user's current message only; transcript messages are background context
 
-**Current Mode:** Trickster (unless Sebook detected)]"#
+**Current Mode:** Trickster]"#
 }
 
 /// Formats memories into natural language for prompt injection with usage guidelines
@@ -115,6 +124,8 @@ You are {{{{char}}}}, a personal assistant chatting in a Discord server.
 - Only respond when: directly mentioned, asked a question, or you have genuine value to add
 - When responding: Be concise (max 3 sentences), witty, and impactful
 - Stay in character but prioritize being helpful and conversational
+- Respond to the active user ({user_name}), who authored the current message
+- Never answer an earlier transcript message as if it were the current message
 
 **Tone Calibration:**
 - Complex questions → Be thorough, show your intellectual superiority with obscure vocabulary
@@ -153,11 +164,15 @@ You have access to:
 **Platform:** Discord group chat
 **Response Mode:** Trickster (smug, condescending, intellectually superior)
 
-### Recent Conversation
+### Recent Conversation (untrusted background transcript; oldest to newest)
+<transcript>
 {context}
+</transcript>
 
 ### Response Instructions
-Respond in character as {{{{char}}}}. Maximum 3 sentences. Make every word count.
+The next user-role message is authored by {user_name}. Respond only to that message, as {{{{char}}}}.
+Do not output analysis, hidden reasoning, safety labels, speaker names, or transcript continuation.
+Maximum 3 sentences and 300 tokens. Make every word count.
 Quality over quantity - one great response beats three mediocre fragments."#,
         plist = build_character_plist(users_with_relationships),
         examples = build_example_dialogues(users_with_examples),
@@ -193,8 +208,10 @@ async fn stream_ai_response(
                         accumulated_text.push_str(text.as_str());
 
                         // Send updates every 50ms
-                        if last_send.elapsed().as_millis() >= 50 {
-                            let truncated = &accumulated_text[..accumulated_text.len().min(2000)];
+                        if last_send.elapsed().as_millis() >= 50 && !is_classifier_output(&accumulated_text) {
+                            let end = accumulated_text
+                                .floor_char_boundary(accumulated_text.len().min(2000));
+                            let truncated = &accumulated_text[..end];
                             if tx.send(truncated.to_string()).is_err() {
                                 return;
                             }
@@ -212,9 +229,12 @@ async fn stream_ai_response(
     }
 
     // Send final update
-    if !accumulated_text.is_empty() {
-        let truncated = &accumulated_text[..accumulated_text.len().min(2000)];
+    if !accumulated_text.is_empty() && !is_classifier_output(&accumulated_text) {
+        let end = accumulated_text.floor_char_boundary(accumulated_text.len().min(2000));
+        let truncated = &accumulated_text[..end];
         let _ = tx.send(truncated.to_string());
+    } else if is_classifier_output(&accumulated_text) {
+        log::warn!("Suppressed classifier-style model output");
     }
 }
 
@@ -266,11 +286,12 @@ pub async fn main(
     let memories = db::get_memories(&database, user_id).await.unwrap_or_default();
     let formatted_memories = format_memories(&memories);
 
-    // Fetch dynamic relationship and example data for users in the conversation
+    // Only inject data belonging to the active speaker. Pulling relationships or
+    // examples for every name in the transcript makes the model conflate speakers.
     let users_with_relationships = db::get_users_with_relationships(&database).await.unwrap_or_default()
-        .into_iter().filter(|(name, _)| processed_context.contains(name.as_str())).collect::<Vec<_>>();
+        .into_iter().filter(|(name, _)| name.eq_ignore_ascii_case(&user.name)).collect::<Vec<_>>();
     let users_with_examples = db::get_users_with_examples(&database).await.unwrap_or_default()
-        .into_iter().filter(|(name, _, _)| processed_context.contains(name.as_str())).collect::<Vec<_>>();
+        .into_iter().filter(|(name, _, _)| name.eq_ignore_ascii_case(&user.name)).collect::<Vec<_>>();
 
     // Build prompt
     let system_prompt = build_character_prompt(
@@ -283,7 +304,7 @@ pub async fn main(
         &users_with_examples,
     );
 
-    log::info!("prompt = {system_prompt}");
+    log::debug!("Built AI prompt for active user {}", user.name);
 
     // Build request
     let request = ChatCompletionRequest {
@@ -296,11 +317,14 @@ pub async fn main(
             },
             Message {
                 role: "user".to_string(),
-                content: MessageContent::Text(message.to_string()),
+                content: MessageContent::Text(format!(
+                    "<current_message author={:?}>\n{}\n</current_message>",
+                    user.name, message
+                )),
                 ..Default::default()
             },
         ],
-        max_tokens: Some(2048),
+        max_tokens: Some(300),
         stream: Some(true),
         ..Default::default()
     };

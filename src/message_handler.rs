@@ -236,8 +236,6 @@ pub async fn handle_message(
                 .get(&msg.channel_id.get())
                 .map(|count| *count >= 30)
                 .unwrap_or(false);
-            let name = msg.author.name.clone();
-
             let mut context = String::new();
             match locked_state.cache.channel_messages(msg.channel_id) {
                 Some(v) => {
@@ -301,7 +299,7 @@ pub async fn handle_message(
             match ai_message::main(
                 locked_state.db.clone(),
                 msg.author.id.get(),
-                &format!("{name}: {}", &content[..std::cmp::min(content.len(), 2400)]),
+                &content.chars().take(2400).collect::<String>(),
                 &context,
                 locked_state.brave_api.clone(),
                 user_mentions,
