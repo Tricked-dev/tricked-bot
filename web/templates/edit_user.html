@@ -15,18 +15,19 @@
     <div class="form-group">
         <label for="relationship">Relationship:</label>
         <input type="text" id="relationship" name="relationship" value="{{ user.relationship }}" placeholder="e.g., friend, colleague, acquaintance">
+        <p class="form-help">Manual edits apply immediately. AI observations are staged and require 3 matching memory cycles.</p>
     </div>
 
     <div class="form-group">
         <label for="example_input">Example Input:</label>
         <textarea id="example_input" name="example_input" rows="6" placeholder="Example of how this user might interact with the bot">{{ user.example_input }}</textarea>
-        <p class="form-help">Provide an example of this user's typical message or question to the bot</p>
+        <p class="form-help">Use a real representative message. The AI only proposes examples found in conversation history.</p>
     </div>
 
     <div class="form-group">
         <label for="example_output">Example Output:</label>
         <textarea id="example_output" name="example_output" rows="6" placeholder="Example of how the bot should respond to this user">{{ user.example_output }}</textarea>
-        <p class="form-help">Provide an example of how the bot should respond to this user</p>
+        <p class="form-help">Pair this with the input above. Manual edits override pending AI proposals.</p>
     </div>
 
     <div class="form-actions">

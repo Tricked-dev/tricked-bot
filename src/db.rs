@@ -17,6 +17,9 @@ pub async fn run_migrations(pool: &Pool) -> Result<()> {
     client
         .batch_execute(include_str!("../migrations/002_improve_types.sql"))
         .await?;
+    client
+        .batch_execute(include_str!("../migrations/003_profile_evolution.sql"))
+        .await?;
     Ok(())
 }
 
@@ -78,7 +81,104 @@ pub async fn update_user_profile(
         "UPDATE \"user\" SET name = $1, relationship = $2, example_input = $3, example_output = $4 WHERE id = $5",
         &[&name, &relationship, &example_input, &example_output, &uid(user_id)],
     ).await?;
+    client
+        .execute("DELETE FROM profile_candidate WHERE user_id = $1", &[&uid(user_id)])
+        .await?;
     Ok(())
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct ProfileCandidate {
+    pub id: i64,
+    pub user_id: i64,
+    pub field: String,
+    pub proposed_value: String,
+    pub confirmations: i32,
+}
+
+pub async fn stage_profile_candidate(
+    pool: &Pool,
+    user_id: u64,
+    field: &str,
+    proposed_value: &str,
+) -> Result<()> {
+    let client = pool.get().await?;
+    let row = client
+        .query_one(
+            r#"INSERT INTO profile_candidate (user_id, field, proposed_value, confirmations)
+               VALUES ($1, $2, $3, 1)
+               ON CONFLICT (user_id, field) DO UPDATE SET
+                 proposed_value = EXCLUDED.proposed_value,
+                 confirmations = CASE
+                   WHEN profile_candidate.proposed_value = EXCLUDED.proposed_value
+                   THEN profile_candidate.confirmations + 1 ELSE 1 END,
+                 updated_at = now()
+               RETURNING id, confirmations"#,
+            &[&uid(user_id), &field, &proposed_value],
+        )
+        .await?;
+    let candidate_id: i64 = row.get(0);
+    let confirmations: i32 = row.get(1);
+    if confirmations >= 3 {
+        apply_profile_candidate_with_client(&client, candidate_id).await?;
+    }
+    Ok(())
+}
+
+async fn apply_profile_candidate_with_client(client: &tokio_postgres::Client, candidate_id: i64) -> Result<()> {
+    let Some(row) = client
+        .query_opt("SELECT user_id, field, proposed_value FROM profile_candidate WHERE id = $1", &[&candidate_id])
+        .await?
+    else {
+        return Ok(());
+    };
+    let user_id: i64 = row.get(0);
+    let field: String = row.get(1);
+    let value: String = row.get(2);
+    match field.as_str() {
+        "relationship" => {
+            client.execute("UPDATE \"user\" SET relationship = $1 WHERE id = $2", &[&value, &user_id]).await?;
+        }
+        "example" => {
+            let pair: serde_json::Value = serde_json::from_str(&value)?;
+            let input = pair.get("input").and_then(|v| v.as_str()).unwrap_or_default();
+            let output = pair.get("output").and_then(|v| v.as_str()).unwrap_or_default();
+            if !input.is_empty() && !output.is_empty() {
+                client.execute(
+                    "UPDATE \"user\" SET example_input = $1, example_output = $2 WHERE id = $3",
+                    &[&input, &output, &user_id],
+                ).await?;
+            }
+        }
+        _ => return Err(color_eyre::eyre::eyre!("unsupported profile field: {}", field)),
+    }
+    client.execute("DELETE FROM profile_candidate WHERE id = $1", &[&candidate_id]).await?;
+    Ok(())
+}
+
+pub async fn get_profile_candidates(pool: &Pool, user_id: u64) -> Result<Vec<ProfileCandidate>> {
+    let client = pool.get().await?;
+    let rows = client.query(
+        "SELECT id, user_id, field, proposed_value, confirmations FROM profile_candidate WHERE user_id = $1 ORDER BY updated_at DESC",
+        &[&uid(user_id)],
+    ).await?;
+    Ok(rows.into_iter().map(|row| ProfileCandidate {
+        id: row.get(0), user_id: row.get(1), field: row.get(2), proposed_value: row.get(3), confirmations: row.get(4),
+    }).collect())
+}
+
+pub async fn approve_profile_candidate(pool: &Pool, candidate_id: i64) -> Result<Option<i64>> {
+    let client = pool.get().await?;
+    let user_id = client.query_opt("SELECT user_id FROM profile_candidate WHERE id = $1", &[&candidate_id]).await?
+        .map(|row| row.get::<_, i64>(0));
+    apply_profile_candidate_with_client(&client, candidate_id).await?;
+    Ok(user_id)
+}
+
+pub async fn reject_profile_candidate(pool: &Pool, candidate_id: i64) -> Result<Option<i64>> {
+    let client = pool.get().await?;
+    let rows = client.query("DELETE FROM profile_candidate WHERE id = $1 RETURNING user_id", &[&candidate_id]).await?;
+    Ok(rows.first().map(|row| row.get(0)))
 }
 
 pub async fn get_memories(pool: &Pool, user_id: u64) -> Result<Vec<Memory>> {

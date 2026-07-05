@@ -23,6 +23,21 @@ fn is_classifier_output(text: &str) -> bool {
         || (normalized.contains("user safety:") && normalized.contains("safety categories:"))
 }
 
+fn strip_self_labels(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let lower = trimmed.to_ascii_lowercase();
+            for prefix in ["the trickster:", "**the trickster:**", "**the trickster**:"] {
+                if lower.starts_with(prefix) {
+                    return trimmed[prefix.len()..].trim_start();
+                }
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 /// Builds the character definition using PList format with dynamic relationships
 fn build_character_plist(users_with_relationships: &[(String, String)]) -> String {
     let mut relationships = String::new();
@@ -142,7 +157,7 @@ You are {{{{char}}}}, a personal assistant chatting in a Discord server.
 ### Capabilities
 You have access to:
 - Long-term memory about users (preferences, facts, relationships, behaviors)
-- User progression stats (level, XP, social credit)
+- User progression stats (level and XP)
 - Relationship context with specific users
 - Full conversation history for context
 
@@ -172,7 +187,7 @@ You have access to:
 ### Response Instructions
 The next user-role message is authored by {user_name}. Respond only to that message, as {{{{char}}}}.
 Do not output analysis, hidden reasoning, safety labels, speaker names, or transcript continuation.
-Maximum 3 sentences and 300 tokens. Make every word count.
+Maximum 3 sentences. Make every word count.
 Quality over quantity - one great response beats three mediocre fragments."#,
         plist = build_character_plist(users_with_relationships),
         examples = build_example_dialogues(users_with_examples),
@@ -212,7 +227,7 @@ async fn stream_ai_response(
                             let end = accumulated_text
                                 .floor_char_boundary(accumulated_text.len().min(2000));
                             let truncated = &accumulated_text[..end];
-                            if tx.send(truncated.to_string()).is_err() {
+                            if tx.send(strip_self_labels(truncated)).is_err() {
                                 return;
                             }
                             last_send = std::time::Instant::now();
@@ -232,7 +247,7 @@ async fn stream_ai_response(
     if !accumulated_text.is_empty() && !is_classifier_output(&accumulated_text) {
         let end = accumulated_text.floor_char_boundary(accumulated_text.len().min(2000));
         let truncated = &accumulated_text[..end];
-        let _ = tx.send(truncated.to_string());
+        let _ = tx.send(strip_self_labels(truncated));
     } else if is_classifier_output(&accumulated_text) {
         log::warn!("Suppressed classifier-style model output");
     }
@@ -324,7 +339,9 @@ pub async fn main(
                 ..Default::default()
             },
         ],
-        max_tokens: Some(300),
+        // MiMo uses part of this budget for provider-side reasoning. The
+        // three-sentence prompt constraint controls visible response length.
+        max_tokens: Some(1024),
         stream: Some(true),
         ..Default::default()
     };

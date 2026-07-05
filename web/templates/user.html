@@ -24,9 +24,6 @@
         <dt>XP:</dt>
         <dd>{{ user.xp }}</dd>
 
-        <dt>Social Credit:</dt>
-        <dd>{{ user.social_credit }}</dd>
-
         <dt>Relationship:</dt>
         <dd>{% if user.relationship and user.relationship != "" %}{{ user.relationship }}{% else %}Not set{% endif %}</dd>
     </dl>
@@ -44,5 +41,25 @@
         <h3>Example Output:</h3>
         <pre>{% if user.example_output and user.example_output != "" %}{{ user.example_output }}{% else %}Not set{% endif %}</pre>
     </div>
+</div>
+
+<div class="detail-card">
+    <h2>AI Profile Evolution</h2>
+    <p class="form-help">The AI observes the existing memory cycle, so this uses no additional API call. A matching proposal is applied automatically after 3 observations.</p>
+    {% for candidate in profile_candidates %}
+    <div class="memory-card">
+        <div class="memory-header">
+            <strong>{{ candidate.field | title }}</strong>
+            <span class="memory-id">{{ candidate.confirmations }}/3 confirmations</span>
+        </div>
+        <pre>{{ candidate.proposed_value }}</pre>
+        <div class="memory-actions">
+            <form method="post" action="/profile-candidate/{{ candidate.id }}/approve"><button class="btn btn-sm btn-primary" type="submit">Apply now</button></form>
+            <form method="post" action="/profile-candidate/{{ candidate.id }}/reject"><button class="btn btn-sm" type="submit">Reject</button></form>
+        </div>
+    </div>
+    {% else %}
+    <p class="no-data">No pending profile changes.</p>
+    {% endfor %}
 </div>
 {% endblock %}

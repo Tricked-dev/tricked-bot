@@ -16,7 +16,6 @@ struct UserExport {
     name: String,
     level: i32,
     xp: i32,
-    social_credit: i64,
     relationship: String,
     example_input: String,
     example_output: String,
@@ -66,6 +65,11 @@ pub async fn view_user(State(state): State<AppState>, Path(user_id): Path<u64>) 
 
     let mut context = Context::new();
     context.insert("user", &user);
+    let candidates = match db::get_profile_candidates(&state.db, user_id).await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
+    };
+    context.insert("profile_candidates", &candidates);
     context.insert("title", &format!("User {}", user_id));
 
     match state.templates.render("user.html", &context) {
@@ -74,6 +78,22 @@ pub async fn view_user(State(state): State<AppState>, Path(user_id): Path<u64>) 
             tracing::error!("Template error: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
         }
+    }
+}
+
+pub async fn approve_profile_candidate(State(state): State<AppState>, Path(candidate_id): Path<i64>) -> Response {
+    match db::approve_profile_candidate(&state.db, candidate_id).await {
+        Ok(Some(user_id)) => axum::response::Redirect::to(&format!("/user/{}", user_id)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Candidate not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
+    }
+}
+
+pub async fn reject_profile_candidate(State(state): State<AppState>, Path(candidate_id): Path<i64>) -> Response {
+    match db::reject_profile_candidate(&state.db, candidate_id).await {
+        Ok(Some(user_id)) => axum::response::Redirect::to(&format!("/user/{}", user_id)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Candidate not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     }
 }
 
@@ -227,7 +247,6 @@ async fn get_all_user_exports(pool: &deadpool_postgres::Pool) -> Result<Vec<User
         name: u.name,
         level: u.level,
         xp: u.xp,
-        social_credit: u.social_credit,
         relationship: u.relationship,
         example_input: u.example_input,
         example_output: u.example_output,
@@ -281,7 +300,7 @@ pub async fn export_users_csv(State(state): State<AppState>) -> Response {
     };
 
     // Build CSV with memories
-    let mut csv = String::from("user_id,name,level,xp,social_credit,relationship,example_input,example_output,memories\n");
+    let mut csv = String::from("user_id,name,level,xp,relationship,example_input,example_output,memories\n");
 
     for user in exports {
         // Serialize memories as JSON for the CSV field
@@ -293,12 +312,11 @@ pub async fn export_users_csv(State(state): State<AppState>) -> Response {
         };
 
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{}\n",
             escape_csv(&user.id),
             escape_csv(&user.name),
             user.level,
             user.xp,
-            user.social_credit,
             escape_csv(&user.relationship),
             escape_csv(&user.example_input),
             escape_csv(&user.example_output),

@@ -43,6 +43,8 @@ pub async fn run_web_server(db: Pool, port: u16) -> Result<(), Box<dyn std::erro
         .route("/user/{id}", get(super::routes::view_user))
         .route("/user/{id}/edit", get(super::routes::edit_user_form))
         .route("/user/{id}/edit", post(super::routes::update_user))
+        .route("/profile-candidate/{id}/approve", post(super::routes::approve_profile_candidate))
+        .route("/profile-candidate/{id}/reject", post(super::routes::reject_profile_candidate))
         .route("/user/{id}/memories", get(super::routes::list_memories))
         .route("/user/{id}/memory/new", get(super::routes::new_memory_form))
         .route("/user/{id}/memory/new", post(super::routes::create_memory))
