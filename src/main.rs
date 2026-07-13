@@ -48,6 +48,7 @@ mod memory_creator;
 mod message_handler;
 mod pfp_updater;
 mod qalc;
+mod ratewaifu;
 mod quiz_handler;
 mod structs;
 pub mod utils;

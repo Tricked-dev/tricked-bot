@@ -19,6 +19,7 @@ use crate::{
     ai_message,
     database::User,
     db, memory_creator, quiz_handler,
+    ratewaifu,
     structs::{Command, List, State},
     utils::levels::xp_required_for_level,
     zalgos::zalgify_text,
@@ -185,6 +186,31 @@ pub async fn handle_message(
         };
         db::insert_user(&locked_state.db, &new_user).await?;
     }
+
+    if let Some(candidate) = ratewaifu::parse_command(&msg.content) {
+        if candidate.is_empty() {
+            return Ok(Command::text("Usage: `t!ratewaifu <text>`").reply());
+        }
+
+        let score = ratewaifu::score(candidate);
+        let config = Arc::clone(&locked_state.config);
+        drop(locked_state);
+
+        let explanation = match ai_message::ratewaifu_explanation(config, candidate, score).await {
+            Ok(explanation) if !explanation.trim().is_empty() => explanation,
+            Ok(_) => ratewaifu::fallback_explanation(score).to_owned(),
+            Err(error) => {
+                tracing::warn!("Waifu rating explanation failed: {:?}", error);
+                ratewaifu::fallback_explanation(score).to_owned()
+            }
+        };
+
+        return Ok(Command::text(format!(
+            "**Waifu rating: {score}/10**\n{explanation}"
+        ))
+        .reply());
+    }
+
     let content = msg.content.clone();
     match msg.content.to_lowercase().as_str() {
         x if locked_state.last_redesc.elapsed() > std::time::Duration::from_secs(150)
