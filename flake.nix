@@ -10,7 +10,6 @@
 
   outputs =
     {
-      self,
       nixpkgs,
       rust-overlay,
       flake-utils,
@@ -73,19 +72,21 @@
 
             nativeBuildInputs =
               commonArgs.nativeBuildInputs
-              ++ (
-                with pkgs;
-                [
-                  makeWrapper
-                  removeReferencesTo
-                ]
-              );
+              ++ (with pkgs; [
+                makeWrapper
+                removeReferencesTo
+              ]);
 
             postInstall = ''
               mkdir -p $out/share/tricked-bot
               cp -r web $out/share/tricked-bot/
               wrapProgram $out/bin/tricked-bot \
-                --prefix PATH : ${lib.makeBinPath [ pkgs.ffmpeg pkgs.libqalculate ]}
+                --prefix PATH : ${
+                  lib.makeBinPath [
+                    pkgs.ffmpeg
+                    pkgs.libqalculate
+                  ]
+                }
             '';
 
             # Belt-and-suspenders: scrub any residual toolchain references the
@@ -104,6 +105,11 @@
             };
           }
         );
+
+        app = {
+          type = "app";
+          program = lib.getExe tricked-bot;
+        };
 
         # Dev shell keeps the full toolchain (rust-src for rust-analyzer, etc.)
         # plus nightly tooling. None of this ends up in the release closure.
@@ -124,9 +130,12 @@
           inherit tricked-bot;
         };
 
-        overlays.default = final: prev: {
-          inherit tricked-bot;
+        apps = {
+          default = app;
+          tricked-bot = app;
         };
+
+        checks.default = tricked-bot;
 
         devShells.default =
           with pkgs;
@@ -143,6 +152,7 @@
               cargo-udeps
               ffmpeg
               libqalculate
+              nixfmt-rfc-style
             ];
 
             LD_LIBRARY_PATH = lib.makeLibraryPath [
@@ -158,6 +168,8 @@
               fi
             '';
           };
+
+        formatter = pkgs.nixfmt-rfc-style;
       }
     );
 }
