@@ -35,6 +35,13 @@ use vesper::prelude::*;
 use std::{collections::HashMap, env, sync::Arc};
 
 pub mod ai_message;
+mod ai_reply;
+mod decider;
+mod questions;
+mod recall;
+mod reply_gate;
+mod message_check;
+mod refusal;
 pub mod brave;
 mod color_quiz;
 mod commands;
@@ -65,6 +72,7 @@ async fn main() -> color_eyre::Result<()> {
     dotenv::dotenv().ok();
 
     tracing_subscriber::fmt()
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             "debug,h2::codec::framed_read=off,twilight_gateway::shard=off,twilight_http_ratelimiting::in_memory=info,rustls::client=info,hyper::client::connect=info,h2::codec::framed_write=info",
         ))

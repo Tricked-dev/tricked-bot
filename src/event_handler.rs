@@ -1,4 +1,7 @@
-use crate::{ai_message, memory_creator, message_handler::handle_message, structs::*};
+use crate::{
+    message_handler::{handle_message, is_direct, snapshot_ai_request},
+    structs::*,
+};
 
 use rand::Rng;
 use tokio::{join, sync::Mutex};
@@ -7,76 +10,7 @@ use twilight_http::{request::channel::reaction::RequestReactionType, Client as H
 use twilight_model::{channel::message::AllowedMentions, id::Id};
 use vesper::prelude::*;
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
-
-/// Helper function to handle AI message processing with memory creation
-async fn handle_ai_message(
-    state: &Arc<Mutex<State>>,
-    http: &Arc<HttpClient>,
-    user_id: u64,
-    channel_id: u64,
-    message_id: u64,
-    name: String,
-    content: String,
-    context: String,
-    user_mentions: HashMap<String, u64>,
-    should_create_memory: bool,
-    tracking_id: u64, // Either channel_id or user_id for DMs
-) -> color_eyre::Result<()> {
-    let locked_state = state.lock().await;
-    let user_mentions_clone = user_mentions.clone();
-
-    match ai_message::main(
-        locked_state.db.clone(),
-        user_id,
-        &format!("{}: {}", name, &content[..std::cmp::min(content.len(), 2400)]),
-        &context,
-        locked_state.brave_api.clone(),
-        user_mentions,
-        locked_state.config.clone(),
-    )
-    .await
-    {
-        Ok(stream_rx) => {
-            drop(locked_state); // Release lock before spawning tasks
-
-            tokio::spawn(crate::message_handler::handle_streaming_response(
-                stream_rx,
-                Id::new(channel_id),
-                Id::new(message_id),
-                Arc::clone(http),
-            ));
-
-            // Spawn background task to create memories if we've reached the threshold
-            if should_create_memory {
-                let state_clone = Arc::clone(state);
-                tokio::spawn(async move {
-                    memory_creator::create_memories_background(
-                        state_clone.lock().await.db.clone(),
-                        context,
-                        user_mentions_clone,
-                        state_clone.lock().await.config.clone(),
-                    )
-                    .await;
-
-                    // Reset the message counter
-                    state_clone.lock().await.channel_message_counts.insert(tracking_id, 0);
-                });
-            }
-            Ok(())
-        }
-        Err(e) => {
-            drop(locked_state); // Release lock before making HTTP call
-            tracing::error!("AI Error: {:?}", e);
-            http.create_message(Id::new(channel_id))
-                .content(&format!("AI Error: {:?}", e))?
-                .reply(Id::new(message_id))
-                .exec()
-                .await?;
-            Ok(())
-        }
-    }
-}
+use std::{sync::Arc, time::Duration};
 
 pub async fn handle_event(
     event: Event,
@@ -94,7 +28,7 @@ pub async fn handle_event(
             });
         }
         Event::MessageCreate(msg) => {
-            tracing::info!("Message received {}", &msg.content.replace('\n', "\\ "));
+            tracing::info!(target: "messages", channel = msg.channel_id.get(), msg_id = msg.id.get(), author = %msg.author.name, bot = msg.author.bot, "Message received {}", msg.content.replace('\n', "\\ "));
 
             if msg.author.bot {
                 return Ok(());
@@ -125,94 +59,16 @@ pub async fn handle_event(
                     return Ok(());
                 }
 
-                // Track message count for memory creation using the DM user ID as key
-                let count = locked_state
-                    .channel_message_counts
-                    .entry(msg.author.id.get())
-                    .or_insert(0);
-                *count += 1;
-
-                // Check if we should create memories (every 15 messages)
-                let should_create_memory = *count >= 15;
-
-                // Handle the DM message with AI
-                if locked_state.config.openrouter_api_key.is_some() {
-                    let name = msg.author.name.clone();
-                    let content = msg.content.clone();
-                    let user_id = msg.author.id.get();
-                    let channel_id = msg.channel_id.get();
-                    let message_id = msg.id.get();
-                    let bot_id = locked_state.config.id;
-
-                    // Build context from recent DM messages (up to 15 messages)
-                    let mut context = String::new();
-                    match locked_state.cache.channel_messages(msg.channel_id) {
-                        Some(v) => {
-                            let msgs = v
-                                .iter()
-                                .take(15)
-                                .filter_map(|m| {
-                                    let message = locked_state.cache.message(m.to_owned());
-                                    message.map(|msg| {
-                                        let content = msg.content();
-                                        let ai_content = content[..std::cmp::min(content.len(), 2400)]
-                                            .replace(&bot_id.to_string(), "The Trickster");
-                                        match msg.author().get() {
-                                            id if id == bot_id => format!("The Trickster: {ai_content}"),
-                                            _ => {
-                                                let username = locked_state
-                                                    .cache
-                                                    .user(msg.author())
-                                                    .map(|c| c.name.clone())
-                                                    .unwrap_or_default();
-                                                format!("{}: {}", username, ai_content)
-                                            }
-                                        }
-                                    })
-                                })
-                                .rev()
-                                .collect::<Vec<String>>();
-                            context.push_str(&msgs.join("\n"));
-                        }
-                        None => {
-                            // Fallback to just current message if cache is empty
-                            context.push_str(&format!("{}: {}", name, &content[..std::cmp::min(content.len(), 2400)]));
-                        }
-                    }
-
-                    let user_mentions = HashMap::new();
-
-                    drop(locked_state); // Release lock before calling helper
-
-                    handle_ai_message(
-                        state,
-                        http,
-                        user_id,
-                        channel_id,
-                        message_id,
-                        name,
-                        content,
-                        context,
-                        user_mentions,
-                        should_create_memory,
-                        user_id, // Use user_id as tracking_id for DMs
-                    )
-                    .await?;
+                let req = snapshot_ai_request(&locked_state, &msg);
+                let enabled = locked_state.config.openrouter_api_key.is_some();
+                drop(locked_state);
+                if enabled {
+                    crate::ai_reply::spawn_ai_reply(req, Arc::clone(http));
+                } else {
+                    crate::message_check::spawn(Arc::clone(state), Arc::clone(http), req, false);
                 }
                 return Ok(());
             }
-
-            // Original guild message handling continues below
-            if msg.guild_id.is_none() {
-                return Ok(());
-            }
-
-            // Increment message count for this channel
-            let count = locked_state
-                .channel_message_counts
-                .entry(msg.channel_id.get())
-                .or_insert(0);
-            *count += 1;
 
             if let Some(today_i) = locked_state.config.today_i_channel {
                 if msg.channel_id == Id::new(today_i) && !msg.content.clone().to_lowercase().starts_with("today i") {
@@ -234,7 +90,22 @@ pub async fn handle_event(
                 }
             };
 
-            let r = handle_message(&msg, locked_state, http).await;
+            let direct = is_direct(&msg, locked_state.config.id);
+            if !direct {
+                locked_state.reply_gate.count(msg.channel_id.get());
+                tracing::info!(target: "decider", kind = "count", channel = msg.channel_id.get(), msg_id = msg.id.get());
+            }
+            let req = snapshot_ai_request(&locked_state, &msg);
+            let ask_reply = !direct
+                && locked_state.config.openrouter_api_key.is_some()
+                && locked_state.config.decider_reply_mode != crate::config::ReplyMode::Off;
+            let mut ai_started = false;
+            let r = handle_message(&msg, locked_state, http, &mut ai_started).await;
+            // Dispatch before sending a responder result, so even failed sends retain the durable check.
+            if !ai_started {
+                let answered = r.as_ref().map(|res| !res.skip).unwrap_or(true);
+                crate::message_check::spawn(Arc::clone(state), Arc::clone(http), req, ask_reply && !answered);
+            }
             match r {
                 Ok(res) => {
                     let Command {

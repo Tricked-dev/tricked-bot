@@ -181,11 +181,11 @@ pub async fn reject_profile_candidate(pool: &Pool, candidate_id: i64) -> Result<
     Ok(rows.first().map(|row| row.get(0)))
 }
 
-pub async fn get_memories(pool: &Pool, user_id: u64) -> Result<Vec<Memory>> {
+pub async fn get_all_memories(pool: &Pool, user_id: u64) -> Result<Vec<Memory>> {
     let client = pool.get().await?;
     let rows = client
         .query(
-            "SELECT * FROM memory WHERE user_id = $1 ORDER BY id DESC LIMIT 5",
+            "SELECT * FROM memory WHERE user_id = $1 ORDER BY key",
             &[&uid(user_id)],
         )
         .await?;

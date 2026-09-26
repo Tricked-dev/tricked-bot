@@ -49,6 +49,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
           nativeBuildInputs = with pkgs; [
             pkg-config

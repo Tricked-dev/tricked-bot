@@ -147,8 +147,8 @@ pub struct State {
     pub pending_math_tests: HashMap<u64, PendingMathTest>,
     /// Pending color tests
     pub pending_color_tests: HashMap<u64, PendingColorTest>,
-    /// Message count per channel/user since last memory creation (channel_id or user_id -> message count)
-    pub channel_message_counts: HashMap<u64, i32>,
+    pub decider: Option<crate::decider::Decider>,
+    pub reply_gate: crate::reply_gate::ReplyGate,
     /// Currency exchange rates
     pub currency_rates: CurrencyRates,
 }
@@ -158,6 +158,8 @@ impl State {
         let channel_bucket = Bucket::new(Limit::new(Duration::from_secs(60), 120));
         let dm_bucket = Bucket::new(Limit::new(Duration::from_secs(3600), 30)); // 30 messages per hour
         let client_clone = client.clone();
+        let decider = crate::decider::Decider::from_config(&config);
+        tracing::info!("decider: {}", if decider.is_some() { "configured" } else { "disabled" });
         Self {
             db,
             rng: SmallRng::from_os_rng(),
@@ -174,7 +176,8 @@ impl State {
             config,
             pending_math_tests: HashMap::new(),
             pending_color_tests: HashMap::new(),
-            channel_message_counts: HashMap::new(),
+            decider,
+            reply_gate: crate::reply_gate::ReplyGate::default(),
             dm_bucket,
             currency_rates: CurrencyRates::default(),
         }

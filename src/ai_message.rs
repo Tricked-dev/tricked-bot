@@ -1,20 +1,15 @@
+use crate::db;
 use color_eyre::Result;
 use futures::StreamExt;
 use openrouter_api::{
     types::chat::{ChatCompletionRequest, Message, MessageContent},
     OpenRouterClient,
 };
-use deadpool_postgres::Pool;
-use crate::db;
 use tokio::sync::mpsc;
 
-use crate::{
-    brave::BraveApi,
-    config::Config,
-    database::Memory,
-};
+use crate::{config::Config, database::Memory};
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 fn is_classifier_output(text: &str) -> bool {
     let normalized = text.trim_start().to_ascii_lowercase();
@@ -103,7 +98,11 @@ fn build_character_plist(users_with_relationships: &[(String, String)]) -> Strin
     let mut relationships = String::new();
     for (username, relationship) in users_with_relationships {
         if !relationship.is_empty() {
-            relationships.push_str(&format!("\n  relationship_{}: {};", username.to_lowercase().replace(' ', "_"), relationship));
+            relationships.push_str(&format!(
+                "\n  relationship_{}: {};",
+                username.to_lowercase().replace(' ', "_"),
+                relationship
+            ));
         }
     }
 
@@ -187,6 +186,7 @@ fn build_character_prompt(
     memories: &str,
     users_with_relationships: &[(String, String)],
     users_with_examples: &[(String, String, String)],
+    now: &str,
 ) -> String {
     format!(
         r#"### System Identity
@@ -209,6 +209,7 @@ You are {{{{char}}}}, a personal assistant chatting in a Discord server.
 - Nothing valuable to add → Stay silent (don't force a response)
 
 **Never:**
+- Drop the persona to refuse; if a request is harmful, decline in character with a jab and offer something harmless
 - Break character or speak for {{{{user}}}}
 - Use asterisks for actions or emotes (speak naturally)
 - Respond to every message just to be present
@@ -235,6 +236,7 @@ You have access to:
 - Use memories to personalize responses, not to show off that you remember things
 
 ### Current Session
+**Current time:** {now}
 **Active User:** {user_name} (Level {user_level}, {user_xp} XP)
 **Platform:** Discord group chat
 **Response Mode:** Trickster (smug, condescending, intellectually superior)
@@ -284,8 +286,7 @@ async fn stream_ai_response(
 
                         // Send updates every 50ms
                         if last_send.elapsed().as_millis() >= 50 && !is_classifier_output(&accumulated_text) {
-                            let end = accumulated_text
-                                .floor_char_boundary(accumulated_text.len().min(2000));
+                            let end = accumulated_text.floor_char_boundary(accumulated_text.len().min(2000));
                             let truncated = &accumulated_text[..end];
                             if tx.send(strip_self_labels(truncated)).is_err() {
                                 return;
@@ -314,14 +315,16 @@ async fn stream_ai_response(
 }
 
 pub async fn main(
-    database: Pool,
-    user_id: u64,
-    message: &str,
-    context: &str,
-    _brave: BraveApi,
-    user_mentions: HashMap<String, u64>,
-    config: Arc<Config>,
+    req: &crate::ai_reply::AiRequest,
+    memories: Vec<Memory>,
+    model: &str,
 ) -> Result<mpsc::UnboundedReceiver<String>> {
+    let database = &req.db;
+    let config = &req.config;
+    let user_id = req.user_id;
+    let message = &req.message;
+    let context = &req.context;
+    let user_mentions = &req.user_mentions;
     // Get API key
     let api_key = config
         .openrouter_api_key
@@ -342,31 +345,42 @@ pub async fn main(
     // Process context and get user info
     // Replace user mentions with names
     let mut processed_context = context.to_string();
-    for (mention, &user_id_ref) in &user_mentions {
+    for (mention, &user_id_ref) in user_mentions {
         if let Ok(Some(u)) = db::get_user(&database, user_id_ref).await {
             processed_context = processed_context.replace(mention, &u.name);
         }
     }
 
-    let user = db::get_user(&database, user_id).await?.unwrap_or_else(|| crate::database::User {
-        id: user_id as i64,
-        level: 0,
-        xp: 0,
-        social_credit: 0,
-        name: "Unknown".to_owned(),
-        relationship: String::new(),
-        example_input: String::new(),
-        example_output: String::new(),
-    });
-    let memories = db::get_memories(&database, user_id).await.unwrap_or_default();
+    let user = db::get_user(&database, user_id)
+        .await?
+        .unwrap_or_else(|| crate::database::User {
+            id: user_id as i64,
+            level: 0,
+            xp: 0,
+            social_credit: 0,
+            name: req.user_name.clone(),
+            relationship: String::new(),
+            example_input: String::new(),
+            example_output: String::new(),
+        });
     let formatted_memories = format_memories(&memories);
 
     // Only inject data belonging to the active speaker. Pulling relationships or
     // examples for every name in the transcript makes the model conflate speakers.
-    let users_with_relationships = db::get_users_with_relationships(&database).await.unwrap_or_default()
-        .into_iter().filter(|(name, _)| name.eq_ignore_ascii_case(&user.name)).collect::<Vec<_>>();
-    let users_with_examples = db::get_users_with_examples(&database).await.unwrap_or_default()
-        .into_iter().filter(|(name, _, _)| name.eq_ignore_ascii_case(&user.name)).collect::<Vec<_>>();
+    let users_with_relationships = if user.relationship.is_empty() {
+        Vec::new()
+    } else {
+        vec![(user.name.clone(), user.relationship.clone())]
+    };
+    let users_with_examples = if user.example_input.is_empty() || user.example_output.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            user.name.clone(),
+            user.example_input.clone(),
+            user.example_output.clone(),
+        )]
+    };
 
     // Build prompt
     let system_prompt = build_character_prompt(
@@ -377,13 +391,14 @@ pub async fn main(
         &formatted_memories,
         &users_with_relationships,
         &users_with_examples,
+        &utc_now(),
     );
 
     log::debug!("Built AI prompt for active user {}", user.name);
 
     // Build request
     let request = ChatCompletionRequest {
-        model: config.openrouter_model.clone(),
+        model: model.to_owned(),
         messages: vec![
             Message {
                 role: "system".to_string(),
@@ -411,4 +426,45 @@ pub async fn main(
     tokio::spawn(stream_ai_response(client, request, tx));
 
     Ok(rx)
+}
+
+fn utc_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        (secs % 86_400) / 3600,
+        (secs % 3600) / 60
+    )
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    #[test]
+    fn prompt_has_date_and_in_character_refusals() {
+        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", &[], &[], "2026-09-26 16:00 UTC");
+        assert!(p.contains("2026-09-26 16:00 UTC"));
+        assert!(p.contains("decline in character"));
+    }
+    #[test]
+    fn civil_date() {
+        assert_eq!(civil_from_days(20_722), (2026, 9, 26));
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
 }

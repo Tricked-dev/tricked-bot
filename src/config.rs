@@ -2,6 +2,15 @@ use std::{collections::HashMap, io, num::ParseIntError, sync::Arc};
 
 use clap::Parser;
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReplyMode {
+    /// Only pings/replies trigger the AI; the reply question is not asked.
+    #[default]
+    Off,
+    /// Reply when the score clears the threshold and the channel cooldown.
+    Live,
+}
+
 #[derive(Parser, Clone, Debug, Default)]
 #[command(author, version, about, long_about = None)]
 pub struct Config {
@@ -31,7 +40,7 @@ pub struct Config {
     pub openrouter_api_key: Option<String>,
     #[arg(long, env, default_value = "https://openrouter.ai/api/v1")]
     pub openrouter_base_url: String,
-    #[arg(long, env, default_value = "tngtech/deepseek-r1t2-chimera:free")]
+    #[arg(long, env, default_value = "openai/gpt-6-luna")]
     pub openrouter_model: String,
     #[arg(long, env)]
     pub openrouter_memory_model: Option<String>,
@@ -49,6 +58,32 @@ pub struct Config {
     pub pfp_on_startup: bool,
     #[arg(long, env)]
     pub web_port: Option<u16>,
+    /// Full /v1/systemone URL.
+    #[arg(long, env)]
+    pub decider_url: Option<String>,
+    /// Shared with mail-triage/sure through jev.env.
+    #[arg(long, env = "JEV_API_KEY")]
+    pub decider_api_key: Option<String>,
+    #[arg(long, env, default_value = "5000")]
+    pub decider_check_timeout_ms: u64,
+    #[arg(long, env, default_value = "120000")]
+    pub decider_recall_timeout_ms: u64,
+    #[arg(long, env, default_value = "0.5")]
+    pub decider_recall_threshold: f32,
+    #[arg(long, env, default_value = "0.6")]
+    pub decider_durable_threshold: f32,
+    #[arg(long, env, value_enum, default_value = "off")]
+    pub decider_reply_mode: ReplyMode,
+    #[arg(long, env, default_value = "0.9")]
+    pub decider_reply_threshold: f32,
+    /// Minimum guild messages between two unprompted replies in one channel.
+    #[arg(long, env, default_value = "15")]
+    pub decider_reply_cooldown: u32,
+    /// Model used to regenerate a reply the decider flags as an out-of-character refusal. Empty disables it.
+    #[arg(long, env, default_value = "xiaomi/mimo-v2.5")]
+    pub openrouter_fallback_model: String,
+    #[arg(long, env, default_value = "0.9")]
+    pub decider_refusal_threshold: f32,
 }
 
 fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {

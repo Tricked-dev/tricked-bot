@@ -7,3 +7,6 @@ trickedbot.sqlite
 args.txt
 database.db
 .codex
+scripts/
+2026-09-26-decider-memory-and-reply-gate.md
+docs/decider-local-demo.md
