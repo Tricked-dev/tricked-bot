@@ -71,6 +71,8 @@
           // {
             inherit cargoArtifacts;
 
+            nativeCheckInputs = [ pkgs.ffmpeg ];
+
             nativeBuildInputs =
               commonArgs.nativeBuildInputs
               ++ (with pkgs; [
