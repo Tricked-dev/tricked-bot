@@ -44,7 +44,7 @@ pub struct Config {
     pub openrouter_base_url: String,
     #[arg(long, env, default_value = "openai/gpt-6-luna")]
     pub openrouter_model: String,
-    /// Conservative per-request token ceiling including all prompt text, images and maximum output.
+    /// Estimated per-request token target including prompt text, images and maximum output (10% headroom by default).
     #[arg(long, env, default_value = "90000", value_parser = clap::value_parser!(u32).range(4096..=99000))]
     pub openrouter_max_request_tokens: u32,
     #[arg(long, env, default_value = "1024", value_parser = clap::value_parser!(u32).range(1..=4096))]

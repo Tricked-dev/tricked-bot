@@ -357,7 +357,7 @@ pub async fn main(
 
     let budget = crate::ai_budget::fit_chat(&mut request, config.openrouter_max_request_tokens)?;
     tracing::info!(target: "ai_usage", msg_id = req.message_id, model,
-        conservative_total_tokens = budget, output_limit = config.openrouter_max_reply_tokens,
+        estimated_total_tokens = budget, output_limit = config.openrouter_max_reply_tokens,
         "AI request within cost limit");
 
     // Create channel and spawn streaming task

@@ -2,9 +2,9 @@ use color_eyre::{eyre::eyre, Result};
 use openrouter_api::types::chat::{ChatCompletionRequest, MessageContent};
 use serde_json::Value;
 
-// Count UTF-8 bytes rather than characters/4: this deliberately overestimates
-// text tokens, including Unicode and the newer Claude tokenizer. Leave room for
-// provider message framing and reserve the entire possible completion.
+// Estimate text at three UTF-8 bytes per token to allow for Claude's newer
+// tokenizer. The 90k default leaves 10% headroom below the 100k pricing tier.
+// Unusual content can exceed the estimate. Reserve framing and completion too.
 const FRAMING_RESERVE: u64 = 2048;
 // Claude 4.7+ caps each image at 4784 visual tokens. Our media pipeline also
 // limits images to 1600px and four images per request. Base64 is transport data,
@@ -35,7 +35,7 @@ fn estimate(request: &Value) -> Result<u64> {
             }
         }
     }
-    let total = (serde_json::to_vec(&text_request)?.len() as u64)
+    let total = (serde_json::to_vec(&text_request)?.len() as u64).div_ceil(3)
         .saturating_add(image_tokens)
         .saturating_add(FRAMING_RESERVE)
         .saturating_add(output);
@@ -46,7 +46,7 @@ pub fn check(request: &Value, max_total: u32) -> Result<u64> {
     let total = estimate(request)?;
     if total > u64::from(max_total) {
         return Err(eyre!(
-            "AI request blocked by cost limit: conservative prompt + output budget {total} exceeds {max_total}"
+            "AI request exceeds cost target: estimated prompt + output budget {total} exceeds {max_total}"
         ));
     }
     Ok(total)
@@ -61,7 +61,7 @@ pub fn fit_chat(request: &mut ChatCompletionRequest, max_total: u32) -> Result<u
         if total <= u64::from(max_total) {
             return Ok(total);
         }
-        let excess = (total - u64::from(max_total)) as usize;
+        let excess = ((total - u64::from(max_total)) as usize).saturating_mul(3);
         let mut trimmed = false;
         for message in &mut request.messages {
             if message.role != "system" {
@@ -115,11 +115,11 @@ mod tests {
     #[test]
     fn counts_all_prompt_sections_and_reserves_the_completion() {
         let request = json!({"model":"anthropic/claude-haiku-5.5", "max_tokens":1024,
-            "messages":[{"role":"system","content":"x".repeat(87_000)},
+            "messages":[{"role":"system","content":"x".repeat(261_000)},
                         {"role":"user","content":"こんにちは🙂".repeat(100)}]});
         assert!(check(&request, 90_000).is_err());
         let mut reduced = request;
-        reduced["messages"][0]["content"] = json!("x".repeat(80_000));
+        reduced["messages"][0]["content"] = json!("x".repeat(240_000));
         let upper = check(&reduced, 90_000).unwrap();
         assert!(check(&reduced, upper as u32 - 1).is_err());
         assert!(check(&reduced, upper as u32).is_ok());
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn images_count_as_visual_tokens_and_can_push_a_request_over_budget() {
         let mut request = json!({"model":"anthropic/claude-haiku-5.5", "max_tokens":1024,
-            "messages":[{"role":"system","content":"x".repeat(80_000)},
+            "messages":[{"role":"system","content":"x".repeat(240_000)},
                 {"role":"user","content":[{"type":"text","text":"describe these"},
                     {"type":"image_url","image_url":{"url":"data:image/png;base64,".to_owned()+&"a".repeat(1_000_000)}}]}]});
         assert!(check(&request, 90_000).is_ok());
@@ -159,7 +159,7 @@ mod tests {
             max_tokens: Some(1024),
             messages: vec![
                 Message::text("system",format!("PERSONA\n<memories>{}</memories>\n<recent_conversation>{}\nThe Trickster: newest reply</recent_conversation>\nREPLY IN CHARACTER",
-                    "🙂".repeat(30_000), "old message\n".repeat(10_000))),
+                    "🙂".repeat(40_000), "old message\n".repeat(10_000))),
                 Message::text("user","what did you mean by that?"),
             ],
             ..Default::default()
@@ -180,7 +180,7 @@ mod tests {
         assert!(check(&serde_json::to_value(&request).unwrap(), 90_000).is_ok());
         assert_eq!(
             before["messages"][0]["content"].as_str().unwrap().matches("🙂").count(),
-            30_000
+            40_000
         );
     }
 }
