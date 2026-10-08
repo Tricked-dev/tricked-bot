@@ -52,6 +52,8 @@ mod db;
 mod event_handler;
 mod math_test;
 mod memory_creator;
+mod memory_cleanup;
+mod media;
 mod message_handler;
 mod pfp_updater;
 mod qalc;
@@ -176,6 +178,7 @@ async fn main() -> color_eyre::Result<()> {
             .command(commands::currency::euro)
             .command(commands::currency::yen)
             .command(commands::currency::pln)
+            .command(commands::currency::cad)
             .command(commands::translate::translate)
             .command(commands::qalc::qalc)
             .build(),

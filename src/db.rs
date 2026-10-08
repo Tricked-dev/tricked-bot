@@ -20,6 +20,7 @@ pub async fn run_migrations(pool: &Pool) -> Result<()> {
     client
         .batch_execute(include_str!("../migrations/003_profile_evolution.sql"))
         .await?;
+    client.batch_execute(include_str!("../migrations/004_memory_archive.sql")).await?;
     Ok(())
 }
 
@@ -278,4 +279,60 @@ pub async fn get_math_questions(pool: &Pool) -> Result<Vec<MathQuestion>> {
     let client = pool.get().await?;
     let rows = client.query("SELECT * FROM math_question", &[]).await?;
     Ok(rows.iter().map(MathQuestion::from_row).collect())
+}
+
+/// Archive only the exact snapshot Jev reviewed, and only while still over the cap.
+pub async fn archive_overflow_memory(pool: &Pool, memory: &Memory) -> Result<bool> {
+    let mut client = pool.get().await?;
+    let tx = client.transaction().await?;
+    // Held only for this short transaction, never during inference. Also coordinates web edits.
+    tx.batch_execute("LOCK TABLE memory IN SHARE ROW EXCLUSIVE MODE").await?;
+    let count: i64 = tx.query_one("SELECT count(*) FROM memory WHERE user_id=$1", &[&memory.user_id]).await?.get(0);
+    if count <= crate::recall::LIMIT as i64 { return Ok(false); }
+    let row = tx.query_opt("DELETE FROM memory WHERE id=$1 AND user_id=$2 AND key=$3 AND content=$4 RETURNING id",
+        &[&memory.id,&memory.user_id,&memory.key,&memory.content]).await?;
+    if row.is_none() { return Ok(false); }
+    tx.execute("INSERT INTO memory_archive(memory_id,user_id,key,content,reason) VALUES($1,$2,$3,$4,'Jev overflow cleanup')",
+        &[&memory.id,&memory.user_id,&memory.key,&memory.content]).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod memory_archive_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL; uses session-local temporary tables only"]
+    async fn overflow_archive_is_recoverable_and_preserves_edits_and_cap() {
+        let config = std::env::var("TEST_DATABASE_URL").expect("test database").parse().unwrap();
+        let manager = deadpool_postgres::Manager::new(config,tokio_postgres::NoTls);
+        let pool=Pool::builder(manager).max_size(1).build().unwrap();
+        let client=pool.get().await.unwrap();
+        client.batch_execute("CREATE TEMP TABLE memory (id BIGINT PRIMARY KEY,user_id BIGINT,key TEXT,content TEXT); CREATE TEMP TABLE memory_archive (memory_id BIGINT,user_id BIGINT,key TEXT,content TEXT,reason TEXT); INSERT INTO memory SELECT i,1,'key'||i,'fact' FROM generate_series(1,256) i;").await.unwrap();
+        drop(client);
+        let m=Memory{id:1,user_id:1,key:"key1".into(),content:"fact".into()};
+        let mut stale=m.clone();stale.content="old content".into();
+        assert!(!archive_overflow_memory(&pool,&stale).await.unwrap());
+        let mut other=m.clone();other.user_id=2;
+        assert!(!archive_overflow_memory(&pool,&other).await.unwrap());
+        let app=axum::Router::new().route("/",axum::routing::post(|axum::Json(body):axum::Json<serde_json::Value>|async move {
+            let options=body["questions"]["selection"]["criteria"].as_object().unwrap();
+            assert_eq!(options.len(),32);
+            assert!(!options.contains_key("m256"));
+            let probabilities:serde_json::Map<String,serde_json::Value>=options.keys()
+                .map(|id|(id.clone(),serde_json::json!(if id=="m1" {1.0} else {0.0}))).collect();
+            axum::Json(serde_json::json!({"answers":{"selection":{"probabilities":probabilities}}}))
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}",listener.local_addr().unwrap());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let decider=crate::decider::Decider::new(url,"test".into()).unwrap();
+        crate::memory_cleanup::clean_user(&pool,&decider,1).await.unwrap();
+        server.abort();
+        let next=Memory{id:2,user_id:1,key:"key2".into(),content:"fact".into()};
+        assert!(!archive_overflow_memory(&pool,&next).await.unwrap());
+        let client=pool.get().await.unwrap();
+        let count:i64=client.query_one("SELECT count(*) FROM memory",&[]).await.unwrap().get(0);assert_eq!(count,255);
+        let content:String=client.query_one("SELECT content FROM memory_archive WHERE memory_id=1",&[]).await.unwrap().get(0);assert_eq!(content,"fact");
+    }
 }

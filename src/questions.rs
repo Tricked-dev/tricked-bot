@@ -41,19 +41,6 @@ pub fn memory_id(m: &Memory) -> String {
     format!("m{}", m.id)
 }
 
-pub fn recall(author: &str, m: &Memory) -> Question {
-    Question::noul(
-        format!(
-            "The bot is about to reply to {author}'s last message. Stored memory about {author} — {}: {}. Would \
-             including it make the reply more accurate or more personal? Answer false if it is unrelated to the \
-             last message or the conversation shows it is outdated.",
-            m.key, m.content
-        ),
-        "include: relevant and not contradicted",
-        "leave out: unrelated, outdated or contradicted",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

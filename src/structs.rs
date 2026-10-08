@@ -148,6 +148,7 @@ pub struct State {
     /// Pending color tests
     pub pending_color_tests: HashMap<u64, PendingColorTest>,
     pub decider: Option<crate::decider::Decider>,
+    pub recall_decider: Option<crate::decider::Decider>,
     pub reply_gate: crate::reply_gate::ReplyGate,
     /// Currency exchange rates
     pub currency_rates: CurrencyRates,
@@ -159,7 +160,10 @@ impl State {
         let dm_bucket = Bucket::new(Limit::new(Duration::from_secs(3600), 30)); // 30 messages per hour
         let client_clone = client.clone();
         let decider = crate::decider::Decider::from_config(&config);
+        let recall_decider = config.decider_recall_url.clone().zip(config.decider_api_key.clone())
+            .and_then(|(url,token)|crate::decider::Decider::new(url,token).ok());
         tracing::info!("decider: {}", if decider.is_some() { "configured" } else { "disabled" });
+        if let Some(decider) = decider.clone() { crate::memory_cleanup::spawn(db.clone(),decider); }
         Self {
             db,
             rng: SmallRng::from_os_rng(),
@@ -177,6 +181,7 @@ impl State {
             pending_math_tests: HashMap::new(),
             pending_color_tests: HashMap::new(),
             decider,
+            recall_decider,
             reply_gate: crate::reply_gate::ReplyGate::default(),
             dm_bucket,
             currency_rates: CurrencyRates::default(),

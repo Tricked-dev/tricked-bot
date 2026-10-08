@@ -22,13 +22,15 @@ pub async fn usd(
     let eur = amount * rates.rates.get("EUR").unwrap_or(&0.92);
     let jpy = amount * rates.rates.get("JPY").unwrap_or(&149.0);
     let pln = amount * rates.rates.get("PLN").unwrap_or(&4.0);
+    let cad = amount * rates.rates.get("CAD").unwrap_or(&1.36);
 
     let message = format!(
         "💵 **${:.2} USD** converts to:\n\n\
          🇪🇺 **€{:.2} EUR**\n\
          🇯🇵 **¥{:.2} JPY**\n\
-         🇵🇱 **{:.2} PLN**",
-        amount, eur, jpy, pln
+         🇵🇱 **{:.2} PLN**\n\
+         🇨🇦 **C${:.2} CAD**",
+        amount, eur, jpy, pln, cad
     );
 
     ctx.interaction_client
@@ -61,13 +63,15 @@ pub async fn euro(
     let usd = amount / eur_rate;
     let jpy = usd * rates.rates.get("JPY").unwrap_or(&149.0);
     let pln = usd * rates.rates.get("PLN").unwrap_or(&4.0);
+    let cad = usd * rates.rates.get("CAD").unwrap_or(&1.36);
 
     let message = format!(
         "🇪🇺 **€{:.2} EUR** converts to:\n\n\
          💵 **${:.2} USD**\n\
          🇯🇵 **¥{:.2} JPY**\n\
-         🇵🇱 **{:.2} PLN**",
-        amount, usd, jpy, pln
+         🇵🇱 **{:.2} PLN**\n\
+         🇨🇦 **C${:.2} CAD**",
+        amount, usd, jpy, pln, cad
     );
 
     ctx.interaction_client
@@ -100,13 +104,15 @@ pub async fn yen(
     let usd = amount / jpy_rate;
     let eur = usd * rates.rates.get("EUR").unwrap_or(&0.92);
     let pln = usd * rates.rates.get("PLN").unwrap_or(&4.0);
+    let cad = usd * rates.rates.get("CAD").unwrap_or(&1.36);
 
     let message = format!(
         "🇯🇵 **¥{:.2} JPY** converts to:\n\n\
          💵 **${:.2} USD**\n\
          🇪🇺 **€{:.2} EUR**\n\
-         🇵🇱 **{:.2} PLN**",
-        amount, usd, eur, pln
+         🇵🇱 **{:.2} PLN**\n\
+         🇨🇦 **C${:.2} CAD**",
+        amount, usd, eur, pln, cad
     );
 
     ctx.interaction_client
@@ -139,13 +145,56 @@ pub async fn pln(
     let usd = amount / pln_rate;
     let eur = usd * rates.rates.get("EUR").unwrap_or(&0.92);
     let jpy = usd * rates.rates.get("JPY").unwrap_or(&149.0);
+    let cad = usd * rates.rates.get("CAD").unwrap_or(&1.36);
 
     let message = format!(
         "🇵🇱 **{:.2} PLN** converts to:\n\n\
          💵 **${:.2} USD**\n\
          🇪🇺 **€{:.2} EUR**\n\
-         🇯🇵 **¥{:.2} JPY**",
-        amount, usd, eur, jpy
+         🇯🇵 **¥{:.2} JPY**\n\
+         🇨🇦 **C${:.2} CAD**",
+        amount, usd, eur, jpy, cad
+    );
+
+    ctx.interaction_client
+        .create_response(
+            ctx.interaction.id,
+            &ctx.interaction.token,
+            &InteractionResponse {
+                kind: InteractionResponseType::ChannelMessageWithSource,
+                data: Some(InteractionResponseData {
+                    content: Some(message),
+                    ..Default::default()
+                }),
+            },
+        )
+        .await?;
+
+    Ok(())
+}
+
+#[command]
+#[description = "Convert CAD (Canadian Dollar) to other currencies"]
+pub async fn cad(
+    ctx: &SlashContext<'_, Arc<Mutex<State>>>,
+    #[description = "Amount in CAD"] amount: f64,
+) -> DefaultCommandResult {
+    let state = ctx.data.lock().await;
+    let rates = &state.currency_rates;
+
+    let cad_rate = rates.rates.get("CAD").unwrap_or(&1.36);
+    let usd = amount / cad_rate;
+    let eur = usd * rates.rates.get("EUR").unwrap_or(&0.92);
+    let jpy = usd * rates.rates.get("JPY").unwrap_or(&149.0);
+    let pln = usd * rates.rates.get("PLN").unwrap_or(&4.0);
+
+    let message = format!(
+        "🇨🇦 **C${:.2} CAD** converts to:\n\n\
+         💵 **${:.2} USD**\n\
+         🇪🇺 **€{:.2} EUR**\n\
+         🇯🇵 **¥{:.2} JPY**\n\
+         🇵🇱 **{:.2} PLN**",
+        amount, usd, eur, jpy, pln
     );
 
     ctx.interaction_client

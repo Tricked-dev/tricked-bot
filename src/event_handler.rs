@@ -18,6 +18,7 @@ pub async fn handle_event(
     state: &Arc<Mutex<State>>,
     framework: Arc<Framework<Arc<Mutex<State>>>>,
 ) -> color_eyre::Result<()> {
+    log_message_event(&event);
     let mut locked_state = state.lock().await;
     match event {
         Event::InteractionCreate(i) => {
@@ -28,8 +29,6 @@ pub async fn handle_event(
             });
         }
         Event::MessageCreate(msg) => {
-            tracing::info!(target: "messages", channel = msg.channel_id.get(), msg_id = msg.id.get(), author = %msg.author.name, bot = msg.author.bot, "Message received {}", msg.content.replace('\n', "\\ "));
-
             if msg.author.bot {
                 return Ok(());
             }
@@ -189,4 +188,41 @@ pub async fn handle_event(
         _ => {}
     }
     Ok(())
+}
+
+fn log_message_event(event: &Event) {
+    match event {
+        Event::MessageCreate(msg) => {
+            tracing::info!(target: "messages", channel = msg.channel_id.get(), msg_id = msg.id.get(),
+                author = %msg.author.name, bot = msg.author.bot,
+                "Message received {}", logged_content(&msg.content, &msg.attachments, &msg.embeds));
+        }
+        Event::MessageUpdate(msg) if msg.content.is_some() || msg.attachments.is_some() || msg.embeds.is_some() => {
+            tracing::info!(target: "messages", channel = msg.channel_id.get(), msg_id = msg.id.get(),
+                "Message edited {}", logged_content(msg.content.as_deref().unwrap_or("[text unchanged]"),
+                    msg.attachments.as_deref().unwrap_or(&[]), msg.embeds.as_deref().unwrap_or(&[])));
+        }
+        _ => {}
+    }
+}
+
+fn logged_content(
+    content: &str,
+    attachments: &[twilight_model::channel::Attachment],
+    embeds: &[twilight_model::channel::message::Embed],
+) -> String {
+    let mut text = content.replace('\n', "\\ ");
+    for attachment in attachments {
+        text.push_str(&format!(
+            " [attachment: {} {}]",
+            attachment.filename.replace('\n', " "),
+            attachment.url
+        ));
+    }
+    for embed in embeds {
+        if let Some(url) = &embed.url {
+            text.push_str(&format!(" [embed: {url}]"));
+        }
+    }
+    text
 }

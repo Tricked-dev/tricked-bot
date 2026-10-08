@@ -171,7 +171,7 @@ fn belongs_to_author(username: &str, user: &User) -> bool {
 // Each author retains its high-water mark for this process lifetime. Keeping it
 // with the write lock prevents a delayed decider result from reverting newer facts.
 #[derive(Default)]
-struct AuthorWriteState {
+pub(crate) struct AuthorWriteState {
     latest_success: Option<u64>,
 }
 
@@ -181,7 +181,7 @@ impl AuthorWriteState {
     }
 }
 
-fn author_lock(author: u64) -> Arc<tokio::sync::Mutex<AuthorWriteState>> {
+pub(crate) fn author_lock(author: u64) -> Arc<tokio::sync::Mutex<AuthorWriteState>> {
     static AUTHORS: OnceLock<std::sync::Mutex<HashMap<u64, Arc<tokio::sync::Mutex<AuthorWriteState>>>>> =
         OnceLock::new();
     let mut authors = AUTHORS

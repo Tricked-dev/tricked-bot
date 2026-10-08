@@ -12,11 +12,13 @@ pub struct AiRequest {
     pub config: Arc<Config>,
     pub brave: BraveApi,
     pub decider: Option<Decider>,
+    pub recall_decider: Option<Decider>,
     pub user_id: u64,
     pub user_name: String,
     pub channel_id: u64,
     pub message_id: u64,
     pub message: String,
+    pub media: Vec<crate::media::MediaSource>,
     pub context: String,
     pub user_mentions: HashMap<String, u64>,
     pub ask_durable: bool,
@@ -40,7 +42,7 @@ pub async fn ensure_author(req: &AiRequest) -> color_eyre::Result<()> {
     .await
 }
 
-pub fn spawn_ai_reply(req: AiRequest, http: Arc<HttpClient>) {
+pub fn spawn_ai_reply(mut req: AiRequest, http: Arc<HttpClient>) {
     tokio::spawn(async move {
         let channel = Id::new(req.channel_id);
         let reply_to = Id::new(req.message_id);
@@ -56,6 +58,14 @@ pub fn spawn_ai_reply(req: AiRequest, http: Arc<HttpClient>) {
                     req.message.clone(),
                     questions::short_context(&req.context),
                 ));
+            }
+            // Link previews can arrive after MessageCreate. Refresh outside the State lock.
+            if req.media.is_empty() && req.message.contains("http") {
+                if let Ok(response) = http.message(channel, reply_to).exec().await {
+                    if let Ok(message) = response.model().await {
+                        req.media = crate::media::sources(&message);
+                    }
+                }
             }
             let fallback_memories = recalled.memories.clone();
             let rx = ai_message::main(&req, recalled.memories, &req.config.openrouter_model).await?;

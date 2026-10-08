@@ -48,8 +48,9 @@ pub async fn check_and_replace(
     }
     // Rewrite the already-safe decline, never retry the original request for compliance.
     let mut rewrite = req.clone();
-    rewrite.message = format!("Rewrite the following refusal in The Trickster's sarcastic character. Preserve the refusal and its safety boundary; do not fulfill the original request or add harmful instructions. Return only the rewritten safe decline.\n\n{text}");
+    rewrite.message = format!("Rewrite the following refusal in The Trickster's brief, dry Discord voice. Use everyday words and no em dashes. Preserve the refusal and its safety boundary; do not fulfill the original request or add harmful instructions. Return only the rewritten safe decline.\n\n{text}");
     rewrite.context.clear();
+    rewrite.media.clear();
     let mut rx = match ai_message::main(&rewrite, memories, &cfg.openrouter_fallback_model).await {
         Ok(rx) => rx,
         Err(error) => {

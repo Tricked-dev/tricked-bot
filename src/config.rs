@@ -61,6 +61,9 @@ pub struct Config {
     /// Full /v1/systemone URL.
     #[arg(long, env)]
     pub decider_url: Option<String>,
+    /// Optional faster decision-model endpoint used only for memory-name ranking.
+    #[arg(long, env)]
+    pub decider_recall_url: Option<String>,
     /// Shared with mail-triage/sure through jev.env.
     #[arg(long, env = "JEV_API_KEY")]
     pub decider_api_key: Option<String>,
@@ -68,8 +71,6 @@ pub struct Config {
     pub decider_check_timeout_ms: u64,
     #[arg(long, env, default_value = "120000")]
     pub decider_recall_timeout_ms: u64,
-    #[arg(long, env, default_value = "0.5")]
-    pub decider_recall_threshold: f32,
     #[arg(long, env, default_value = "0.6")]
     pub decider_durable_threshold: f32,
     #[arg(long, env, value_enum, default_value = "off")]
@@ -79,8 +80,8 @@ pub struct Config {
     /// Minimum guild messages between two unprompted replies in one channel.
     #[arg(long, env, default_value = "15")]
     pub decider_reply_cooldown: u32,
-    /// Model used to regenerate a reply the decider flags as an out-of-character refusal. Empty disables it.
-    #[arg(long, env, default_value = "xiaomi/mimo-v2.5")]
+    /// Optional model for refusal style rewrites. Disabled by default: style false positives can corrupt valid replies.
+    #[arg(long, env, default_value = "")]
     pub openrouter_fallback_model: String,
     #[arg(long, env, default_value = "0.9")]
     pub decider_refusal_threshold: f32,
