@@ -22,9 +22,10 @@ fn decide_reply(
     channel: u64,
     reply: Option<f32>,
     followup: Option<f32>,
+    bot_in_context: bool,
 ) -> ReplyDecision {
     let wants = reply.is_some_and(|p| p >= cfg.decider_reply_threshold);
-    let responding = followup.is_some_and(|p| p >= cfg.decider_followup_threshold);
+    let responding = bot_in_context && followup.is_some_and(|p| p >= cfg.decider_followup_threshold);
     let fire = cfg.decider_reply_mode == ReplyMode::Live
         && (responding || (wants && gate.try_claim(channel, cfg.decider_reply_cooldown)));
     ReplyDecision {
@@ -62,6 +63,9 @@ pub fn spawn(state: Arc<Mutex<State>>, http: Arc<HttpClient>, req: AiRequest, as
         let durable = scores["durable"];
         let reply = scores.get("reply").copied();
         let followup = scores.get("followup").copied();
+        let bot_in_context = questions::short_context(&req.context)
+            .lines()
+            .any(|line| line.starts_with("The Trickster: "));
         let ReplyDecision {
             wants,
             responding,
@@ -72,10 +76,11 @@ pub fn spawn(state: Arc<Mutex<State>>, http: Arc<HttpClient>, req: AiRequest, as
             req.channel_id,
             reply,
             followup,
+            bot_in_context,
         );
         tracing::info!(target: "decider", kind = "check", channel = req.channel_id, msg_id = req.message_id,
             user = req.user_id, durable, reply = reply.unwrap_or(-1.0), followup = followup.unwrap_or(-1.0),
-            wants, responding, fire, mode = ?cfg.decider_reply_mode,
+            wants, responding, fire, bot_in_context, mode = ?cfg.decider_reply_mode,
             latency_ms = started.elapsed().as_millis() as u64);
         if durable >= cfg.decider_durable_threshold {
             let write_req = req.clone();
@@ -129,16 +134,16 @@ mod tests {
         let cfg = live_config();
         let mut gate = ReplyGate::default();
         gate.count(1);
-        assert!(decide_reply(&cfg, &mut gate, 1, Some(0.95), None).fire);
+        assert!(decide_reply(&cfg, &mut gate, 1, Some(0.95), None, true).fire);
         for _ in 0..14 {
             gate.count(1);
         }
         // Actual scores for "Your cooking sucks" after the bot's meal joke.
-        let decision = decide_reply(&cfg, &mut gate, 1, Some(0.2464), Some(0.614));
+        let decision = decide_reply(&cfg, &mut gate, 1, Some(0.2464), Some(0.614), true);
         assert!(decision.responding && decision.fire);
-        assert!(!decide_reply(&cfg, &mut gate, 1, Some(0.95), None).fire);
+        assert!(!decide_reply(&cfg, &mut gate, 1, Some(0.95), None, true).fire);
         gate.count(1);
-        assert!(decide_reply(&cfg, &mut gate, 1, Some(0.95), None).fire);
+        assert!(decide_reply(&cfg, &mut gate, 1, Some(0.95), None, true).fire);
     }
 
     #[test]
@@ -146,8 +151,16 @@ mod tests {
         let mut cfg = live_config();
         let mut gate = ReplyGate::default();
         gate.count(1);
-        assert!(!decide_reply(&cfg, &mut gate, 1, Some(0.2237), Some(0.2496)).fire);
+        assert!(!decide_reply(&cfg, &mut gate, 1, Some(0.2237), Some(0.2496), true).fire);
         cfg.decider_reply_mode = ReplyMode::Off;
-        assert!(!decide_reply(&cfg, &mut gate, 1, Some(1.0), Some(1.0)).fire);
+        assert!(!decide_reply(&cfg, &mut gate, 1, Some(1.0), Some(1.0), true).fire);
+    }
+
+    #[test]
+    fn classifier_cannot_follow_up_when_the_bot_has_not_spoken() {
+        let cfg = live_config();
+        let mut gate = ReplyGate::default();
+        let decision = decide_reply(&cfg, &mut gate, 1, None, Some(1.0), false);
+        assert!(!decision.responding && !decision.fire);
     }
 }

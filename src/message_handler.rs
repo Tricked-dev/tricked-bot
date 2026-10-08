@@ -130,20 +130,19 @@ pub fn snapshot_ai_request(state: &State, msg: &MessageCreate) -> crate::ai_repl
             }
         }
     }
-    if rows.is_empty() {
-        if let Some(reference) = &msg.referenced_message {
+    // A reply can target an older message outside the cached transcript. Keep
+    // its identity and content explicit even when newer channel messages exist.
+    if let Some(reference) = &msg.referenced_message {
+        let name = if reference.author.id.get() == state.config.id {
+            "The Trickster".to_owned()
+        } else {
             user_mentions.insert(reference.author.name.clone(), reference.author.id.get());
-            rows.push(format!(
-                "{}: {}",
-                reference.author.name,
-                reference
-                    .content
-                    .chars()
-                    .take(2400)
-                    .collect::<String>()
-                    .replace('\n', " ")
-            ));
-        }
+            reference.author.name.clone()
+        };
+        rows.push(format!(
+            "<reply_target>\n{name}: {}\n</reply_target>",
+            reference.content.chars().take(2400).collect::<String>().replace('\n', " ")
+        ));
     }
     crate::ai_reply::AiRequest {
         db: state.db.clone(),
@@ -383,6 +382,27 @@ pub async fn handle_message(
 #[cfg(test)]
 mod reply_text_tests {
     use super::*;
+
+    #[test]
+    fn explicit_reply_target_is_kept_when_channel_history_exists() {
+        let message = |id: &str, author: &str, name: &str, text: &str| -> twilight_model::channel::Message {
+            serde_json::from_value(serde_json::json!({
+                "id":id, "channel_id":"1", "author":{"id":author,"username":name,"discriminator":"0001","avatar":null},
+                "content":text, "timestamp":"2026-10-08T00:00:00+00:00", "tts":false,
+                "mention_everyone":false,"mentions":[],"mention_roles":[],"attachments":[],"embeds":[],"pinned":false,"type":0
+            })).unwrap()
+        };
+        let manager = deadpool_postgres::Manager::new(tokio_postgres::Config::new(), tokio_postgres::NoTls);
+        let pool = deadpool_postgres::Pool::builder(manager).build().unwrap();
+        let state = State::new(reqwest::Client::new(), pool, Arc::new(crate::config::Config { id: 3, ..Default::default() }));
+        state.cache.update(&twilight_model::gateway::event::Event::MessageCreate(Box::new(MessageCreate(message("40", "2", "alice", "old bird topic")))));
+        let mut current = message("42", "2", "alice", "Thoughts?");
+        current.referenced_message = Some(Box::new(message("20", "3", "bot_account", "Level: 37, position: 12")));
+        let req = snapshot_ai_request(&state, &MessageCreate(current));
+        assert!(req.context.contains("<reply_target>\nThe Trickster: Level: 37, position: 12\n</reply_target>"));
+        assert!(req.context.contains("old bird topic"));
+    }
+
     #[test]
     fn bounds_discord_utf16_without_splitting_unicode() {
         assert_eq!(discord_text("Hi"), "Hi");
