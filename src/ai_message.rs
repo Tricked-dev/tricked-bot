@@ -336,7 +336,7 @@ pub async fn main(
     let user_content = crate::media::user_content(&user.name, message, &req.media, req.message_id).await?;
 
     // Build request
-    let request = ChatCompletionRequest {
+    let mut request = ChatCompletionRequest {
         model: model.to_owned(),
         messages: vec![
             Message {
@@ -350,12 +350,15 @@ pub async fn main(
                 ..Default::default()
             },
         ],
-        // MiMo uses part of this budget for provider-side reasoning. The
-        // three-sentence prompt constraint controls visible response length.
-        max_tokens: Some(1024),
+        max_tokens: Some(config.openrouter_max_reply_tokens),
         stream: Some(true),
         ..Default::default()
     };
+
+    let budget = crate::ai_budget::fit_chat(&mut request, config.openrouter_max_request_tokens)?;
+    tracing::info!(target: "ai_usage", msg_id = req.message_id, model,
+        conservative_total_tokens = budget, output_limit = config.openrouter_max_reply_tokens,
+        "AI request within cost limit");
 
     // Create channel and spawn streaming task
     let (tx, rx) = mpsc::unbounded_channel();
@@ -393,10 +396,11 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod prompt_tests {
     use super::*;
     #[test]
-    fn prompt_has_date_and_in_character_refusals() {
+    fn prompt_has_date_and_discord_persona() {
         let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", &[], &[], "2026-09-26 16:00 UTC");
         assert!(p.contains("2026-09-26 16:00 UTC"));
-        assert!(p.contains("decline in character"));
+        assert!(p.contains("regular in a Discord server"));
+        assert!(p.contains("Default to 1–2 short sentences"));
     }
     #[test]
     fn civil_date() {

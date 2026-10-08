@@ -26,6 +26,19 @@ pub fn reply() -> Question {
     )
 }
 
+pub fn followup() -> Question {
+    Question::noul(
+        "Read the conversation and last message. Is the last message clearly a response directed at something \
+         The Trickster said in the conversation, even without a mention or Discord reply? This includes answering \
+         its question, asking it to explain, disagreeing with its claim, or continuing a joke or exchange with it. \
+         Short responses count when the context makes the addressee clear. Answer false if The Trickster has not \
+         spoken in the conversation, the message responds to someone else, changes the subject, or merely follows \
+         a bot message without clearly addressing it.",
+        "yes: clearly responding to The Trickster",
+        "no: not clearly responding to The Trickster",
+    )
+}
+
 pub fn durable(author: &str) -> Question {
     Question::noul(
         format!(

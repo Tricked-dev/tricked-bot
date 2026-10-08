@@ -35,6 +35,7 @@ use vesper::prelude::*;
 use std::{collections::HashMap, env, sync::Arc};
 
 pub mod ai_message;
+mod ai_budget;
 mod ai_reply;
 mod decider;
 mod questions;

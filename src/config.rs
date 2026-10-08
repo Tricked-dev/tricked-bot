@@ -2,6 +2,8 @@ use std::{collections::HashMap, io, num::ParseIntError, sync::Arc};
 
 use clap::Parser;
 
+pub const DEFAULT_FOLLOWUP_THRESHOLD: f32 = 0.6;
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReplyMode {
     /// Only pings/replies trigger the AI; the reply question is not asked.
@@ -42,6 +44,11 @@ pub struct Config {
     pub openrouter_base_url: String,
     #[arg(long, env, default_value = "openai/gpt-6-luna")]
     pub openrouter_model: String,
+    /// Conservative per-request token ceiling including all prompt text, images and maximum output.
+    #[arg(long, env, default_value = "90000", value_parser = clap::value_parser!(u32).range(4096..=99000))]
+    pub openrouter_max_request_tokens: u32,
+    #[arg(long, env, default_value = "1024", value_parser = clap::value_parser!(u32).range(1..=4096))]
+    pub openrouter_max_reply_tokens: u32,
     #[arg(long, env)]
     pub openrouter_memory_model: Option<String>,
     #[arg(long, env)]
@@ -77,6 +84,9 @@ pub struct Config {
     pub decider_reply_mode: ReplyMode,
     #[arg(long, env, default_value = "0.9")]
     pub decider_reply_threshold: f32,
+    /// Confidence required for a conversational response to the bot, without the spontaneous-reply cooldown.
+    #[arg(long, env, default_value_t = DEFAULT_FOLLOWUP_THRESHOLD)]
+    pub decider_followup_threshold: f32,
     /// Minimum guild messages between two unprompted replies in one channel.
     #[arg(long, env, default_value = "15")]
     pub decider_reply_cooldown: u32,
