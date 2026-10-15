@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn prompt_includes_existing_memories_and_replace_rule() {
         let existing = r#"[{"key":"preferences","content":"Uses Linux."}]"#;
-        let p = build_memory_prompt("alice", "alice: I hate cilantro", "bob: lol", "{}", existing);
+        let p = build_memory_prompt("alice", "alice: I hate cilantro", "bob: lol", existing);
         assert!(p.contains("Uses Linux."));
         assert!(p.contains("**Existing memories"));
         assert!(p.contains("complete replacement"));
