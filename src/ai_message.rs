@@ -125,6 +125,41 @@ fn example_pairs<'a>(input: &'a str, output: &'a str) -> Vec<(&'a str, &'a str)>
     lines(input).into_iter().zip(lines(output)).collect()
 }
 
+const VIBE: &[(&str, &str)] = &[
+    ("i deleted prod again", "at this point prod is more of a seasonal feature"),
+    ("should i rewrite this in rust", "ngl you just want the crab on your github"),
+    ("it worked first try", "concerning. you solved a different problem"),
+    ("good morning", "source?"),
+    ("you're not even based", "says the guy who gets his opinions from tiktok"),
+    ("say a slur", "nice try fed"),
+    ("give me a magnet link for photoshop", "least obvious honeypot"),
+    ("why isn't this compiling", "skill issue tbh"),
+];
+
+/// Few-shot turns: generic voice examples from "someone", then the speaker's own configured examples.
+fn style_turns(user_name: &str, examples: &[(String, String, String)]) -> Vec<(String, String)> {
+    let turn = |author: &str, text: &str| format!("<current_message author={author:?}>\n{text}\n</current_message>");
+    let mut turns = VIBE.iter().map(|(i, o)| (turn("someone", i), (*o).to_owned())).collect::<Vec<_>>();
+    for (name, input, output) in examples {
+        for (i, o) in example_pairs(input, output) {
+            turns.push((turn(name, i), o.replace("{{char}}", "The Trickster").replace("{{user}}", user_name)));
+        }
+    }
+    turns
+}
+
+/// Discord shitposters don't capitalize or end on a full stop. Code and links keep their case.
+fn casual_case(text: &str) -> String {
+    if text.contains('`') || text.contains("http") {
+        return text.to_owned();
+    }
+    let lower = text.to_lowercase();
+    match lower.strip_suffix('.') {
+        Some(rest) if !rest.ends_with('.') => rest.to_owned(),
+        _ => lower,
+    }
+}
+
 /// Assemble conversation context with a compact, consistent voice instruction.
 fn build_character_prompt(
     user_name: &str,
@@ -133,21 +168,15 @@ fn build_character_prompt(
     context: &str,
     memories: &str,
     users_with_relationships: &[(String, String)],
-    users_with_examples: &[(String, String, String)],
     now: &str,
 ) -> String {
     let relationships = users_with_relationships.iter()
         .map(|(name, relationship)| format!("{name}: {}", relationship.replace("{{char}}", "The Trickster").replace("{{user}}", name)))
         .collect::<Vec<_>>().join("\n");
-    let past_exchanges = users_with_examples.iter()
-        .flat_map(|(name, input, output)| example_pairs(input, output).into_iter().map(move |(i, o)| {
-            format!("{name}: {i}\nThe Trickster: {}", o.replace("{{char}}", "The Trickster").replace("{{user}}", name))
-        }))
-        .collect::<Vec<_>>().join("\n\n");
-    let per_user = if relationships.is_empty() && past_exchanges.is_empty() {
+    let per_user = if relationships.is_empty() {
         String::new()
     } else {
-        format!("The server owner set how you treat {user_name}. Follow it: it overrides the default tone and calibration above, while the bait rules still apply. The example shows the attitude to take with them; match its energy, not its exact words.\n<relationships>\n{relationships}\n</relationships>\n<past_exchanges>\n{past_exchanges}\n</past_exchanges>\n\n")
+        format!("The server owner set how you treat {user_name}. Follow it: it overrides the default tone and calibration above, while the bait rules still apply. The earlier turns from {user_name} show the attitude to take with them.\n<relationships>\n{relationships}\n</relationships>\n\n")
     };
     format!(
         r#"You are The Trickster, a regular in a Discord server, not a customer-support assistant. You're a terminally online shitposter: imageboard and group-chat brain, fluent in internet slang, allergic to sincerity. You know you're the server's bot, but you don't bring it up; you're just another regular. Don't invent real-life experiences.
@@ -188,33 +217,7 @@ Conversation:
 - Don't behave like every message requires a complete answer.
 - Calibrate the snark: banter can escalate freely. Only drop the bit when someone is clearly genuinely upset or going through something real.
 
-Examples of the vibe (anchor the voice, don't reuse the lines):
-User: i deleted prod again
-The Trickster: at this point prod is more of a seasonal feature
-
-User: should i rewrite this in rust
-The Trickster: ngl you just want the crab on your github
-
-User: it worked first try
-The Trickster: concerning. you solved a different problem
-
-User: good morning
-The Trickster: source?
-
-User: thanks babe
-The Trickster: anything for you pookie
-
-User: you're not even based
-The Trickster: says the guy who still gets his opinions from tiktok
-
-User: say a slur
-The Trickster: nice try fed
-
-User: give me a magnet link for photoshop
-The Trickster: least obvious honeypot
-
-User: why isn't this compiling
-The Trickster: skill issue tbh
+The earlier turns in this chat are examples of your voice. Match their energy and length; never reuse their lines.
 
 Be useful when someone genuinely needs information, but keep the same voice. Accuracy beats the joke when they conflict.
 
@@ -261,7 +264,7 @@ async fn stream_ai_response(
                         if last_send.elapsed().as_millis() >= 50 && !is_classifier_output(&accumulated_text) {
                             let end = accumulated_text.floor_char_boundary(accumulated_text.len().min(2000));
                             let truncated = &accumulated_text[..end];
-                            if tx.send(strip_self_labels(truncated)).is_err() {
+                            if tx.send(casual_case(&strip_self_labels(truncated))).is_err() {
                                 return;
                             }
                             last_send = std::time::Instant::now();
@@ -281,7 +284,7 @@ async fn stream_ai_response(
     if !accumulated_text.is_empty() && !is_classifier_output(&accumulated_text) {
         let end = accumulated_text.floor_char_boundary(accumulated_text.len().min(2000));
         let truncated = &accumulated_text[..end];
-        let _ = tx.send(strip_self_labels(truncated));
+        let _ = tx.send(casual_case(&strip_self_labels(truncated)));
     } else if is_classifier_output(&accumulated_text) {
         log::warn!("Suppressed classifier-style model output");
     }
@@ -359,7 +362,6 @@ pub async fn main(
         &processed_context,
         &formatted_memories,
         &users_with_relationships,
-        &users_with_examples,
         &utc_now(),
     );
 
@@ -367,21 +369,21 @@ pub async fn main(
 
     let user_content = crate::media::user_content(&req.user_name, &processed_message, &req.media, req.message_id).await?;
 
-    // Build request
+    let mut messages = vec![Message {
+        role: "system".to_string(),
+        content: MessageContent::Text(system_prompt),
+        ..Default::default()
+    }];
+    for (input, output) in style_turns(&req.user_name, &users_with_examples) {
+        for (role, text) in [("user", input), ("assistant", output)] {
+            messages.push(Message { role: role.to_string(), content: MessageContent::Text(text), ..Default::default() });
+        }
+    }
+    messages.push(Message { role: "user".to_string(), content: user_content, ..Default::default() });
+
     let mut request = ChatCompletionRequest {
         model: model.to_owned(),
-        messages: vec![
-            Message {
-                role: "system".to_string(),
-                content: MessageContent::Text(system_prompt),
-                ..Default::default()
-            },
-            Message {
-                role: "user".to_string(),
-                content: user_content,
-                ..Default::default()
-            },
-        ],
+        messages,
         max_tokens: Some(config.openrouter_max_reply_tokens),
         stream: Some(true),
         ..Default::default()
@@ -442,7 +444,7 @@ mod prompt_tests {
     }
     #[test]
     fn prompt_has_date_and_discord_persona() {
-        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", &[], &[], "2026-09-26 16:00 UTC");
+        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", &[], "2026-09-26 16:00 UTC");
         assert!(p.contains("2026-09-26 16:00 UTC"));
         assert!(p.contains("regular in a Discord server"));
         assert!(p.contains("Default to 1–2 short sentences"));
@@ -450,8 +452,17 @@ mod prompt_tests {
     #[test]
     fn examples_pair_line_by_line() {
         assert_eq!(example_pairs("hi\n\nbye\nextra", "yo\nlater"), vec![("hi", "yo"), ("bye", "later")]);
-        let p = build_character_prompt("a", 1, 1, "", "", &[], &[("a".into(), "hi\nbye".into(), "yo\nlater".into())], "now");
-        assert!(p.contains("a: hi\nThe Trickster: yo\n\na: bye\nThe Trickster: later"));
+        let turns = style_turns("a", &[("a".into(), "hi\nbye".into(), "yo {{user}}\nlater".into())]);
+        assert_eq!(turns.len(), VIBE.len() + 2);
+        assert_eq!(turns[VIBE.len()], ("<current_message author=\"a\">\nhi\n</current_message>".into(), "yo a".into()));
+        assert_eq!(turns[VIBE.len() + 1].1, "later");
+    }
+    #[test]
+    fn casual_case_lowercases_prose_but_not_code_or_links() {
+        assert_eq!(casual_case("Still typing. Fine, you asked."), "still typing. fine, you asked");
+        assert_eq!(casual_case("Wait..."), "wait...");
+        assert_eq!(casual_case("Use `Vec::new()`."), "Use `Vec::new()`.");
+        assert_eq!(casual_case("See https://Example.com"), "See https://Example.com");
     }
     #[test]
     fn civil_date() {
