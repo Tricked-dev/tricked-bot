@@ -119,6 +119,12 @@ fn format_memories(memories: &[Memory]) -> String {
     formatted
 }
 
+/// Line N of the input pairs with line N of the output, so one profile can hold several examples.
+fn example_pairs<'a>(input: &'a str, output: &'a str) -> Vec<(&'a str, &'a str)> {
+    let lines = |s: &'a str| s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>();
+    lines(input).into_iter().zip(lines(output)).collect()
+}
+
 /// Assemble conversation context with a compact, consistent voice instruction.
 fn build_character_prompt(
     user_name: &str,
@@ -134,8 +140,10 @@ fn build_character_prompt(
         .map(|(name, relationship)| format!("{name}: {}", relationship.replace("{{char}}", "The Trickster").replace("{{user}}", name)))
         .collect::<Vec<_>>().join("\n");
     let past_exchanges = users_with_examples.iter()
-        .map(|(name, input, output)| format!("{name}: {input}\nThe Trickster: {}", output.replace("{{char}}", "The Trickster").replace("{{user}}", name)))
-        .collect::<Vec<_>>().join("\n");
+        .flat_map(|(name, input, output)| example_pairs(input, output).into_iter().map(move |(i, o)| {
+            format!("{name}: {i}\nThe Trickster: {}", o.replace("{{char}}", "The Trickster").replace("{{user}}", name))
+        }))
+        .collect::<Vec<_>>().join("\n\n");
     let per_user = if relationships.is_empty() && past_exchanges.is_empty() {
         String::new()
     } else {
@@ -438,6 +446,12 @@ mod prompt_tests {
         assert!(p.contains("2026-09-26 16:00 UTC"));
         assert!(p.contains("regular in a Discord server"));
         assert!(p.contains("Default to 1–2 short sentences"));
+    }
+    #[test]
+    fn examples_pair_line_by_line() {
+        assert_eq!(example_pairs("hi\n\nbye\nextra", "yo\nlater"), vec![("hi", "yo"), ("bye", "later")]);
+        let p = build_character_prompt("a", 1, 1, "", "", &[], &[("a".into(), "hi\nbye".into(), "yo\nlater".into())], "now");
+        assert!(p.contains("a: hi\nThe Trickster: yo\n\na: bye\nThe Trickster: later"));
     }
     #[test]
     fn civil_date() {

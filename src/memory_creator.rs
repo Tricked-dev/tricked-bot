@@ -13,8 +13,6 @@ use crate::{config::Config, database::User, db};
 struct MemoryCreationResponse {
     #[serde(default)]
     memories: Vec<MemoryEntry>,
-    #[serde(default)]
-    profile_updates: Vec<ProfileUpdate>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,16 +22,8 @@ struct MemoryEntry {
     content: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ProfileUpdate {
-    username: String,
-    relationship: Option<String>,
-    example_input: Option<String>,
-    example_output: Option<String>,
-}
-
 /// Build the enhanced system prompt for memory creation with quality guidelines
-fn build_memory_prompt(author: &str, message: &str, context: &str, profile: &str, existing: &str) -> String {
+fn build_memory_prompt(author: &str, message: &str, context: &str, existing: &str) -> String {
     format!(
         r#"You are a memory creation system for a Discord bot. Your job is to extract lasting information about **{author}** from their message below.
 
@@ -56,8 +46,6 @@ fn build_memory_prompt(author: &str, message: &str, context: &str, profile: &str
 {message}
 **Recent conversation (context only; do not write memories about other people):**
 {context}
-**Their current profile (evolve; never discard without evidence):**
-{profile}
 **Existing memories (your output REPLACES the whole row for that key):**
 {existing}
 
@@ -69,14 +57,6 @@ fn build_memory_prompt(author: &str, message: &str, context: &str, profile: &str
       "key": "category_or_topic",
       "content": "comprehensive memory content"
     }}
-  ],
-  "profile_updates": [
-    {{
-      "username": "exact_username_from_conversation",
-      "relationship": "how this user and the bot currently relate, or null",
-      "example_input": "a real representative user message from the transcript, or null",
-      "example_output": "the bot reply paired with that message, or null"
-    }}
   ]
 }}
 
@@ -87,9 +67,6 @@ fn build_memory_prompt(author: &str, message: &str, context: &str, profile: &str
 4. **Exact usernames** - Must match exactly as they appear in the conversation
 5. **Merge, never drop** - For a key that already exists, output the complete replacement: keep every established fact unless the new message clearly contradicts it, then add the new facts. Omit keys that did not change.
 6. **Empty when appropriate** - If there's nothing worth remembering long-term, return {{"memories": []}}
-7. **Profiles evolve slowly** - Update relationships only when the transcript contains clear evidence of a lasting change
-8. **Real examples only** - Example input/output must be an actual adjacent user/bot exchange from the transcript; never invent one
-9. **No destructive blanks** - Use null for fields that should remain unchanged
 
 **Examples:**
 
@@ -135,30 +112,6 @@ async fn process_memory_response(database: &Pool, user: &User, response_text: &s
         db::upsert_memory(database, user.discord_id(), &entry.key, &entry.content).await?;
         tracing::info!(user = user.discord_id(), "Created memory");
         created_count += 1;
-    }
-
-    for update in memory_response.profile_updates {
-        if !belongs_to_author(&update.username, user) {
-            tracing::warn!(user = user.discord_id(), "Ignoring profile for another author");
-            continue;
-        }
-        let relationship = update.relationship.filter(|v| !v.trim().is_empty() && v.len() <= 1000);
-        let example_input = update.example_input.filter(|v| !v.trim().is_empty() && v.len() <= 2000);
-        let example_output = update
-            .example_output
-            .filter(|v| !v.trim().is_empty() && v.len() <= 2000);
-        if let Some(relationship) = relationship.filter(|value| value != &user.relationship) {
-            db::stage_profile_candidate(database, user.discord_id(), "relationship", &relationship).await?;
-            created_count += 1;
-        }
-        if let (Some(input), Some(output)) = (example_input, example_output) {
-            if input == user.example_input && output == user.example_output {
-                continue;
-            }
-            let pair = serde_json::json!({ "input": input, "output": output }).to_string();
-            db::stage_profile_candidate(database, user.discord_id(), "example", &pair).await?;
-            created_count += 1;
-        }
     }
 
     Ok(created_count)
@@ -218,7 +171,7 @@ pub async fn write_for_author(
         }
     };
 
-    // Profile extraction needs deterministic JSON, not the chat model's long
+    // Memory extraction needs deterministic JSON, not the chat model's long
     // reasoning mode. It remains configurable for future model changes.
     let model = config
         .openrouter_memory_model
@@ -245,16 +198,10 @@ pub async fn write_for_author(
             return;
         }
     };
-    let profile = serde_json::json!({
-        "relationship": user.relationship,
-        "example_input": user.example_input,
-        "example_output": user.example_output,
-    });
     let system_prompt = build_memory_prompt(
         &user.name,
         &message,
         &context,
-        &profile.to_string(),
         &serde_json::json!(existing).to_string(),
     );
 

@@ -65,11 +65,6 @@ pub async fn view_user(State(state): State<AppState>, Path(user_id): Path<u64>) 
 
     let mut context = Context::new();
     context.insert("user", &user);
-    let candidates = match db::get_profile_candidates(&state.db, user_id).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
-    };
-    context.insert("profile_candidates", &candidates);
     context.insert("title", &format!("User {}", user_id));
 
     match state.templates.render("user.html", &context) {
@@ -78,22 +73,6 @@ pub async fn view_user(State(state): State<AppState>, Path(user_id): Path<u64>) 
             tracing::error!("Template error: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
         }
-    }
-}
-
-pub async fn approve_profile_candidate(State(state): State<AppState>, Path(candidate_id): Path<i64>) -> Response {
-    match db::approve_profile_candidate(&state.db, candidate_id).await {
-        Ok(Some(user_id)) => axum::response::Redirect::to(&format!("/user/{}", user_id)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Candidate not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
-    }
-}
-
-pub async fn reject_profile_candidate(State(state): State<AppState>, Path(candidate_id): Path<i64>) -> Response {
-    match db::reject_profile_candidate(&state.db, candidate_id).await {
-        Ok(Some(user_id)) => axum::response::Redirect::to(&format!("/user/{}", user_id)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Candidate not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
     }
 }
 
