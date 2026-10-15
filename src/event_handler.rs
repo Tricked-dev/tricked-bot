@@ -95,10 +95,11 @@ pub async fn handle_event(
                 tracing::info!(target: "decider", kind = "count", channel = msg.channel_id.get(), msg_id = msg.id.get());
             }
             let req = snapshot_ai_request(&locked_state, &msg);
+            let restarted = crate::ai_reply::restart_pending(req.clone(), http);
             let ask_reply = !direct
                 && locked_state.config.openrouter_api_key.is_some()
                 && locked_state.config.decider_reply_mode != crate::config::ReplyMode::Off;
-            let mut ai_started = false;
+            let mut ai_started = restarted;
             let r = handle_message(&msg, locked_state, http, &mut ai_started).await;
             // Dispatch before sending a responder result, so even failed sends retain the durable check.
             if !ai_started {

@@ -30,6 +30,7 @@ pub async fn handle_streaming_response(
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
     http: Arc<HttpClient>,
+    posted_slot: Option<&std::sync::Mutex<Option<Id<MessageMarker>>>>,
 ) -> Option<(Id<MessageMarker>, String)> {
     let mut message_id = None;
     let mut last_sent = String::new();
@@ -73,6 +74,9 @@ pub async fn handle_streaming_response(
                     })
                     .ok()?;
                 message_id = Some(message.id);
+                if let Some(slot) = posted_slot {
+                    *slot.lock().unwrap() = Some(message.id);
+                }
                 last_sent = text;
             }
         }
@@ -461,7 +465,7 @@ mod streaming_tests {
             tx.send((*text).to_owned()).unwrap();
         }
         drop(tx);
-        let result = handle_streaming_response(rx, Id::new(1), Id::new(2), http).await;
+        let result = handle_streaming_response(rx, Id::new(1), Id::new(2), http, None).await;
         server.abort();
         let requests = seen.lock().await.clone();
         (result, requests)
