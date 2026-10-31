@@ -97,7 +97,7 @@ mod tests {
     fn lists_are_comma_separated_and_optional() {
         let cfg = Config::parse_from(["bot", "--token", "t", "--discord", "1", "--rename-channels", "1,2"]);
         assert_eq!(cfg.rename_channels, [1, 2]);
-        assert!(cfg.shit_reddits.is_empty());
+        assert_eq!(cfg.shit_reddits, [] as [std::string::String; 0]);
         assert_eq!(cfg.decider_reply_mode, ReplyMode::Off);
     }
 }

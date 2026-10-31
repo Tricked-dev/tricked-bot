@@ -41,3 +41,7 @@ twilight-model = "0.17"
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["json"] }
 tokio = { version = "1", features = ["net"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

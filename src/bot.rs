@@ -121,7 +121,7 @@ impl RateLimit {
             (*start, *hits) = (now, 0);
         }
         *hits += 1;
-        (*hits > self.limit).then(|| self.window - (now - *start))
+        (*hits > self.limit).then(|| self.window.checked_sub(now - *start).unwrap())
     }
 }
 

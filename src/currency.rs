@@ -64,7 +64,7 @@ async fn fetch(client: &reqwest::Client) -> Result<CurrencyRates> {
 /// Keeps the bot's rates fresh. The API itself only updates daily.
 pub fn spawn_refresh(bot: Arc<Bot>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
+        let mut interval = tokio::time::interval(Duration::from_hours(6));
         loop {
             interval.tick().await;
             match fetch(&bot.web).await {

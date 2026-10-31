@@ -21,7 +21,7 @@ use twilight_model::id::{
 
 use crate::bot::Bot;
 
-const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+const DAY: Duration = Duration::from_hours(24);
 /// Attachments in old messages expire, so a few candidates are tried before giving up.
 const ATTEMPTS: usize = 5;
 
@@ -34,7 +34,10 @@ struct Image {
 
 impl Image {
     fn is_gif(&self) -> bool {
-        self.url.contains("tenor.com") || self.url.ends_with(".gif")
+        self.url.contains("tenor.com")
+            || std::path::Path::new(&self.url)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
     }
 }
 

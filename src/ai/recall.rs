@@ -20,6 +20,7 @@ pub const LIMIT: usize = 255;
 
 /// Choice probabilities compete with each other: retain at most three strong options.
 /// The old independent-noul threshold does not apply to this distribution.
+#[expect(clippy::cast_precision_loss, reason = "the decider accepts at most 255 options")]
 pub fn pick(memories: &[Memory], scores: &HashMap<String, f32>) -> Vec<Memory> {
     let mut ranked: Vec<_> = memories
         .iter()
@@ -28,7 +29,7 @@ pub fn pick(memories: &[Memory], scores: &HashMap<String, f32>) -> Vec<Memory> {
         })
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
-    let top = ranked.first().map(|(_, p)| *p).unwrap_or(0.0);
+    let top = ranked.first().map_or(0.0, |(_, p)| *p);
     let floor = (top * 0.25).max(1.0 / scores.len().max(1) as f32);
     ranked.into_iter().filter(|(_, p)| *p >= floor).take(3).map(|(m, _)| m.clone()).collect()
 }
@@ -110,7 +111,7 @@ pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Recalled> {
     let (chosen, durable) = tokio::try_join!(ranking, durability)?;
     tracing::info!(target: "decider", kind = "recall", user = %req.user_id, msg_id = %req.message_id,
         candidates = total, ranked = memories.len(), selected = chosen.len(), durable,
-        latency_ms = started.elapsed().as_millis() as u64);
+        latency_ms = started.elapsed().as_millis());
     Ok(Recalled { memories: chosen, durable })
 }
 
@@ -143,7 +144,7 @@ mod tests {
     }
     #[test]
     fn absent_invalid_and_none_options_do_not_become_memories() {
-        assert!(pick(&[mem(1)], &HashMap::from([("none".into(), 1.0)])).is_empty());
-        assert!(pick(&[mem(1)], &HashMap::from([("m1".into(), f32::NAN)])).is_empty());
+        assert_eq!(pick(&[mem(1)], &HashMap::from([("none".into(), 1.0)])), [] as [db::Memory; 0]);
+        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), f32::NAN)])), [] as [db::Memory; 0]);
     }
 }

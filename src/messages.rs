@@ -25,14 +25,14 @@ pub enum Response {
     #[default]
     Nothing,
     React(&'static str),
-    Message(Reply),
+    Message(Outgoing),
 }
 
 #[derive(Debug, Default, PartialEq)]
-pub struct Reply {
+pub struct Outgoing {
     pub text: String,
     pub attachments: Vec<Attachment>,
-    /// Send as a reply to the message.
+    /// Send as a Discord reply to the message.
     pub reply: bool,
     /// Allow the author to be pinged by mentions in the text.
     pub mention_author: bool,
@@ -40,26 +40,26 @@ pub struct Reply {
 
 impl Response {
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Message(Reply { text: text.into(), ..Reply::default() })
+        Self::Message(Outgoing { text: text.into(), ..Outgoing::default() })
     }
 
-    fn map_reply(mut self, update: impl FnOnce(&mut Reply)) -> Self {
-        if let Self::Message(reply) = &mut self {
-            update(reply);
+    fn map_outgoing(mut self, update: impl FnOnce(&mut Outgoing)) -> Self {
+        if let Self::Message(outgoing) = &mut self {
+            update(outgoing);
         }
         self
     }
 
     pub fn reply(self) -> Self {
-        self.map_reply(|reply| reply.reply = true)
+        self.map_outgoing(|outgoing| outgoing.reply = true)
     }
 
     pub fn mention_author(self) -> Self {
-        self.map_reply(|reply| reply.mention_author = true)
+        self.map_outgoing(|outgoing| outgoing.mention_author = true)
     }
 
     pub fn attachments(self, attachments: Vec<Attachment>) -> Self {
-        self.map_reply(|reply| reply.attachments = attachments)
+        self.map_outgoing(|outgoing| outgoing.attachments = attachments)
     }
 }
 
@@ -134,7 +134,7 @@ pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest) -> Result<Ha
         return Ok(response.into());
     }
     if bot.ai.is_some() && ai::is_direct(msg, bot.id) {
-        ai::reply::spawn(Arc::clone(bot), req.clone());
+        ai::reply::spawn(bot, req.clone());
         return Ok(Handled { response: Response::Nothing, ai_started: true });
     }
     if random_ratio(1, 75) {
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn builder_only_touches_messages() {
         assert_eq!(Response::Nothing.reply(), Response::Nothing);
-        let Response::Message(reply) = Response::text("hi").reply().mention_author() else { panic!() };
-        assert!(reply.reply && reply.mention_author);
+        let Response::Message(outgoing) = Response::text("hi").reply().mention_author() else { panic!() };
+        assert!(outgoing.reply && outgoing.mention_author);
     }
 }

@@ -66,12 +66,12 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
         tracing::info!(target: "decider", kind = "check", channel = %req.channel_id, msg_id = %req.message_id,
             user = %req.user_id, durable, reply = reply.unwrap_or(-1.0), followup = followup.unwrap_or(-1.0),
             wants, responding, fire, bot_in_context, mode = ?cfg.decider_reply_mode,
-            latency_ms = started.elapsed().as_millis() as u64);
+            latency_ms = started.elapsed().as_millis());
         if durable >= cfg.decider_durable_threshold {
             tokio::spawn(crate::ai::memory::write_for_author(Arc::clone(&bot), req.clone()));
         }
         if fire {
-            crate::ai::reply::spawn(bot, AiRequest { ask_durable: false, ..req });
+            crate::ai::reply::spawn(&bot, AiRequest { ask_durable: false, ..req });
         }
     });
 }

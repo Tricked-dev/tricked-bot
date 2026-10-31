@@ -1,4 +1,4 @@
-//! Minimal OpenRouter chat-completions client sharing the bot's connection pool.
+//! Minimal `OpenRouter` chat-completions client sharing the bot's connection pool.
 
 use std::time::Duration;
 
@@ -189,7 +189,7 @@ enum Event {
     Skip,
 }
 
-/// Parses one SSE line. Comments (OpenRouter's keep-alives), blank lines and empty deltas are skipped.
+/// Parses one SSE line. Comments (`OpenRouter`'s keep-alives), blank lines and empty deltas are skipped.
 fn parse_event(line: &[u8]) -> Result<Event> {
     let line = std::str::from_utf8(line)?.trim_end();
     let Some(data) = line.strip_prefix("data:").map(str::trim_start) else {

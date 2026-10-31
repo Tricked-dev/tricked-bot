@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt::Write, sync::Arc, time::Duration};
 
 use color_eyre::Result;
 use twilight_gateway::Event;
@@ -56,7 +56,7 @@ async fn direct_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     }
     let req = bot.snapshot(msg);
     if bot.ai.is_some() {
-        ai::reply::spawn(Arc::clone(bot), req);
+        ai::reply::spawn(bot, req);
     } else {
         check::spawn(Arc::clone(bot), req, false);
     }
@@ -103,14 +103,14 @@ async fn send(bot: &Bot, msg: &Message, response: Response) -> Result<()> {
         Response::React(emoji) => {
             bot.http.create_reaction(msg.channel_id, msg.id, &RequestReactionType::Unicode { name: emoji }).await?;
         }
-        Response::Message(reply) => {
+        Response::Message(outgoing) => {
             let mentions = AllowedMentions { users: vec![msg.author.id], ..Default::default() };
             let mut request =
-                bot.http.create_message(msg.channel_id).content(&reply.text).attachments(&reply.attachments);
-            if reply.reply {
+                bot.http.create_message(msg.channel_id).content(&outgoing.text).attachments(&outgoing.attachments);
+            if outgoing.reply {
                 request = request.reply(msg.id);
             }
-            if reply.mention_author {
+            if outgoing.mention_author {
                 request = request.allowed_mentions(Some(&mentions));
             }
             request.await?;
@@ -133,7 +133,7 @@ async fn typing_start(bot: &Bot, event: &TypingStart) -> Result<()> {
     }
     let previous = bot.typing.lock().unwrap().posted.get(&event.channel_id).copied();
     let announce = format!("{} is typing", member.user.name);
-    let (posted, _) = tokio::join!(bot.http.create_message(event.channel_id).content(&announce), async {
+    let (posted, ()) = tokio::join!(bot.http.create_message(event.channel_id).content(&announce), async {
         if let Some(previous) = previous {
             let _ = bot.http.delete_message(event.channel_id, previous).await;
         }
@@ -163,10 +163,10 @@ fn log_message_event(event: &Event) {
 fn logged_content(content: &str, attachments: &[Attachment], embeds: &[Embed]) -> String {
     let mut text = content.replace('\n', "\\ ");
     for attachment in attachments {
-        text += &format!(" [attachment: {} {}]", attachment.filename.replace('\n', " "), attachment.url);
+        let _ = write!(text, " [attachment: {} {}]", attachment.filename.replace('\n', " "), attachment.url);
     }
     for url in embeds.iter().filter_map(|embed| embed.url.as_deref()) {
-        text += &format!(" [embed: {url}]");
+        let _ = write!(text, " [embed: {url}]");
     }
     text
 }

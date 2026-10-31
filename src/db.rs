@@ -13,7 +13,7 @@ const MIGRATIONS: [&str; 4] = [
     include_str!("../migrations/005_drop_profile_evolution.sql"),
 ];
 
-const USER_COLUMNS: &str = r#"id, level, xp, name, relationship, example_input, example_output"#;
+const USER_COLUMNS: &str = r"id, level, xp, name, relationship, example_input, example_output";
 const MEMORY_COLUMNS: &str = "id, user_id, key, content";
 
 #[derive(FromRow, Serialize, Debug, Clone, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub struct Memory {
 
 /// Discord snowflakes fit in 63 bits, so the cast is lossless.
 const fn sql_id(id: u64) -> i64 {
-    id as i64
+    id.cast_signed()
 }
 
 pub async fn run_migrations(pool: &Pool) -> Result<()> {
@@ -184,9 +184,9 @@ pub async fn users_over_memory_limit(pool: &Pool, limit: usize) -> Result<Vec<u6
     let rows = pool
         .get()
         .await?
-        .query("SELECT user_id FROM memory GROUP BY user_id HAVING count(*) > $1", &[&(limit as i64)])
+        .query("SELECT user_id FROM memory GROUP BY user_id HAVING count(*) > $1", &[&i64::try_from(limit)?])
         .await?;
-    Ok(rows.iter().map(|row| row.get::<_, i64>(0) as u64).collect())
+    Ok(rows.iter().map(|row| row.get::<_, i64>(0).cast_unsigned()).collect())
 }
 
 /// Archive only the exact snapshot Jev reviewed, and only while still over the cap.
@@ -196,7 +196,7 @@ pub async fn archive_overflow_memory(pool: &Pool, memory: &Memory, limit: usize)
     // Held only for this short transaction, never during inference. Also coordinates web edits.
     tx.batch_execute("LOCK TABLE memory IN SHARE ROW EXCLUSIVE MODE").await?;
     let count: i64 = tx.query_one("SELECT count(*) FROM memory WHERE user_id = $1", &[&memory.user_id]).await?.get(0);
-    if count <= limit as i64 {
+    if count <= i64::try_from(limit)? {
         return Ok(false);
     }
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 4] =
@@ -268,7 +268,7 @@ mod tests {
             futures_util::future::join_all(racing).await.into_iter().filter_map(Result::unwrap).collect();
         level_ups.sort_unstable();
         let bob = user(&pool, 2).await.unwrap().unwrap();
-        assert!(!level_ups.is_empty());
+        assert_ne!(level_ups, [] as [i32; 0]);
         assert_eq!(level_ups, (2..=bob.level).collect::<Vec<_>>(), "racing awards never skip or repeat a level");
         assert_eq!((rank(&pool, bob.level).await.unwrap(), rank(&pool, 0).await.unwrap()), (1, 3));
         assert_eq!(users(&pool).await.unwrap().len(), 2);

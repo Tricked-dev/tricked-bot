@@ -5,7 +5,7 @@ use crate::db::Memory;
 
 pub const CONTEXT_LINES: usize = 8;
 
-/// The last CONTEXT_LINES transcript lines before the current message.
+/// The last `CONTEXT_LINES` transcript lines before the current message.
 pub fn short_context(context: &str) -> String {
     let lines: Vec<&str> = context.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(CONTEXT_LINES)..].join("\n")

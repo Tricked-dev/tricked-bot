@@ -68,7 +68,7 @@ impl Rgb {
         let (Some(r), Some(g), Some(b)) = (channel(0), channel(2), channel(4)) else {
             return false;
         };
-        self.0.abs_diff(r) as u32 + self.1.abs_diff(g) as u32 + self.2.abs_diff(b) as u32 <= 25
+        u32::from(self.0.abs_diff(r)) + u32::from(self.1.abs_diff(g)) + u32::from(self.2.abs_diff(b)) <= 25
     }
 }
 
@@ -160,7 +160,7 @@ pub async fn answer(bot: &Bot, msg: &Message) -> Option<Response> {
 
 async fn time_out(bot: &Bot, guild: Id<GuildMarker>, user: Id<UserMarker>) {
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-    let Ok(until) = Timestamp::from_secs(now.as_secs() as i64 + 60) else {
+    let Ok(until) = Timestamp::from_secs(now.as_secs().cast_signed() + 60) else {
         return;
     };
     if let Err(error) = bot.http.update_guild_member(guild, user).communication_disabled_until(Some(until)).await {

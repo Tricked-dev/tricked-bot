@@ -59,7 +59,7 @@ pub fn fit_chat(request: &mut ChatRequest, max_total: u32) -> Result<u64> {
         if total <= u64::from(max_total) {
             return Ok(total);
         }
-        let excess = ((total - u64::from(max_total)) as usize).saturating_mul(3);
+        let excess = usize::try_from(total - u64::from(max_total)).unwrap_or(usize::MAX).saturating_mul(3);
         let mut trimmed = false;
         for message in &mut request.messages {
             if message.role != Role::System {
@@ -84,7 +84,7 @@ pub fn fit_chat(request: &mut ChatRequest, max_total: u32) -> Result<u64> {
                 if tag == "recent_conversation" {
                     // Remove complete oldest transcript lines where possible.
                     let cut = content.ceil_char_boundary(excess.min(content.len()));
-                    let cut = content[cut..].find('\n').map(|n| cut + n + 1).unwrap_or(cut);
+                    let cut = content[cut..].find('\n').map_or(cut, |n| cut + n + 1);
                     prompt.replace_range(start..start + cut, "");
                 } else {
                     let keep = content.floor_char_boundary(content.len().saturating_sub(excess));
@@ -118,9 +118,9 @@ mod tests {
         assert!(check(&request, 90_000).is_err());
         let mut reduced = request;
         reduced["messages"][0]["content"] = json!("x".repeat(240_000));
-        let upper = check(&reduced, 90_000).unwrap();
-        assert!(check(&reduced, upper as u32 - 1).is_err());
-        assert!(check(&reduced, upper as u32).is_ok());
+        let upper = u32::try_from(check(&reduced, 90_000).unwrap()).unwrap();
+        assert!(check(&reduced, upper - 1).is_err());
+        assert!(check(&reduced, upper).is_ok());
         reduced["max_tokens"] = json!(10_000);
         assert!(check(&reduced, 90_000).is_err());
     }

@@ -61,7 +61,7 @@ impl ReplyTasks {
 }
 
 /// Aborts a superseded reply and deletes whatever part of it was already posted.
-fn cancel(bot: &Arc<Bot>, entry: InFlight, channel: Id<ChannelMarker>) {
+fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) {
     entry.abort.abort();
     if let Some(posted) = *entry.posted.lock().unwrap() {
         let bot = Arc::clone(bot);
@@ -80,12 +80,12 @@ pub fn restart_pending(bot: &Arc<Bot>, req: &AiRequest) -> bool {
         Some(entry) if entry.message_id != req.message_id && entry.restarts < MAX_RESTARTS => entry.restarts + 1,
         _ => return false,
     };
-    cancel(bot, in_flight.remove(&key).unwrap(), req.channel_id);
+    cancel(bot, &in_flight.remove(&key).unwrap(), req.channel_id);
     start(bot, &mut in_flight, req.clone(), restarts);
     true
 }
 
-pub fn spawn(bot: Arc<Bot>, req: AiRequest) {
+pub fn spawn(bot: &Arc<Bot>, req: AiRequest) {
     let key = (req.channel_id, req.user_id);
     let mut in_flight = bot.replies.in_flight.lock().unwrap();
     let restarts = match in_flight.get(&key) {
@@ -93,12 +93,12 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest) {
         Some(entry) if entry.message_id == req.message_id => return,
         Some(entry) if entry.restarts < MAX_RESTARTS => {
             let restarts = entry.restarts + 1;
-            cancel(&bot, in_flight.remove(&key).unwrap(), req.channel_id);
+            cancel(bot, &in_flight.remove(&key).unwrap(), req.channel_id);
             restarts
         }
         Some(_) => MAX_RESTARTS,
     };
-    start(&bot, &mut in_flight, req, restarts);
+    start(bot, &mut in_flight, req, restarts);
 }
 
 fn start(bot: &Arc<Bot>, in_flight: &mut HashMap<ReplyKey, InFlight>, req: AiRequest, restarts: u8) {

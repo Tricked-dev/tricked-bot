@@ -1,6 +1,6 @@
 //! Prompt assembly for the persona and cleanup of what the model sends back.
 
-use std::{collections::HashMap, time::SystemTime};
+use std::{collections::HashMap, fmt::Write, time::SystemTime};
 
 use color_eyre::Result;
 use twilight_model::id::{Id, marker::UserMarker};
@@ -64,7 +64,7 @@ fn format_memories(memories: &[Memory]) -> String {
 
     let mut formatted = String::from("**Remembered information about this user:**\n");
     for memory in memories {
-        formatted.push_str(&format!("- **{}**: {}\n", memory.key, memory.content));
+        let _ = writeln!(formatted, "- **{}**: {}", memory.key, memory.content);
     }
     formatted.push_str("\n(Use these memories to personalize responses when relevant, but don't force them into unrelated conversations)");
     formatted
@@ -268,10 +268,12 @@ pub async fn build_request(bot: &Bot, req: &AiRequest, memories: &[Memory], mode
 
 fn utc_now() -> String {
     let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
+    let (y, m, d) = civil_from_days((secs / 86_400).cast_signed());
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", (secs % 86_400) / 3600, (secs % 3600) / 60)
 }
 
+/// Converts days since the Unix epoch to a proleptic Gregorian `(year, month, day)` (Howard Hinnant's algorithm).
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "day and month are always in 1..=31")]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
