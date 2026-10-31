@@ -19,9 +19,10 @@ pub struct Recalled {
 pub const LIMIT: usize = 255;
 
 /// Choice probabilities compete with each other: retain at most three strong options.
-/// The old independent-noul threshold does not apply to this distribution.
+/// The old independent-noul threshold does not apply to this distribution. A memory also has to beat a uniform split
+/// over all `options` the decider chose between, the no-memory option included.
 #[expect(clippy::cast_precision_loss, reason = "the decider accepts at most 255 options")]
-pub fn pick(memories: &[Memory], scores: &HashMap<String, f32>) -> Vec<Memory> {
+pub fn pick(memories: &[Memory], scores: &HashMap<String, f32>, options: usize) -> Vec<Memory> {
     let mut ranked: Vec<_> = memories
         .iter()
         .filter_map(|m| {
@@ -30,7 +31,7 @@ pub fn pick(memories: &[Memory], scores: &HashMap<String, f32>) -> Vec<Memory> {
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
     let top = ranked.first().map_or(0.0, |(_, p)| *p);
-    let floor = (top * 0.25).max(1.0 / scores.len().max(1) as f32);
+    let floor = (top * 0.25).max(1.0 / options.max(1) as f32);
     ranked.into_iter().filter(|(_, p)| *p >= floor).take(3).map(|(m, _)| m.clone()).collect()
 }
 
@@ -75,6 +76,7 @@ pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Recalled> {
             return Ok(Vec::new());
         }
         let (options, none) = choice_options(&memories);
+        let option_count = options.len();
         let mut flags = HashMap::new();
         if none.is_none() {
             flags.insert(
@@ -106,7 +108,7 @@ pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Recalled> {
                 (questions::memory_id(m), if relevant && p > none_weight { p } else { 0.0 })
             })
             .collect();
-        Ok::<_, color_eyre::Report>(pick(&memories, &scores))
+        Ok::<_, color_eyre::Report>(pick(&memories, &scores, option_count))
     };
     let (chosen, durable) = tokio::try_join!(ranking, durability)?;
     tracing::info!(target: "decider", kind = "recall", user = %req.user_id, msg_id = %req.message_id,
@@ -140,11 +142,16 @@ mod tests {
     fn choice_weights_rank_multiple_memories_without_old_half_threshold() {
         let ms = vec![mem(1), mem(2), mem(3), mem(4)];
         let scores = HashMap::from([("m1".into(), 0.05), ("m2".into(), 0.45), ("m3".into(), 0.3), ("m4".into(), 0.2)]);
-        assert_eq!(pick(&ms, &scores).iter().map(|m| m.id).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(pick(&ms, &scores, 4).iter().map(|m| m.id).collect::<Vec<_>>(), vec![2, 3]);
+    }
+    #[test]
+    fn a_single_memory_competes_with_the_no_memory_option() {
+        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), 0.99)]), 2), [mem(1)]);
+        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), 0.4)]), 2), [] as [db::Memory; 0]);
     }
     #[test]
     fn absent_invalid_and_none_options_do_not_become_memories() {
-        assert_eq!(pick(&[mem(1)], &HashMap::from([("none".into(), 1.0)])), [] as [db::Memory; 0]);
-        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), f32::NAN)])), [] as [db::Memory; 0]);
+        assert_eq!(pick(&[mem(1)], &HashMap::from([("none".into(), 1.0)]), 2), [] as [db::Memory; 0]);
+        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), f32::NAN)]), 2), [] as [db::Memory; 0]);
     }
 }
