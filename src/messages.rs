@@ -19,6 +19,9 @@ use crate::{
     db, qalc, quiz, ratewaifu, zalgo,
 };
 
+/// Minimum time between two channel topic changes.
+const TOPIC_COOLDOWN: Duration = Duration::from_secs(150);
+
 /// What to send back in response to a message.
 #[derive(Debug, Default, PartialEq)]
 pub enum Response {
@@ -119,14 +122,17 @@ pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest) -> Result<Ha
 
     let lower = msg.content.to_lowercase();
     if bot.config.rename_channels.contains(&msg.channel_id.get())
-        && bot.last_topic_change.lock().unwrap().elapsed() > Duration::from_secs(150)
+        && bot.last_topic_change.lock().unwrap().elapsed() > TOPIC_COOLDOWN
         && random_ratio(1, 10)
     {
         if lower.contains("uwu") || lower.contains("owo") {
             return Ok(Response::text("No furry shit!!!!!").into());
         }
+        // Claim the cooldown before the request so a concurrent message can't change a topic too.
+        if !claim_topic_change(bot) {
+            return Ok(Response::Nothing.into());
+        }
         bot.http.update_channel(msg.channel_id).topic(&msg.content).await?;
-        *bot.last_topic_change.lock().unwrap() = Instant::now();
         tracing::info!("Channel topic changed");
         return Ok(Response::Nothing.into());
     }
@@ -157,6 +163,16 @@ pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest) -> Result<Ha
         return Ok(Response::text(text).reply().into());
     }
     Ok(Response::Nothing.into())
+}
+
+/// Starts the topic cooldown if it has run out. Returns whether this caller got to change the topic.
+fn claim_topic_change(bot: &Bot) -> bool {
+    let mut last = bot.last_topic_change.lock().unwrap();
+    let expired = last.elapsed() > TOPIC_COOLDOWN;
+    if expired {
+        *last = Instant::now();
+    }
+    expired
 }
 
 async fn rate_waifu(bot: &Bot, candidate: &str) -> Response {

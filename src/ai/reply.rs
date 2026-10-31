@@ -73,11 +73,14 @@ fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) {
 }
 
 /// Restart the author's unfinished reply with their newer message. Returns whether it did.
+///
+/// Events are handled concurrently, so an older message can arrive here after a newer one. Snowflakes are
+/// chronological, which makes "newer" a plain ID comparison.
 pub fn restart_pending(bot: &Arc<Bot>, req: &AiRequest) -> bool {
     let key = (req.channel_id, req.user_id);
     let mut in_flight = bot.replies.in_flight.lock().unwrap();
     let restarts = match in_flight.get(&key) {
-        Some(entry) if entry.message_id != req.message_id && entry.restarts < MAX_RESTARTS => entry.restarts + 1,
+        Some(entry) if entry.message_id < req.message_id && entry.restarts < MAX_RESTARTS => entry.restarts + 1,
         _ => return false,
     };
     cancel(bot, &in_flight.remove(&key).unwrap(), req.channel_id);
@@ -90,7 +93,8 @@ pub fn spawn(bot: &Arc<Bot>, req: AiRequest) {
     let mut in_flight = bot.replies.in_flight.lock().unwrap();
     let restarts = match in_flight.get(&key) {
         None => 0,
-        Some(entry) if entry.message_id == req.message_id => return,
+        // Already answering this message or a newer one.
+        Some(entry) if entry.message_id >= req.message_id => return,
         Some(entry) if entry.restarts < MAX_RESTARTS => {
             let restarts = entry.restarts + 1;
             cancel(bot, &in_flight.remove(&key).unwrap(), req.channel_id);

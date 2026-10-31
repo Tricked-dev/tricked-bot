@@ -71,11 +71,12 @@ pub async fn ensure_user(pool: &Pool, id: u64, name: &str) -> Result<()> {
 /// Adds XP to a user, creating them on their first message without any XP.
 ///
 /// Returns the new level when the gain reached the next threshold. `carry_over` keeps the surplus XP for the new
-/// level instead of starting it at zero. Both statements are atomic, so concurrent messages can't lose XP or level up
-/// twice.
+/// level instead of starting it at zero. The upsert locks the row until the transaction commits, so concurrent awards
+/// queue behind each other instead of overwriting XP or levelling up twice.
 pub async fn award_xp(pool: &Pool, id: u64, name: &str, gained: i32, carry_over: bool) -> Result<Option<i32>> {
-    let client = pool.get().await?;
-    let award = client
+    let mut client = pool.get().await?;
+    let transaction = client.transaction().await?;
+    let award = transaction
         .prepare_cached(
             r#"INSERT INTO "user" (id, name, level, xp, social_credit, relationship, example_input, example_output)
                VALUES ($1, $2, 0, 0, 0, '', '', '')
@@ -83,17 +84,20 @@ pub async fn award_xp(pool: &Pool, id: u64, name: &str, gained: i32, carry_over:
                RETURNING level, xp, (xmax = 0) AS inserted"#,
         )
         .await?;
-    let row = client.query_one(&award, &[&sql_id(id), &name, &gained]).await?;
+    let row = transaction.query_one(&award, &[&sql_id(id), &name, &gained]).await?;
     let (level, xp, inserted): (i32, i32, bool) = (row.get(0), row.get(1), row.get(2));
     let required = xp_required_for_level(level);
-    if inserted || xp < required {
-        return Ok(None);
-    }
-    let level_up =
-        client.prepare_cached(r#"UPDATE "user" SET level = level + 1, xp = $3 WHERE id = $1 AND level = $2"#).await?;
-    let remaining = if carry_over { xp - required } else { 0 };
-    let updated = client.execute(&level_up, &[&sql_id(id), &level, &remaining]).await?;
-    Ok((updated == 1).then_some(level + 1))
+    let new_level = if inserted || xp < required {
+        None
+    } else {
+        let level_up =
+            transaction.prepare_cached(r#"UPDATE "user" SET level = level + 1, xp = $2 WHERE id = $1"#).await?;
+        let remaining = if carry_over { xp - required } else { 0 };
+        transaction.execute(&level_up, &[&sql_id(id), &remaining]).await?;
+        Some(level + 1)
+    };
+    transaction.commit().await?;
+    Ok(new_level)
 }
 
 pub async fn user(pool: &Pool, id: u64) -> Result<Option<User>> {
@@ -272,6 +276,16 @@ mod tests {
         assert_eq!(level_ups, (2..=bob.level).collect::<Vec<_>>(), "racing awards never skip or repeat a level");
         assert_eq!((rank(&pool, bob.level).await.unwrap(), rank(&pool, 0).await.unwrap()), (1, 3));
         assert_eq!(users(&pool).await.unwrap().len(), 2);
+
+        ensure_user(&pool, 3, "carol").await.unwrap();
+        assert_eq!(award_xp(&pool, 3, "carol", 0, true).await.unwrap(), Some(1));
+        let racing = (0..8).map(|_| award_xp(&pool, 3, "carol", 15, true));
+        for result in futures_util::future::join_all(racing).await {
+            result.unwrap();
+        }
+        let carol = user(&pool, 3).await.unwrap().unwrap();
+        let spent: i32 = (1..carol.level).map(xp_required_for_level).sum();
+        assert_eq!(spent + carol.xp, 8 * 15, "racing awards with carry-over never lose XP");
 
         upsert_memory(&pool, 1, "work", "builds bots").await.unwrap();
         upsert_memory(&pool, 1, "work", "builds better bots").await.unwrap();

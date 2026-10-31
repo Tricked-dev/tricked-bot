@@ -72,7 +72,8 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
         tracing::info!(channel = %msg.channel_id, "Channel limit reached, {} seconds remaining", wait.as_secs());
         return Ok(());
     }
-    if let Some(wait) = bot.user_limit.hit(msg.author.id.get()) {
+    // A message that waited competes for the next window like any other, so a queued burst can't all slip through.
+    while let Some(wait) = bot.user_limit.hit(msg.author.id.get()) {
         tracing::info!(user = %msg.author.id, "User limit reached, {} seconds remaining", wait.as_secs());
         if wait > MAX_RATE_LIMIT_WAIT {
             return Ok(());
