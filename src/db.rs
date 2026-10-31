@@ -231,6 +231,71 @@ pub async fn remember_math_question(pool: &Pool, question: &str, answer: f64) ->
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pool whose connections live in a fresh schema of the `TEST_DATABASE_URL` database.
+    async fn scratch_pool() -> (Pool, String) {
+        let url = std::env::var("TEST_DATABASE_URL").expect("test database");
+        let schema = format!("tricked_bot_test_{}", std::process::id());
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.options(format!("-c search_path={schema}"));
+        let pool = Pool::builder(deadpool_postgres::Manager::new(config, tokio_postgres::NoTls)).build().unwrap();
+        pool.get().await.unwrap().batch_execute(&format!("CREATE SCHEMA {schema}")).await.unwrap();
+        (pool, schema)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL; creates and drops its own schema"]
+    async fn queries_work_against_the_migrated_schema() {
+        let (pool, schema) = scratch_pool().await;
+        run_migrations(&pool).await.unwrap();
+        run_migrations(&pool).await.unwrap();
+
+        assert_eq!(award_xp(&pool, 1, "alice", 50, false).await.unwrap(), None, "first message only creates");
+        assert_eq!(award_xp(&pool, 1, "alice", 10, false).await.unwrap(), Some(1), "level 0 needs no XP");
+        assert_eq!(award_xp(&pool, 1, "alice", 25, true).await.unwrap(), Some(2));
+        let alice = user(&pool, 1).await.unwrap().unwrap();
+        assert_eq!((alice.level, alice.xp), (2, 5), "surplus over the 20 XP needed for level 2 carries over");
+
+        ensure_user(&pool, 2, "bob").await.unwrap();
+        let bob = User { relationship: "nemesis".into(), ..user(&pool, 2).await.unwrap().unwrap() };
+        update_profile(&pool, &bob).await.unwrap();
+        assert_eq!(user(&pool, 2).await.unwrap().unwrap().relationship, "nemesis");
+        award_xp(&pool, 2, "bob", 1, false).await.unwrap();
+        let racing = (0..8).map(|_| award_xp(&pool, 2, "bob", 1_000, false));
+        let mut level_ups: Vec<_> =
+            futures_util::future::join_all(racing).await.into_iter().filter_map(Result::unwrap).collect();
+        level_ups.sort_unstable();
+        let bob = user(&pool, 2).await.unwrap().unwrap();
+        assert!(!level_ups.is_empty());
+        assert_eq!(level_ups, (2..=bob.level).collect::<Vec<_>>(), "racing awards never skip or repeat a level");
+        assert_eq!((rank(&pool, bob.level).await.unwrap(), rank(&pool, 0).await.unwrap()), (1, 3));
+        assert_eq!(users(&pool).await.unwrap().len(), 2);
+
+        upsert_memory(&pool, 1, "work", "builds bots").await.unwrap();
+        upsert_memory(&pool, 1, "work", "builds better bots").await.unwrap();
+        create_memory(&pool, 1, "food", "hates cilantro").await.unwrap();
+        let memories = memories(&pool, 1).await.unwrap();
+        assert_eq!(
+            memories.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+            ["builds better bots", "hates cilantro"]
+        );
+        assert_eq!(update_memory(&pool, memories[1].id, "food", "loves cilantro").await.unwrap(), Some(1));
+        assert_eq!(memory(&pool, memories[1].id).await.unwrap().unwrap().content, "loves cilantro");
+        assert_eq!(users_over_memory_limit(&pool, 1).await.unwrap(), [1]);
+        assert_eq!(delete_memory(&pool, memories[1].id).await.unwrap(), Some(1));
+        assert_eq!(delete_memory(&pool, memories[1].id).await.unwrap(), None);
+        assert_eq!(all_memories(&pool).await.unwrap().len(), 1);
+
+        assert!(remember_math_question(&pool, "1 + 1", 2.0).await.unwrap());
+        assert!(!remember_math_question(&pool, "1 + 1", 2.0).await.unwrap());
+
+        pool.get().await.unwrap().batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
+    }
+}
+
+#[cfg(test)]
 mod memory_archive_tests {
     use super::*;
     use crate::ai::{cleanup, memory::AuthorLocks, recall::LIMIT};
