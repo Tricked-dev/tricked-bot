@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% block title %}Users{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <h1>Users</h1>
@@ -13,7 +15,7 @@
     {% for user in users %}
     <div class="user-card">
         <div class="user-header">
-            <h3>{% if user.name %}{{ user.name }}{% else %}User {{ user.id }}{% endif %}</h3>
+            <h3>{{ user.display_name() }}</h3>
             <span class="user-id">ID: {{ user.id }}</span>
         </div>
         <div class="user-stats">
@@ -26,7 +28,7 @@
                 <span class="stat-value">{{ user.xp }}</span>
             </div>
         </div>
-        {% if user.relationship and user.relationship != "" %}
+        {% if !user.relationship.is_empty() %}
         <p class="relationship"><strong>Relationship:</strong> {{ user.relationship }}</p>
         {% endif %}
         <div class="user-actions">
@@ -38,7 +40,7 @@
     {% endfor %}
 </div>
 
-{% if users | length == 0 %}
+{% if users.is_empty() %}
 <p class="no-data">No users found.</p>
 {% endif %}
 {% endblock %}

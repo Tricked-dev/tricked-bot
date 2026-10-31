@@ -1,10 +1,14 @@
+//! Client for the decision model ("Jev"), which answers yes/no and multiple-choice questions about a conversation.
+
+pub mod check;
+pub mod questions;
+pub mod reply_gate;
+
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use color_eyre::{eyre::eyre, Result};
+use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-
-use crate::config::Config;
+use serde_json::{Value, json};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Question {
@@ -16,11 +20,7 @@ pub struct Question {
 
 impl Question {
     pub fn noul(instructions: impl Into<String>, yes: &str, no: &str) -> Self {
-        Self {
-            kind: "noul",
-            instructions: instructions.into(),
-            criteria: json!({ "true": yes, "false": no }),
-        }
+        Self { kind: "noul", instructions: instructions.into(), criteria: json!({ "true": yes, "false": no }) }
     }
 }
 
@@ -35,6 +35,7 @@ struct Response {
     answers: HashMap<String, Answer>,
 }
 
+#[derive(Debug)]
 pub struct ChoiceResult {
     pub probabilities: HashMap<String, f32>,
     pub flags: HashMap<String, f32>,
@@ -65,7 +66,7 @@ fn validate_choice(
     Ok(probabilities)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Decider {
     http: reqwest::Client,
     url: String,
@@ -74,21 +75,17 @@ pub struct Decider {
 }
 
 impl Decider {
-    pub fn new(url: String, token: String) -> Result<Self> {
+    pub fn new(http: reqwest::Client, url: String, token: String) -> Result<Self> {
         let endpoint = reqwest::Url::parse(&url)?;
         if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
             return Err(eyre!("decider URL must be HTTP(S) with a host"));
         }
-        Ok(Self {
-            http: reqwest::Client::builder().build()?,
-            url,
-            token,
-            in_flight: Arc::new(tokio::sync::Semaphore::new(1)),
-        })
+        Ok(Self { http, url, token, in_flight: Arc::new(tokio::sync::Semaphore::new(1)) })
     }
 
-    pub fn from_config(cfg: &Config) -> Option<Self> {
-        Self::new(cfg.decider_url.clone()?, cfg.decider_api_key.clone()?).ok()
+    /// A decider when both the URL and token are configured. An invalid URL is logged and disables it.
+    pub fn from_parts(http: &reqwest::Client, url: Option<String>, token: Option<String>) -> Option<Self> {
+        Self::new(http.clone(), url?, token?).inspect_err(|error| tracing::warn!("decider disabled: {error}")).ok()
     }
 
     pub async fn choice(
@@ -104,14 +101,9 @@ impl Decider {
         }
         tokio::time::timeout(timeout, async {
             let _permit = self.in_flight.acquire().await?;
-            let mut qs: HashMap<String, Value> = flags
-                .iter()
-                .map(|(id, q)| Ok((id.clone(), serde_json::to_value(q)?)))
-                .collect::<Result<_>>()?;
-            qs.insert(
-                "selection".into(),
-                json!({"type":"choice", "instructions":instructions, "criteria":options}),
-            );
+            let mut qs: HashMap<String, Value> =
+                flags.iter().map(|(id, q)| Ok((id.clone(), serde_json::to_value(q)?))).collect::<Result<_>>()?;
+            qs.insert("selection".into(), json!({"type":"choice", "instructions":instructions, "criteria":options}));
             let mut response: Response = self
                 .http
                 .post(&self.url)
@@ -132,11 +124,7 @@ impl Decider {
             let flags = flags
                 .keys()
                 .map(|id| {
-                    let p = response
-                        .answers
-                        .get(id)
-                        .and_then(|a| a.noul)
-                        .ok_or_else(|| eyre!("missing flag {id}"))?;
+                    let p = response.answers.get(id).and_then(|a| a.noul).ok_or_else(|| eyre!("missing flag {id}"))?;
                     Ok((id.clone(), validate_probability(p)?))
                 })
                 .collect::<Result<_>>()?;
@@ -210,7 +198,7 @@ impl Decider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::State as AxState, http::HeaderMap, routing::post, Json, Router};
+    use axum::{Json, Router, extract::State as AxState, http::HeaderMap, routing::post};
     use std::sync::{Arc, Mutex};
 
     type Seen = Arc<Mutex<Vec<(String, Value)>>>;
@@ -220,18 +208,12 @@ mod tests {
         let app = Router::new()
             .route(
                 "/v1/systemone",
-                post(
-                    move |AxState(seen): AxState<Seen>, headers: HeaderMap, Json(body): Json<Value>| async move {
-                        let auth = headers
-                            .get("authorization")
-                            .and_then(|v| v.to_str().ok())
-                            .unwrap_or("")
-                            .to_string();
-                        seen.lock().unwrap().push((auth, body));
-                        tokio::time::sleep(delay).await;
-                        Json(json!({ "model": "m", "answers": { "q1": { "type": "noul", "noul": 0.75 } } }))
-                    },
-                ),
+                post(move |AxState(seen): AxState<Seen>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                    let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    seen.lock().unwrap().push((auth, body));
+                    tokio::time::sleep(delay).await;
+                    Json(json!({ "model": "m", "answers": { "q1": { "type": "noul", "noul": 0.75 } } }))
+                }),
             )
             .with_state(seen.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -247,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn parses_noul_and_sends_packed_flag() {
         let (url, seen) = serve(Duration::ZERO).await;
-        let d = Decider::new(url, "t0k".into()).unwrap();
+        let d = Decider::new(reqwest::Client::new(), url, "t0k".into()).unwrap();
         let p = d.noul(&json!("s"), one(), true, Duration::from_secs(2)).await.unwrap();
         assert_eq!(p["q1"], 0.75);
         let (auth, body) = seen.lock().unwrap()[0].clone();
@@ -280,10 +262,8 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let qs = (0..19)
-            .map(|i| (format!("q{i}"), Question::noul("?", "y", "n")))
-            .collect();
-        let result = Decider::new(url, "test".into())
+        let qs = (0..19).map(|i| (format!("q{i}"), Question::noul("?", "y", "n"))).collect();
+        let result = Decider::new(reqwest::Client::new(), url, "test".into())
             .unwrap()
             .noul(&json!("s"), qs, false, Duration::from_secs(2))
             .await
@@ -300,10 +280,7 @@ mod tests {
             post(|Json(body): Json<Value>| async move {
                 assert_eq!(body["independent"], false);
                 assert_eq!(body["questions"]["selection"]["type"], "choice");
-                assert_eq!(
-                    body["questions"]["selection"]["criteria"],
-                    json!({"m1":"hobbies","m2":"work"})
-                );
+                assert_eq!(body["questions"]["selection"]["criteria"], json!({"m1":"hobbies","m2":"work"}));
                 assert_eq!(body["questions"].as_object().unwrap().len(), 2);
                 Json(json!({"answers":{"selection":{"probabilities":{"m1":0.7,"m2":0.3}},"durable":{"noul":0.8}}}))
             }),
@@ -311,7 +288,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let d = Decider::new(url, "test".into()).unwrap();
+        let d = Decider::new(reqwest::Client::new(), url, "test".into()).unwrap();
         let result = d
             .choice(
                 &json!("hi"),
@@ -325,10 +302,7 @@ mod tests {
         assert_eq!(result.probabilities["m1"], 0.7);
         assert_eq!(result.flags["durable"], 0.8);
         let too_many = (0..256).map(|i| (i.to_string(), "name".into())).collect();
-        assert!(d
-            .choice(&json!("s"), "rank", too_many, HashMap::new(), Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(d.choice(&json!("s"), "rank", too_many, HashMap::new(), Duration::from_secs(1)).await.is_err());
         server.abort();
     }
 
@@ -352,24 +326,21 @@ mod tests {
     #[tokio::test]
     async fn times_out() {
         let (url, _) = serve(Duration::from_secs(3)).await;
-        let d = Decider::new(url, "t0k".into()).unwrap();
-        assert!(d
-            .noul(&json!("s"), one(), false, Duration::from_millis(200))
-            .await
-            .is_err());
+        let d = Decider::new(reqwest::Client::new(), url, "t0k".into()).unwrap();
+        assert!(d.noul(&json!("s"), one(), false, Duration::from_millis(200)).await.is_err());
     }
 
     #[tokio::test]
     async fn missing_answer_is_an_error() {
         let (url, _) = serve(Duration::ZERO).await;
-        let d = Decider::new(url, "t0k".into()).unwrap();
+        let d = Decider::new(reqwest::Client::new(), url, "t0k".into()).unwrap();
         let qs = HashMap::from([("other".to_string(), Question::noul("?", "y", "n"))]);
         assert!(d.noul(&json!("s"), qs, false, Duration::from_secs(2)).await.is_err());
     }
     #[tokio::test]
     async fn independent_mode_and_criteria_match_wire_contract() {
         let (url, seen) = serve(Duration::ZERO).await;
-        Decider::new(url, "test".into())
+        Decider::new(reqwest::Client::new(), url, "test".into())
             .unwrap()
             .noul(&json!({"message": "hello"}), one(), false, Duration::from_secs(2))
             .await
@@ -377,10 +348,7 @@ mod tests {
         let body = &seen.lock().unwrap()[0].1;
         assert_eq!(body["independent"], true);
         assert_eq!(body["state"]["message"], "hello");
-        assert_eq!(
-            body["questions"]["q1"]["criteria"],
-            json!({"true": "yes", "false": "no"})
-        );
+        assert_eq!(body["questions"]["q1"]["criteria"], json!({"true": "yes", "false": "no"}));
     }
 
     #[tokio::test]
@@ -402,11 +370,13 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            assert!(Decider::new(url, "test".into())
-                .unwrap()
-                .noul(&json!("s"), one(), false, Duration::from_secs(2))
-                .await
-                .is_err());
+            assert!(
+                Decider::new(reqwest::Client::new(), url, "test".into())
+                    .unwrap()
+                    .noul(&json!("s"), one(), false, Duration::from_secs(2))
+                    .await
+                    .is_err()
+            );
             server.abort();
         }
     }

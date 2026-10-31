@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% block title %}Edit User {{ user.id }}{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <h1>Edit User {{ user.id }}</h1>
@@ -15,7 +17,7 @@
     <div class="form-group">
         <label for="relationship">Relationship:</label>
         <input type="text" id="relationship" name="relationship" value="{{ user.relationship }}" placeholder="how The Trickster treats this person, e.g. your nemesis, roast him every time">
-        <p class="form-help">Manual edits apply immediately. AI observations are staged and require 3 matching memory cycles.</p>
+        <p class="form-help">Applies to every reply to this person from the next message on.</p>
     </div>
 
     <div class="form-group">

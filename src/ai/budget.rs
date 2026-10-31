@@ -1,6 +1,7 @@
-use color_eyre::{eyre::eyre, Result};
-use openrouter_api::types::chat::{ChatCompletionRequest, MessageContent};
+use color_eyre::{Result, eyre::eyre};
 use serde_json::Value;
+
+use super::openrouter::{ChatRequest, Content, Role};
 
 // Estimate text at three UTF-8 bytes per token to allow for Claude's newer
 // tokenizer. The 90k default leaves 10% headroom below the 100k pricing tier.
@@ -12,16 +13,12 @@ const FRAMING_RESERVE: u64 = 2048;
 const CLAUDE_IMAGE_RESERVE: u64 = 4800;
 
 fn estimate(request: &Value) -> Result<u64> {
-    let output = request["max_tokens"]
-        .as_u64()
-        .ok_or_else(|| eyre!("AI request needs an explicit output-token limit"))?;
+    let output =
+        request["max_tokens"].as_u64().ok_or_else(|| eyre!("AI request needs an explicit output-token limit"))?;
     let claude = request["model"].as_str().is_some_and(|m| m.starts_with("anthropic/"));
     let mut text_request = request.clone();
     let mut image_tokens: u64 = 0;
-    for message in text_request["messages"]
-        .as_array_mut()
-        .ok_or_else(|| eyre!("AI request needs messages"))?
-    {
+    for message in text_request["messages"].as_array_mut().ok_or_else(|| eyre!("AI request needs messages"))? {
         if let Some(parts) = message["content"].as_array_mut() {
             for part in parts {
                 match part["type"].as_str() {
@@ -35,7 +32,8 @@ fn estimate(request: &Value) -> Result<u64> {
             }
         }
     }
-    let total = (serde_json::to_vec(&text_request)?.len() as u64).div_ceil(3)
+    let total = (serde_json::to_vec(&text_request)?.len() as u64)
+        .div_ceil(3)
         .saturating_add(image_tokens)
         .saturating_add(FRAMING_RESERVE)
         .saturating_add(output);
@@ -54,7 +52,7 @@ pub fn check(request: &Value, max_total: u32) -> Result<u64> {
 
 /// Trim optional background before the newest conversation. The persona and
 /// current user message stay intact; stored memories are never modified.
-pub fn fit_chat(request: &mut ChatCompletionRequest, max_total: u32) -> Result<u64> {
+pub fn fit_chat(request: &mut ChatRequest, max_total: u32) -> Result<u64> {
     loop {
         let value = serde_json::to_value(&*request)?;
         let total = estimate(&value)?;
@@ -64,10 +62,10 @@ pub fn fit_chat(request: &mut ChatCompletionRequest, max_total: u32) -> Result<u
         let excess = ((total - u64::from(max_total)) as usize).saturating_mul(3);
         let mut trimmed = false;
         for message in &mut request.messages {
-            if message.role != "system" {
+            if message.role != Role::System {
                 continue;
             }
-            let MessageContent::Text(prompt) = &mut message.content else {
+            let Content::Text(prompt) = &mut message.content else {
                 continue;
             };
             for tag in ["memories", "past_exchanges", "relationships", "recent_conversation"] {
@@ -144,43 +142,37 @@ mod tests {
     #[test]
     fn unbounded_output_and_unknown_media_fail_closed() {
         assert!(check(&json!({"messages":[]}), 90_000).is_err());
-        assert!(check(
-            &json!({"max_tokens":1024,"messages":[{"content":[{"type":"file_url"}]}]}),
-            90_000
-        )
-        .is_err());
+        assert!(check(&json!({"max_tokens":1024,"messages":[{"content":[{"type":"file_url"}]}]}), 90_000).is_err());
     }
 
     #[test]
     fn oversized_chat_keeps_persona_current_message_and_newest_context() {
-        use openrouter_api::types::chat::Message;
-        let mut request = ChatCompletionRequest {
+        use super::super::openrouter::Message;
+        let mut request = ChatRequest {
             model: "anthropic/claude-haiku-5.5".into(),
-            max_tokens: Some(1024),
+            max_tokens: 1024,
             messages: vec![
-                Message::text("system",format!("PERSONA\n<memories>{}</memories>\n<recent_conversation>{}\nThe Trickster: newest reply</recent_conversation>\nREPLY IN CHARACTER",
-                    "🙂".repeat(40_000), "old message\n".repeat(10_000))),
-                Message::text("user","what did you mean by that?"),
+                Message::new(
+                    Role::System,
+                    format!(
+                        "PERSONA\n<memories>{}</memories>\n<recent_conversation>{}\nThe Trickster: newest reply</recent_conversation>\nREPLY IN CHARACTER",
+                        "🙂".repeat(40_000),
+                        "old message\n".repeat(10_000)
+                    ),
+                ),
+                Message::new(Role::User, "what did you mean by that?"),
             ],
             ..Default::default()
         };
         let before = serde_json::to_value(&request).unwrap();
         assert!(check(&before, 90_000).is_err());
         assert!(fit_chat(&mut request, 90_000).unwrap() <= 90_000);
-        let MessageContent::Text(prompt) = &request.messages[0].content else {
-            panic!()
-        };
+        let Content::Text(prompt) = &request.messages[0].content else { panic!() };
         assert!(prompt.starts_with("PERSONA"));
         assert!(prompt.ends_with("REPLY IN CHARACTER"));
         assert!(prompt.contains("The Trickster: newest reply"));
-        assert_eq!(
-            request.messages[1].content,
-            MessageContent::Text("what did you mean by that?".into())
-        );
+        assert_eq!(request.messages[1].content, Content::Text("what did you mean by that?".into()));
         assert!(check(&serde_json::to_value(&request).unwrap(), 90_000).is_ok());
-        assert_eq!(
-            before["messages"][0]["content"].as_str().unwrap().matches("🙂").count(),
-            40_000
-        );
+        assert_eq!(before["messages"][0]["content"].as_str().unwrap().matches("🙂").count(), 40_000);
     }
 }

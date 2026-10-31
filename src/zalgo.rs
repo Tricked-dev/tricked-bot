@@ -1,23 +1,23 @@
-use rand::Rng;
+use rand::{RngExt, seq::IndexedRandom};
 
-pub fn zalgify_text(mut rng: impl Rng, s: String) -> String {
-    let mut new_text = String::with_capacity(s.len() * 2);
-    for c in s.chars() {
-        new_text.push(c);
-        for _ in 0..rng.gen_range(0..3) / 2 + 1 {
-            new_text.push(ZALGO_UP[rng.gen_range(0..ZALGO_UP.len())]);
+/// Stacks one or two random combining marks above and below every character.
+pub fn zalgify(text: &str) -> String {
+    let mut rng = rand::rng();
+    let mut marks = |set: &[char], out: &mut String| {
+        for _ in 0..if rng.random_ratio(1, 3) { 2 } else { 1 } {
+            out.push(*set.choose(&mut rng).unwrap());
         }
-        for _ in 0..rng.gen_range(0..2) / 2 {
-            new_text.push(ZALGO_MID[rng.gen_range(0..ZALGO_MID.len())]);
-        }
-        for _ in 0..rng.gen_range(0..3) / 2 + 1 {
-            new_text.push(ZALGO_DOWN[rng.gen_range(0..ZALGO_DOWN.len())]);
-        }
+    };
+    let mut zalgo = String::with_capacity(text.len() * 6);
+    for ch in text.chars() {
+        zalgo.push(ch);
+        marks(&ZALGO_UP, &mut zalgo);
+        marks(&ZALGO_DOWN, &mut zalgo);
     }
-    new_text
+    zalgo
 }
 
-pub const ZALGO_UP: [char; 50] = [
+const ZALGO_UP: [char; 50] = [
     '\u{030e}', /* ̎ */ '\u{0304}', /* ̄ */ '\u{0305}', /* ̅ */
     '\u{033f}', /* ̿ */ '\u{0311}', /* ̑ */ '\u{0306}', /* ̆ */ '\u{0310}', /* ̐ */
     '\u{0352}', /* ͒ */ '\u{0357}', /* ͗ */ '\u{0351}', /* ͑ */ '\u{0307}', /* ̇ */
@@ -33,7 +33,7 @@ pub const ZALGO_UP: [char; 50] = [
     '\u{0346}', /* ͆ */ '\u{031a}', /* ̚ */ '\u{030d}', /* ̍ */
 ];
 
-pub const ZALGO_DOWN: [char; 40] = [
+const ZALGO_DOWN: [char; 40] = [
     '\u{0317}', /* ̗ */ '\u{0318}', /* ̘ */ '\u{0319}', /* ̙ */
     '\u{031c}', /* ̜ */ '\u{031d}', /* ̝ */ '\u{031e}', /* ̞ */ '\u{031f}', /* ̟ */
     '\u{0320}', /* ̠ */ '\u{0324}', /* ̤ */ '\u{0325}', /* ̥ */ '\u{0326}', /* ̦ */
@@ -47,11 +47,13 @@ pub const ZALGO_DOWN: [char; 40] = [
     '\u{0316}', /* ̖ */
 ];
 
-pub const ZALGO_MID: [char; 23] = [
-    '\u{031b}', /* ̛ */ '\u{0340}', /* ̀ */ '\u{0341}', /* ́ */
-    '\u{0358}', /* ͘ */ '\u{0321}', /* ̡ */ '\u{0322}', /* ̢ */ '\u{0327}', /* ̧ */
-    '\u{0328}', /* ̨ */ '\u{0334}', /* ̴ */ '\u{0335}', /* ̵ */ '\u{0336}', /* ̶ */
-    '\u{034f}', /* ͏ */ '\u{035c}', /* ͜ */ '\u{035d}', /* ͝ */ '\u{035e}', /* ͞ */
-    '\u{035f}', /* ͟ */ '\u{0360}', /* ͠ */ '\u{0362}', /* ͢ */ '\u{0338}', /* ̸ */
-    '\u{0337}', /* ̷ */ '\u{0361}', /* ͡ */ '\u{0489}', /* ҉_ */ '\u{0315}', /* ̕ */
-];
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn keeps_the_original_characters_in_order() {
+        let zalgo = super::zalgify("hi!");
+        let base: String = zalgo.chars().filter(|ch| !('\u{0300}'..='\u{036f}').contains(ch)).collect();
+        assert_eq!(base, "hi!");
+        assert!(zalgo.chars().count() >= 3 * 3);
+    }
+}

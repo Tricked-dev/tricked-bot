@@ -1,5 +1,3 @@
-use std::{collections::HashMap, io, num::ParseIntError, sync::Arc};
-
 use clap::Parser;
 
 pub const DEFAULT_FOLLOWUP_THRESHOLD: f32 = 0.6;
@@ -18,24 +16,17 @@ pub enum ReplyMode {
 pub struct Config {
     #[arg(short, long, env)]
     pub token: String,
+    /// Guild that slash commands are registered in.
     #[arg(short, long, env)]
     pub discord: u64,
-    #[arg(short, long, env)]
-    pub join_channel: u64,
-    #[arg(long, env, value_parser = vec_u64_parser)]
-    pub message_indicator_channels: Arc<Vec<u64>>,
     #[arg(long, env, default_value = "postgres://localhost/trickedbot")]
     pub database_url: String,
-    #[arg(short, long, env, default_value = "0")]
-    pub id: u64,
-    #[arg(long, env, value_parser(vec_u64_parser))]
-    pub rename_channels: Arc<Vec<u64>>,
-    #[arg(long, env, value_parser = parse_invites)]
-    pub invites: HashMap<String, String>,
-    #[arg(short, long, env, value_parser = parse_invites)]
-    pub responders: HashMap<String, String>,
-    #[arg(long, env, value_parser = parse_str_array)]
-    pub shit_reddits: Arc<Vec<String>>,
+    /// Channels whose topic is occasionally replaced with a recent message.
+    #[arg(long, env, value_delimiter = ',')]
+    pub rename_channels: Vec<u64>,
+    /// Subreddits that random images are pulled from.
+    #[arg(long, env, value_delimiter = ',')]
+    pub shit_reddits: Vec<String>,
     #[arg(short, long, env, default_value = "I am tricked bot!")]
     pub status: String,
     #[arg(long, env)]
@@ -49,19 +40,23 @@ pub struct Config {
     pub openrouter_max_request_tokens: u32,
     #[arg(long, env, default_value = "1024", value_parser = clap::value_parser!(u32).range(1..=4096))]
     pub openrouter_max_reply_tokens: u32,
+    /// Memory extraction needs deterministic JSON, not the chat model's long reasoning mode.
+    #[arg(long, env, default_value = "tencent/hy3-preview")]
+    pub openrouter_memory_model: String,
+    /// Optional model for refusal style rewrites. Disabled by default: style false positives can corrupt valid replies.
     #[arg(long, env)]
-    pub openrouter_memory_model: Option<String>,
+    pub openrouter_fallback_model: Option<String>,
     #[arg(long, env)]
     pub openrouter_site_url: Option<String>,
     #[arg(long, env)]
     pub openrouter_site_name: Option<String>,
+    /// Channel where every message has to start with "today i".
     #[arg(long, env)]
     pub today_i_channel: Option<u64>,
-    #[arg(long, env)]
-    pub brave_api: Option<String>,
+    /// Channel that the daily profile picture is picked from.
     #[arg(long, env)]
     pub pfp_channel: Option<u64>,
-    #[arg(long, env, default_value = "false")]
+    #[arg(long, env)]
     pub pfp_on_startup: bool,
     #[arg(long, env)]
     pub web_port: Option<u16>,
@@ -90,32 +85,19 @@ pub struct Config {
     /// Minimum guild messages between two unprompted replies in one channel.
     #[arg(long, env, default_value = "15")]
     pub decider_reply_cooldown: u32,
-    /// Optional model for refusal style rewrites. Disabled by default: style false positives can corrupt valid replies.
-    #[arg(long, env, default_value = "")]
-    pub openrouter_fallback_model: String,
     #[arg(long, env, default_value = "0.9")]
     pub decider_refusal_threshold: f32,
 }
 
-fn parse_str_array(src: &str) -> Result<Arc<Vec<String>>, io::Error> {
-    Ok(Arc::new(src.split(',').map(|x| x.to_owned()).collect()))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn parse_invites(src: &str) -> Result<HashMap<String, String>, io::Error> {
-    let mut map = HashMap::new();
-    for pair in src.split(',') {
-        let (key, value) = match pair.split_once(':') {
-            Some(v) => v,
-            None => return Err(io::Error::other("Invalid invite format")),
-        };
-        map.insert(key.to_string(), value.parse().unwrap());
+    #[test]
+    fn lists_are_comma_separated_and_optional() {
+        let cfg = Config::parse_from(["bot", "--token", "t", "--discord", "1", "--rename-channels", "1,2"]);
+        assert_eq!(cfg.rename_channels, [1, 2]);
+        assert!(cfg.shit_reddits.is_empty());
+        assert_eq!(cfg.decider_reply_mode, ReplyMode::Off);
     }
-    Ok(map)
-}
-fn vec_u64_parser(src: &str) -> Result<Arc<Vec<u64>>, ParseIntError> {
-    let mut vec = Vec::new();
-    for pair in src.split(',') {
-        vec.push(pair.parse()?);
-    }
-    Ok(Arc::new(vec))
 }

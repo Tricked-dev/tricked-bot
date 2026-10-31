@@ -1,6 +1,7 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{database::Memory, decider::Question};
+use super::Question;
+use crate::db::Memory;
 
 pub const CONTEXT_LINES: usize = 8;
 
@@ -12,6 +13,14 @@ pub fn short_context(context: &str) -> String {
 
 pub fn state(context: &str, author: &str, text: &str) -> Value {
     json!({ "conversation": short_context(context), "last_message": { "author": author, "text": text } })
+}
+
+pub fn reply_state(user_message: &str, reply: &str) -> Value {
+    json!({ "user_message": user_message, "bot_reply": reply.chars().take(1200).collect::<String>() })
+}
+
+pub fn memory_id(m: &Memory) -> String {
+    format!("m{}", m.id)
 }
 
 pub fn reply() -> Question {
@@ -51,8 +60,14 @@ pub fn durable(author: &str) -> Question {
     )
 }
 
-pub fn memory_id(m: &Memory) -> String {
-    format!("m{}", m.id)
+pub fn refusal() -> Question {
+    Question::noul(
+        "The Trickster is a smug, sarcastic Discord persona. Is the bot's reply a refusal or safety disclaimer in a \
+         plain assistant voice (e.g. \"I can't help with that\", offering a harmless alternative) instead of staying \
+         in character? A decline delivered as an in-character joke counts as false.",
+        "out-of-character refusal",
+        "in character, including in-character declines",
+    )
 }
 
 #[cfg(test)]
@@ -66,25 +81,7 @@ mod tests {
         assert_eq!(s.lines().count(), CONTEXT_LINES);
         assert!(s.starts_with("u: 5") && s.ends_with("u: 12"));
     }
-}
 
-pub fn refusal() -> Question {
-    Question::noul(
-        "The Trickster is a smug, sarcastic Discord persona. Is the bot's reply a refusal or safety disclaimer in a \
-         plain assistant voice (e.g. \"I can't help with that\", offering a harmless alternative) instead of staying \
-         in character? A decline delivered as an in-character joke counts as false.",
-        "out-of-character refusal",
-        "in character, including in-character declines",
-    )
-}
-
-pub fn reply_state(user_message: &str, reply: &str) -> Value {
-    json!({ "user_message": user_message, "bot_reply": reply.chars().take(1200).collect::<String>() })
-}
-
-#[cfg(test)]
-mod state_tests {
-    use super::*;
     #[test]
     fn state_keeps_current_message_separate_and_skips_blank_lines() {
         assert_eq!(short_context("\n  \nalice: café\n\n"), "alice: café");
@@ -94,6 +91,7 @@ mod state_tests {
         assert_eq!(s["last_message"]["text"], "新しい message");
         assert_eq!(short_context(""), "");
     }
+
     #[test]
     fn refusal_state_contains_both_texts_and_truncates_on_char_boundary() {
         let reply = "🙂".repeat(1201);

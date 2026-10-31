@@ -1,13 +1,13 @@
-use crate::{
-    ai_reply::{self, AiRequest},
-    config::{Config, ReplyMode},
-    memory_creator, questions,
-    reply_gate::ReplyGate,
-    structs::State,
-};
+//! Background check on ordinary messages: should a memory be written, and should the bot chime in unprompted?
+
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::Mutex;
-use twilight_http::Client as HttpClient;
+
+use super::{questions, reply_gate::ReplyGate};
+use crate::{
+    ai::{AiRequest, PERSONA},
+    bot::Bot,
+    config::{Config, ReplyMode},
+};
 
 #[derive(Debug)]
 struct ReplyDecision {
@@ -28,89 +28,50 @@ fn decide_reply(
     let responding = bot_in_context && followup.is_some_and(|p| p >= cfg.decider_followup_threshold);
     let fire = cfg.decider_reply_mode == ReplyMode::Live
         && (responding || (wants && gate.try_claim(channel, cfg.decider_reply_cooldown)));
-    ReplyDecision {
-        wants,
-        responding,
-        fire,
-    }
+    ReplyDecision { wants, responding, fire }
 }
 
-pub fn spawn(state: Arc<Mutex<State>>, http: Arc<HttpClient>, req: AiRequest, ask_reply: bool) {
+pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
+    let Some(decider) = bot.decider.clone() else { return };
     tokio::spawn(async move {
-        let Some(decider) = req.decider.clone() else { return };
-        let cfg = req.config.clone();
-        let mut qs = HashMap::from([("durable".to_string(), questions::durable(&req.user_name))]);
+        let cfg = &bot.config;
+        let mut qs = HashMap::from([("durable".to_owned(), questions::durable(&req.user_name))]);
         if ask_reply {
             qs.insert("reply".into(), questions::reply());
             qs.insert("followup".into(), questions::followup());
         }
         let started = std::time::Instant::now();
-        let scores = match decider
-            .noul(
-                &questions::state(&req.context, &req.user_name, &req.message),
-                qs,
-                false,
-                Duration::from_millis(cfg.decider_check_timeout_ms),
-            )
-            .await
-        {
+        let state = questions::state(&req.context, &req.user_name, &req.message);
+        let timeout = Duration::from_millis(cfg.decider_check_timeout_ms);
+        let scores = match decider.noul(&state, qs, false, timeout).await {
             Ok(scores) => scores,
             Err(error) => {
-                tracing::warn!(target: "decider", kind = "check", channel = req.channel_id, msg_id = req.message_id, "skipped: {error}");
+                tracing::warn!(target: "decider", kind = "check", channel = %req.channel_id, msg_id = %req.message_id, "skipped: {error}");
                 return;
             }
         };
         let durable = scores["durable"];
         let reply = scores.get("reply").copied();
         let followup = scores.get("followup").copied();
-        let bot_in_context = questions::short_context(&req.context)
-            .lines()
-            .any(|line| line.starts_with("The Trickster: "));
-        let ReplyDecision {
-            wants,
-            responding,
-            fire,
-        } = decide_reply(
-            &cfg,
-            &mut state.lock().await.reply_gate,
-            req.channel_id,
+        let speaker = format!("{PERSONA}: ");
+        let bot_in_context = questions::short_context(&req.context).lines().any(|line| line.starts_with(&speaker));
+        let ReplyDecision { wants, responding, fire } = decide_reply(
+            cfg,
+            &mut bot.reply_gate.lock().unwrap(),
+            req.channel_id.get(),
             reply,
             followup,
             bot_in_context,
         );
-        tracing::info!(target: "decider", kind = "check", channel = req.channel_id, msg_id = req.message_id,
-            user = req.user_id, durable, reply = reply.unwrap_or(-1.0), followup = followup.unwrap_or(-1.0),
+        tracing::info!(target: "decider", kind = "check", channel = %req.channel_id, msg_id = %req.message_id,
+            user = %req.user_id, durable, reply = reply.unwrap_or(-1.0), followup = followup.unwrap_or(-1.0),
             wants, responding, fire, bot_in_context, mode = ?cfg.decider_reply_mode,
             latency_ms = started.elapsed().as_millis() as u64);
         if durable >= cfg.decider_durable_threshold {
-            let write_req = req.clone();
-            tokio::spawn(async move {
-                if let Err(error) = ai_reply::ensure_author(&write_req).await {
-                    tracing::warn!(
-                        msg_id = write_req.message_id,
-                        "Memory author initialization failed: {error}"
-                    );
-                    return;
-                }
-                memory_creator::write_for_author(
-                    write_req.db,
-                    write_req.config,
-                    write_req.user_id,
-                    write_req.message_id,
-                    write_req.message,
-                    questions::short_context(&write_req.context),
-                )
-                .await;
-            });
+            tokio::spawn(crate::ai::memory::write_for_author(Arc::clone(&bot), req.clone()));
         }
         if fire {
-            ai_reply::spawn_ai_reply(
-                AiRequest {
-                    ask_durable: false,
-                    ..req
-                },
-                http,
-            );
+            crate::ai::reply::spawn(bot, AiRequest { ask_durable: false, ..req });
         }
     });
 }

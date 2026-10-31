@@ -1,6 +1,3 @@
 max_width = 120
-comment_width = 120
-wrap_comments = true
-reorder_imports = true
-binop_separator = "Front"
-imports_granularity = "Crate"
+style_edition = "2024"
+use_small_heuristics = "Max"

@@ -1,54 +1,43 @@
 [package]
+name = "tricked-bot"
+version = "2.0.0"
 authors = ["Tricked-dev"]
 description = "A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)"
-edition = "2021"
-license = "Apache-2"
-name = "tricked-bot"
-version = "1.5.0"
-default-run = "tricked-bot"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
 
 [profile.release]
 lto = true
+codegen-units = 1
 
 [dependencies]
-bytes = "1"
-futures = "0.3"
-log = "0.4"
-openssl = { version = "0.10" }
-rand = { version = "0.9", features = ["log", "serde"] }
-reqwest = { version = "0.12", features = ["json"] }
+askama = "0.16"
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "tokio"] }
+base64 = "0.23"
+clap = { version = "4.6", features = ["derive", "env"] }
+color-eyre = "0.6"
+deadpool-postgres = { version = "0.14", features = ["rt_tokio_1"] }
+dotenvy = "0.15"
+fasteval = "0.2"
+futures-util = { version = "0.3", default-features = false }
+png = "0.18"
+postgres-from-row = "0.5"
+rand = "0.10"
+reqwest = { version = "0.13", features = ["json", "query", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = [
-  "rt",
-  "rt-multi-thread",
-  'macros',
-  "parking_lot",
-] }
-toml = "^0.8"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }
+tokio-postgres = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-twilight-bucket = "0.2"
-twilight-cache-inmemory = "0.15"
-twilight-gateway = { version = "0.15", features = ["rustls-webpki-roots"] }
-twilight-http = { version = "0.15", features = [] }
-twilight-model = "0.15"
-clap = { version = "4.0.29", features = ["derive", "cargo", "env"] }
-base64 = "0.22.1"
-parking_lot = "0.12.1"
-dotenv = { version = "0.15.0", features = ["clap"] }
-color-eyre = "0.6.3"
-vesper = "0.13.0"
-once_cell = { version = "1.19.0", features = ["parking_lot"] }
-openrouter_api = { git = "https://github.com/socrates8300/openrouter_api.git", rev = "96f8bd7f5ec219abb2335ac16110835e15487c66" }
-thiserror = "2.0.12"
-num-format = "0.4.4"
-fasteval = "0.2.4"
-png = "0.17"
-axum = "0.8"
-tera = "1"
-tempfile = "3"
-urlencoding = "2.1"
-tokio-postgres = "0.7.16"
-deadpool-postgres = { version = "0.14.1", features = ["rt_tokio_1"] }
-postgres-from-row = "0.5.2"
+twilight-cache-inmemory = "0.17"
+twilight-gateway = "0.17"
+twilight-http = "0.17"
+twilight-interactions = "0.17"
+twilight-model = "0.17"
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["net"] }

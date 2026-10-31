@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS memory (
     UNIQUE (user_id, key)
 );
 
-CREATE TABLE IF NOT EXISTS mathquestion (
+-- pgloader snake_cases the SQLite `MathQuestion` table to this name.
+CREATE TABLE IF NOT EXISTS math_question (
     id       SERIAL           PRIMARY KEY,
     question TEXT             NOT NULL,
     answer   DOUBLE PRECISION NOT NULL

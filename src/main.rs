@@ -1,230 +1,132 @@
-#![allow(deprecated, clippy::upper_case_acronyms)]
-#![warn(
-    clippy::all,
-    future_incompatible,
-    nonstandard_style,
-    rust_2018_idioms,
-    missing_debug_implementations
-)]
-#![forbid(anonymous_parameters)]
+mod ai;
+mod bot;
+mod commands;
+mod config;
+mod currency;
+mod db;
+mod decider;
+mod events;
+mod levels;
+mod messages;
+mod pfp;
+mod qalc;
+mod quiz;
+mod ratewaifu;
+mod web;
+mod zalgo;
 
-use crate::structs::*;
+use std::sync::Arc;
 
 use clap::Parser;
-use config::Config;
-use futures::stream::StreamExt;
-use once_cell::sync::Lazy;
-use reqwest::Client;
-use tokio::sync::Mutex;
-use twilight_gateway::{
-    stream::{self, ShardEventStream},
-    Config as TLConfig,
-};
+use color_eyre::Result;
+use twilight_gateway::{ConfigBuilder, EventTypeFlags, Intents, Shard, StreamExt as _};
 use twilight_http::Client as HttpClient;
 use twilight_model::{
     channel::message::AllowedMentions,
     gateway::{
         payload::outgoing::update_presence::UpdatePresencePayload,
         presence::{ActivityType, MinimalActivity, Status},
-        Intents,
     },
-    id::Id,
 };
-use vesper::prelude::*;
 
-use std::{collections::HashMap, env, sync::Arc};
+use crate::{bot::Bot, config::Config};
 
-pub mod ai_message;
-mod ai_budget;
-mod ai_reply;
-mod decider;
-mod questions;
-mod recall;
-mod reply_gate;
-mod message_check;
-mod refusal;
-pub mod brave;
-mod color_quiz;
-mod commands;
-mod config;
-mod currency_fetcher;
-mod database;
-mod db;
-mod event_handler;
-mod math_test;
-mod memory_creator;
-mod memory_cleanup;
-mod media;
-mod message_handler;
-mod pfp_updater;
-mod qalc;
-mod ratewaifu;
-mod quiz_handler;
-mod structs;
-pub mod utils;
-mod web;
-mod zalgos;
+const DEFAULT_LOG_FILTER: &str = "debug,h2::codec=info,twilight_gateway::shard=off,\
+    twilight_http_ratelimiting::in_memory=info,rustls::client=info,hyper_util::client=info,tokio_postgres=info";
 
-static RESPONDERS: Lazy<HashMap<String, Responder>> =
-    Lazy::new(|| toml::from_str(include_str!("../responders.toml")).unwrap());
+const INTENTS: Intents = Intents::GUILDS
+    .union(Intents::GUILD_MEMBERS)
+    .union(Intents::GUILD_MESSAGES)
+    .union(Intents::GUILD_MESSAGE_TYPING)
+    .union(Intents::DIRECT_MESSAGES)
+    .union(Intents::MESSAGE_CONTENT);
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Events the bot handles or the cache needs. Everything else is skipped before deserialization.
+const EVENTS: EventTypeFlags = EventTypeFlags::READY
+    .union(EventTypeFlags::GUILD_CREATE)
+    .union(EventTypeFlags::GUILD_DELETE)
+    .union(EventTypeFlags::INTERACTION_CREATE)
+    .union(EventTypeFlags::MEMBER_ADD)
+    .union(EventTypeFlags::MEMBER_CHUNK)
+    .union(EventTypeFlags::MEMBER_REMOVE)
+    .union(EventTypeFlags::MEMBER_UPDATE)
+    .union(EventTypeFlags::MESSAGE_CREATE)
+    .union(EventTypeFlags::MESSAGE_DELETE)
+    .union(EventTypeFlags::MESSAGE_DELETE_BULK)
+    .union(EventTypeFlags::MESSAGE_UPDATE)
+    .union(EventTypeFlags::TYPING_START);
 
 #[tokio::main]
-async fn main() -> color_eyre::Result<()> {
-    dotenv::dotenv().ok();
-
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "debug,h2::codec::framed_read=off,twilight_gateway::shard=off,twilight_http_ratelimiting::in_memory=info,rustls::client=info,hyper::client::connect=info,h2::codec::framed_write=info",
-        ))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
+        )
         .init();
 
-    let mut cfg = Config::parse();
-    if cfg.id == 0 {
-        cfg.id =
-            String::from_utf8_lossy(&base64::decode(cfg.token.split_once('.').unwrap().0).unwrap()).parse::<u64>()?;
-    }
-
-    let pg_config = cfg.database_url.parse::<tokio_postgres::Config>()?;
-    let mgr = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
-    let pool = deadpool_postgres::Pool::builder(mgr)
-        .max_size(16)
-        .build()?;
+    let config = Config::parse();
+    let pool = deadpool_postgres::Pool::builder(deadpool_postgres::Manager::new(
+        config.database_url.parse()?,
+        tokio_postgres::NoTls,
+    ))
+    .max_size(16)
+    .build()?;
     db::run_migrations(&pool).await?;
 
-    let config = Arc::new(cfg);
+    let http =
+        HttpClient::builder().token(config.token.clone()).default_allowed_mentions(AllowedMentions::default()).build();
+    let (user, application) = tokio::try_join!(
+        async { http.current_user().await?.model().await.map_err(color_eyre::Report::from) },
+        async { http.current_user_application().await?.model().await.map_err(color_eyre::Report::from) },
+    )?;
+    tracing::info!(user = %user.name, "Logged in");
 
-    let client: Client = Client::builder()
-        .user_agent(format!(
-            "tricked-bot/{} ({}; {})",
-            VERSION,
-            env::consts::OS,
-            env::consts::ARCH
-        ))
-        .build()?;
+    let gateway = ConfigBuilder::new(config.token.clone(), INTENTS)
+        .presence(UpdatePresencePayload::new(
+            vec![MinimalActivity { kind: ActivityType::Competing, name: config.status.clone(), url: None }.into()],
+            false,
+            None,
+            Status::Idle,
+        )?)
+        .build();
+    let bot = Arc::new(Bot::new(config, http, user.id, application.id, pool)?);
+    let shards = twilight_gateway::create_recommended(&bot.http, gateway, |_, builder| builder.build()).await?;
 
-    // HTTP is separate from the gateway, so create a new client.
-    let http = Arc::new(
-        HttpClient::builder()
-            .token(config.token.clone())
-            .default_allowed_mentions(AllowedMentions::default())
-            .build(),
-    );
-
-    let tl_config = TLConfig::new(
-        config.token.clone(),
-        Intents::GUILD_INVITES
-            | Intents::GUILD_MESSAGES
-            | Intents::GUILD_MEMBERS
-            | Intents::GUILDS
-            | Intents::GUILD_PRESENCES
-            | Intents::MESSAGE_CONTENT
-            | Intents::GUILD_MESSAGE_TYPING
-            | Intents::DIRECT_MESSAGES,
-    );
-    let mut shards = stream::create_recommended(&http, tl_config, |_, builder| {
-        builder
-            .presence(
-                UpdatePresencePayload::new(
-                    vec![MinimalActivity {
-                        kind: ActivityType::Competing,
-                        name: config.status.to_string(),
-                        url: None,
-                    }
-                    .into()],
-                    false,
-                    None,
-                    Status::Idle,
-                )
-                .unwrap(),
-            )
-            .build()
-    })
-    .await?
-    .collect::<Vec<_>>();
-    let mut shard_stream = ShardEventStream::new(shards.iter_mut());
-
-    let state = Arc::new(Mutex::new(State::new(
-        client.clone(),
-        pool.clone(),
-        Arc::clone(&config),
-    )));
-
-    // Fetch currency rates at startup
-    match currency_fetcher::fetch_currency_rates(&client).await {
-        Ok(rates) => {
-            tracing::info!(
-                "Successfully loaded {} currency exchange rates (base: {})",
-                rates.rates.len(),
-                rates.base
-            );
-            state.lock().await.currency_rates = rates;
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch currency rates at startup: {}. Using defaults.", e);
-        }
-    }
-
-    // Update qalc exchange rates at startup
-    if let Err(e) = qalc::update_rates() {
-        tracing::warn!("Failed to update qalc exchange rates: {}", e);
-    }
-
-    let framework = Arc::new(
-        Framework::builder(Arc::clone(&http), Id::new(config.id), Arc::clone(&state))
-            .command(commands::level::level)
-            .command(commands::currency::usd)
-            .command(commands::currency::euro)
-            .command(commands::currency::yen)
-            .command(commands::currency::pln)
-            .command(commands::currency::cad)
-            .command(commands::translate::translate)
-            .command(commands::qalc::qalc)
-            .build(),
-    );
-
-    framework.register_guild_commands(Id::new(config.discord)).await?;
-
-    // Start web server if port is configured
-    if let Some(web_port) = config.web_port {
-        let pool_clone = pool.clone();
+    commands::register(&bot).await?;
+    tokio::spawn(qalc::update_rates());
+    currency::spawn_refresh(Arc::clone(&bot));
+    ai::cleanup::spawn(Arc::clone(&bot));
+    pfp::spawn_daily(Arc::clone(&bot));
+    if let Some(port) = bot.config.web_port {
+        let db = bot.db.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run_web_server(pool_clone, web_port).await {
-                tracing::error!("Web server error: {:?}", e);
+            if let Err(error) = web::serve(db, port).await {
+                tracing::error!("Web server error: {error:?}");
             }
         });
     }
 
-    // Start daily profile picture updates
-    pfp_updater::schedule_daily_updates(Arc::clone(&http), Arc::clone(&state)).await;
-
-    // Update profile picture on startup if configured
-    if config.pfp_on_startup {
-        if let Some(channel_id) = config.pfp_channel {
-            let http_clone = Arc::clone(&http);
-            let state_clone = Arc::clone(&state);
-            tokio::spawn(async move {
-                if let Err(e) = pfp_updater::update_profile_picture(&http_clone, &state_clone, channel_id).await {
-                    tracing::error!("Failed to update profile picture on startup: {:?}", e);
-                }
-            });
-        }
-    }
-
-    while let Some(event) = shard_stream.next().await {
-        let ev = match event.1 {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        {
-            state.lock().await.cache.update(&ev);
-        }
-        let res = event_handler::handle_event(ev, &http, &state, Arc::clone(&framework)).await;
-        if let Err(res) = res {
-            tracing::error!("{:?}", res);
-        }
+    let runners: Vec<_> = shards.map(|shard| tokio::spawn(run_shard(Arc::clone(&bot), shard))).collect();
+    for runner in runners {
+        runner.await?;
     }
     Ok(())
+}
+
+/// Updates the cache in gateway order, then handles each event on its own task so slow handlers never stall the
+/// gateway or each other.
+async fn run_shard(bot: Arc<Bot>, mut shard: Shard) {
+    while let Some(event) = shard.next_event(EVENTS).await {
+        match event {
+            Ok(event) => {
+                bot.cache.update(&event);
+                tokio::spawn(events::handle(Arc::clone(&bot), event));
+            }
+            Err(error) => tracing::warn!(shard = %shard.id(), "Error receiving event: {error}"),
+        }
+    }
 }

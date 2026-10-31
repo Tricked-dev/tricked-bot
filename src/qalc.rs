@@ -1,47 +1,40 @@
-use std::process::{Command, Stdio};
+//! Calculations via the `qalc` CLI from Qalculate!.
 
-/// Update exchange rates (call at startup, needs network)
-pub fn update_rates() -> Result<(), Box<dyn std::error::Error>> {
-    tracing::info!("Updating qalc exchange rates...");
+use std::{process::Stdio, time::Duration};
 
-    // Use -e flag with a dummy expression to trigger exchange rate update and exit
-    // qalc will update exchange rates if needed when -e is used
-    let output = Command::new("qalc")
-        .args(["-e", "1+1"]) // Execute simple expression and exit
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+use tokio::process::Command;
 
-    if !output.success() {
-        tracing::warn!("Warning: couldn't update qalc exchange rates");
-    } else {
-        tracing::info!("Successfully updated qalc exchange rates");
+/// qalc gives up on its own after this long; the process is killed shortly after as a backstop.
+const TIMEOUT_MS: u64 = 2000;
+
+/// Update exchange rates. Needs network, so it runs once in the background at startup.
+pub async fn update_rates() {
+    // Evaluating any expression makes qalc refresh stale exchange rates before exiting.
+    let status = Command::new("qalc").args(["-e", "1+1"]).stdout(Stdio::null()).stderr(Stdio::null()).status().await;
+    match status {
+        Ok(status) if status.success() => tracing::info!("Updated qalc exchange rates"),
+        Ok(status) => tracing::warn!("qalc exchange rate update exited with {status}"),
+        Err(error) => tracing::warn!("Failed to run qalc to update exchange rates: {error}"),
     }
-    Ok(())
 }
 
-/// Eval expression with 2s timeout, no interactive prompts
-pub fn qalc(expr: &str) -> Result<String, String> {
+/// Evaluates `expr` tersely without interactive prompts.
+pub async fn eval(expr: &str) -> Result<String, String> {
     let output = Command::new("qalc")
-        .args([
-            "-t",                             // terse output
-            "-m", "2000",                     // 2000ms timeout
-            "-s", "update exchange rates 0", // never prompt to update
-            expr,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| e.to_string())?;
-
+        .args(["-t", "-m", &TIMEOUT_MS.to_string(), "-s", "update exchange rates 0", expr])
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_millis(TIMEOUT_MS + 1000), output)
+        .await
+        .map_err(|_| "Calculation timed out (2s limit)".to_owned())?
+        .map_err(|error| error.to_string())?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("timed out") || stderr.contains("aborted") {
+        Err("Calculation timed out (2s limit)".into())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("timed out") || stderr.contains("aborted") {
-            Err("Calculation timed out (2s limit)".into())
-        } else {
-            Err(stderr.trim().to_string())
-        }
+        Err(stderr.trim().to_owned())
     }
 }

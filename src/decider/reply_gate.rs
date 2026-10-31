@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 /// Per-channel count of guild messages since the last unprompted reply.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ReplyGate {
     since_reply: HashMap<u64, u32>,
 }

@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 
+{% block title %}New Memory for User {{ user.id }}{% endblock %}
+
 {% block content %}
 <div class="page-header">
-    <h1>New Memory for {{ user.name or "User " ~ user.id }}</h1>
+    <h1>New Memory for {{ user.display_name() }}</h1>
     <a href="/user/{{ user.id }}/memories" class="btn">Cancel</a>
 </div>
 
