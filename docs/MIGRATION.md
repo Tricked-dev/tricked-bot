@@ -77,3 +77,4 @@ All 002 steps check current column types before acting — safe to re-run.
 - `math_question` — pgloader snake_cases the SQLite table name `MathQuestion`; the bot queries `math_question` accordingly.
 - Orphaned memories (referencing users who left) are automatically deleted before the FK is added.
 - `DATABASE_FILE` / `--database-file` no longer exists; use `DATABASE_URL` / `--database-url`.
+- Since 2.0 the unused `--join-channel`, `--message-indicator-channels`, `--invites`, `--responders`, `--brave-api` and `--id` options are gone, and `--rename-channels` / `--shit-reddits` are optional.

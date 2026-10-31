@@ -1,9 +1,28 @@
-version: '3'
 services:
   trickedbot:
     build: .
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgres://trickedbot:trickedbot@postgres/trickedbot
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trickedbot
+      POSTGRES_PASSWORD: trickedbot
+      POSTGRES_DB: trickedbot
     volumes:
-      - ./database.db:/tricked-bot/database.db
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "trickedbot"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  postgres:

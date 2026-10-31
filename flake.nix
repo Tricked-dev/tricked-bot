@@ -36,8 +36,8 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Keep Cargo sources plus the runtime asset dirs the build copies into
-        # $out. craneLib.filterCargoSources alone would strip web/ & migrations/.
+        # Keep Cargo sources plus the templates, stylesheet and migrations that
+        # are compiled into the binary; filterCargoSources alone strips them.
         src = lib.cleanSourceWith {
           src = ./.;
           filter =
@@ -50,16 +50,6 @@
           inherit src;
           strictDeps = true;
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-          ];
-
-          buildInputs = with pkgs; [
-            openssl
-            ffmpeg
-            libqalculate
-          ];
         };
 
         # Compile (and cache) the dependency graph once; crane reuses this
@@ -73,16 +63,12 @@
 
             nativeCheckInputs = [ pkgs.ffmpeg ];
 
-            nativeBuildInputs =
-              commonArgs.nativeBuildInputs
-              ++ (with pkgs; [
-                makeWrapper
-                removeReferencesTo
-              ]);
+            nativeBuildInputs = with pkgs; [
+              makeWrapper
+              removeReferencesTo
+            ];
 
             postInstall = ''
-              mkdir -p $out/share/tricked-bot
-              cp -r web $out/share/tricked-bot/
               wrapProgram $out/bin/tricked-bot \
                 --prefix PATH : ${
                   lib.makeBinPath [
@@ -144,8 +130,6 @@
           with pkgs;
           mkShell {
             buildInputs = [
-              openssl
-              pkg-config
               eza
               fd
               clang
@@ -156,10 +140,7 @@
               ffmpeg
               libqalculate
               nixfmt-rfc-style
-            ];
-
-            LD_LIBRARY_PATH = lib.makeLibraryPath [
-              openssl
+              postgresql
             ];
 
             shellHook = ''
