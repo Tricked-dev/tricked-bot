@@ -5,7 +5,11 @@ pub mod cooldown;
 pub mod questions;
 pub mod reply_gate;
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use color_eyre::{
     Result,
@@ -103,12 +107,16 @@ impl Decider {
             return Err(eyre!("choice requires 2..255 options"));
         }
         tokio::time::timeout(timeout, async {
+            let queued = Instant::now();
             let _permit = self.in_flight.acquire().await?;
+            let queue_ms = queued.elapsed().as_millis();
             let selection = json!({"type": "choice", "instructions": instructions, "criteria": options});
             let body = json!({"state": state, "questions": {"selection": selection}, "independent": false});
-            let probabilities = self
-                .ask(&body, timeout)
-                .await?
+            let started = Instant::now();
+            let response = self.ask(&body, timeout).await;
+            tracing::info!(target: "decider_timing", kind = "choice", queue_ms,
+                request_ms = started.elapsed().as_millis(), success = response.is_ok());
+            let probabilities = response?
                 .answers
                 .remove("selection")
                 .and_then(|answer| answer.probabilities)
@@ -137,8 +145,15 @@ impl Decider {
                 if batch.is_empty() {
                     break;
                 }
+                let queued = Instant::now();
                 let _permit = self.in_flight.acquire().await?;
-                scores.extend(self.noul_batch(state, batch, timeout).await?);
+                let queue_ms = queued.elapsed().as_millis();
+                let started = Instant::now();
+                let count = batch.len();
+                let response = self.noul_batch(state, batch, timeout).await;
+                tracing::info!(target: "decider_timing", kind = "noul", count, queue_ms,
+                    request_ms = started.elapsed().as_millis(), success = response.is_ok());
+                scores.extend(response?);
             }
             Ok::<_, color_eyre::Report>(scores)
         })

@@ -24,9 +24,6 @@ pub struct Config {
     /// Channels whose topic is occasionally replaced with a recent message.
     #[arg(long, env, value_delimiter = ',')]
     pub rename_channels: Vec<u64>,
-    /// Subreddits that random images are pulled from.
-    #[arg(long, env, value_delimiter = ',')]
-    pub shit_reddits: Vec<String>,
     #[arg(short, long, env, default_value = "I am tricked bot!")]
     pub status: String,
     #[arg(long, env)]
@@ -118,7 +115,6 @@ mod tests {
     fn lists_are_comma_separated_and_optional() {
         let cfg = Config::parse_from(["bot", "--token", "t", "--discord", "1", "--rename-channels", "1,2"]);
         assert_eq!(cfg.rename_channels, [1, 2]);
-        assert_eq!(cfg.shit_reddits, [] as [std::string::String; 0]);
         assert_eq!(cfg.decider_reply_mode, ReplyMode::Off);
     }
 }

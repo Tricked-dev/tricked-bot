@@ -33,7 +33,8 @@ pub fn reply() -> Question {
          message a moment where a short unprompted reply from The Trickster would land well — a question left open \
          to the room, a claim begging for a witty correction, a joke setup, or talk about the bot? Answer false for \
          private back-and-forth between others, serious or sensitive topics, bare links or media, and small talk \
-         that needs no reply.",
+         that needs no reply. Also stay quiet for acknowledgements, closing reactions, requests to stop, \
+         and people discussing the bot with each other. Talking about the bot alone is not a reason to interrupt.",
         "yes: jumping in now would be natural and welcome",
         "no: stay quiet",
     )
@@ -41,15 +42,21 @@ pub fn reply() -> Question {
 
 pub fn followup() -> Question {
     Question::noul(
-        "The Trickster is the bot speaking in this chat. Does the last human message continue an exchange \
-         with the bot? Focus on its most recent remark and the messages after it. A short reaction or request \
-         for clarification immediately after the bot's remark, such as '??', 'huh', or 'what do you mean', \
-         is a response even without a mention or reply link. Answers, thanks, disagreement, and criticism \
-         of the bot also count. 'You' or 'the bot' can refer to The Trickster. A different participant can \
-         join the exchange. Answer false when no bot remark appears, the topic has moved on, or the message \
-         answers another human. Do not require a complete sentence or an explicit bot name.",
-        "yes: this is a reaction or response to the bot",
-        "no: this is unrelated or addressed to another human",
+        "Does the last human message warrant a response from The Trickster, the server bot? \
+         TRUE: a question or request addressed to the bot, a correction it should address, clarification \
+         ('??', 'huh', 'what do you mean'), an answer to a question it just asked, or playful banter inviting \
+         a comeback. Mentions and reply links are optional; infer the addressee from the exchange. \
+         FALSE: acknowledgements ('true', 'peak', 'that's funny', 'thanks', 'looks good enough'), closing \
+         remarks, complaints that it talks too much, requests to stop, and conversation between humans. \
+         An answer to another human's question is FALSE even when the topic is the bot. A person adding to \
+         their own account ('I added caching' then 'or at least it said it did') is also FALSE. \
+         Merely referring to the bot does not warrant a reply. Discussion of other AI tools, coding agents, \
+         prompts or implementations is not an exchange with The Trickster unless the human addresses it. \
+         Crucially, a short clarification such as '??' IS a request for an answer, even after a joke. \
+         A one-word answer such as 'nixos' to the bot's 'which distro?' IS a continuation, not an acknowledgement. \
+         A correction directed at the bot IS worth addressing, even if other AI tools were discussed earlier.",
+        "yes: a question, request, clarification, answer to the bot's question, correction, or invited banter",
+        "no: acknowledgement, closing remark, or conversation not addressed to the bot",
     )
 }
 

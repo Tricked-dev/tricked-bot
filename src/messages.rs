@@ -5,9 +5,8 @@ use std::{sync::Arc, time::Duration};
 use color_eyre::Result;
 use rand::{
     random_range, random_ratio,
-    seq::{IndexedRandom, IteratorRandom, SliceRandom},
+    seq::{IteratorRandom, SliceRandom},
 };
-use serde::Deserialize;
 use twilight_model::{
     channel::Message,
     http::attachment::Attachment,
@@ -139,9 +138,6 @@ pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest, direct: bool
         words.shuffle(&mut rand::rng());
         return Ok(Response::text(words.join(" ")).reply());
     }
-    if !bot.config.shit_reddits.is_empty() && random_ratio(1, 80) {
-        return Ok(reddit_image(bot).await?.map_or(Response::Nothing, Response::text));
-    }
     if let Some(expr) = lower.strip_prefix("qalc ").or_else(|| lower.strip_prefix("calc ")) {
         return Ok(Response::text(qalc::answer(expr).await).reply());
     }
@@ -195,44 +191,6 @@ fn random_member_name(bot: &Bot, guild: Id<GuildMarker>) -> Option<String> {
     let &victim = bot.cache.guild_members(guild)?.iter().choose(&mut rand::rng())?;
     let nick = bot.cache.member(guild, victim).and_then(|member| member.nick().map(str::to_owned));
     nick.or_else(|| bot.cache.user(victim).map(|user| user.name.clone()))
-}
-
-#[derive(Deserialize)]
-struct Listing {
-    data: ListingData,
-}
-
-#[derive(Deserialize)]
-struct ListingData {
-    children: Vec<Post>,
-}
-
-#[derive(Deserialize)]
-struct Post {
-    data: PostData,
-}
-
-#[derive(Deserialize)]
-struct PostData {
-    url_overridden_by_dest: Option<String>,
-    over_18: bool,
-}
-
-/// A random safe-for-work image post from one of the configured subreddits.
-async fn reddit_image(bot: &Bot) -> Result<Option<String>> {
-    let Some(subreddit) = bot.config.shit_reddits.choose(&mut rand::rng()) else {
-        return Ok(None);
-    };
-    let listing: Listing =
-        bot.web.get(format!("https://www.reddit.com/r/{subreddit}/.json")).send().await?.json().await?;
-    Ok(listing
-        .data
-        .children
-        .into_iter()
-        .filter(|post| !post.data.over_18)
-        .filter_map(|post| post.data.url_overridden_by_dest)
-        .filter(|url| url.contains("i."))
-        .choose(&mut rand::rng()))
 }
 
 #[cfg(test)]

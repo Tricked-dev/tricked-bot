@@ -29,6 +29,8 @@ nix run                # or: docker compose up
 
 `ffmpeg` and `qalc` need to be on the `PATH`; the Nix package and Docker image include them.
 
+Reply diagnostics use `ai_timing` records keyed by `msg_id`: responder work, memory database access and shortlist, recall, profile/media preparation, stream headers, first content delta, first Discord post, and completion. `latency_ms` measures that stage; `source_age_ms` measures time since the source message was created (so edits of old messages have an older source age). Parallel stages overlap. `decider_timing` separates queue wait from service request time.
+
 ## Tech
 
 * [twilight](https://github.com/twilight-rs/twilight) for Discord, PostgreSQL for storage

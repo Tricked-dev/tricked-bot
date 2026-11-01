@@ -7,7 +7,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use color_eyre::{Result, eyre::eyre};
@@ -19,7 +19,7 @@ use twilight_model::id::{
     marker::{ChannelMarker, MessageMarker, UserMarker},
 };
 
-use super::{AiRequest, gif, output, predictions, prompt, recall, refusal};
+use super::{AiRequest, gif, output, predictions, prompt, recall, refusal, timing};
 use crate::{bot::Bot, db};
 
 /// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
@@ -34,7 +34,7 @@ const AI_ERROR: &str = "AI Error";
 
 #[derive(Debug, Default)]
 struct PostedState {
-    id: Option<Id<MessageMarker>>,
+    ids: Vec<Id<MessageMarker>>,
     cancelled: bool,
 }
 
@@ -92,18 +92,18 @@ impl ReplyTasks {
     }
 }
 
-/// Aborts an unfinished reply and deletes whatever part of it was already posted, returning that part.
-fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) -> Option<Id<MessageMarker>> {
+/// Aborts an unfinished reply and deletes whatever part of it was already posted, returning their IDs.
+fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) -> Vec<Id<MessageMarker>> {
     let posted = {
         let mut state = entry.posted.lock().unwrap();
         state.cancelled = true;
-        state.id.take()
+        std::mem::take(&mut state.ids)
     };
     entry.abort.abort();
-    if let Some(posted) = posted {
-        let bot = Arc::clone(bot);
+    for id in &posted {
+        let (bot, id) = (Arc::clone(bot), *id);
         tokio::spawn(async move {
-            let _ = bot.http.delete_message(channel, posted).await;
+            let _ = bot.http.delete_message(channel, id).await;
         });
     }
     posted
@@ -168,7 +168,9 @@ pub fn submit(bot: &Arc<Bot>, req: &AiRequest, start_new: bool) -> bool {
 
 async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation: u64) {
     let key = (req.channel_id, req.user_id);
-    let result = reply(&bot, &req, &posted, generation).await;
+    let started = Instant::now();
+    let result = Box::pin(reply(&bot, &req, &posted, generation)).await;
+    timing::record(req.message_id, "reply_total", started);
     if let Err(error) = result {
         tracing::error!(target: "decider", kind = "reply", msg_id = %req.message_id, "AI reply failed: {error}");
         post(
@@ -176,7 +178,6 @@ async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation:
             req.channel_id,
             req.message_id,
             Some(format!("{AI_ERROR}: reply or memory recall unavailable.")),
-            Vec::new(),
             &posted,
         )
         .await;
@@ -196,10 +197,14 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
         db::ensure_user(&bot.db, req.user_id.get(), &req.user_name).await?;
         db::user(&bot.db, req.user_id.get()).await
     };
-    let (memories, user, turn) = tokio::try_join!(recall::select(bot, req), user, prompt::user_turn(bot, req))?;
+    let (memories, user, turn) = tokio::try_join!(
+        timing::measure(req.message_id, "recall", recall::select(bot, req)),
+        timing::measure(req.message_id, "profile", user),
+        timing::measure(req.message_id, "media", prompt::user_turn(bot, req)),
+    )?;
     let request =
         prompt::build_request(&bot.config, req, user.as_ref(), &memories, turn, &bot.config.openrouter_model)?;
-    let deltas = ai.stream(&request, REPLY_TIMEOUT).await?;
+    let deltas = timing::measure(req.message_id, "stream_headers", ai.stream(&request, REPLY_TIMEOUT)).await?;
     let streamed = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted_slot).await;
     // New messages leave completed text alone, but deleting its source still cancels GIF lookup and side effects.
     bot.replies.complete((req.channel_id, req.user_id), generation);
@@ -207,10 +212,9 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
         return Ok(());
     };
     let directives = output::directives(&raw);
-    let posted_id = posted.as_ref().map(|(id, _)| *id);
     let gif = async {
         if let Some(query) = &directives.gif {
-            attach_gif(bot, req, posted_id, query, posted_slot).await;
+            attach_gif(bot, req, query, posted_slot).await;
         }
     };
     let prediction = async {
@@ -225,14 +229,8 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
     Ok(())
 }
 
-/// Adds the GIF found for `query` to the posted reply, or posts it as the reply when the model sent only the GIF.
-async fn attach_gif(
-    bot: &Bot,
-    req: &AiRequest,
-    posted: Option<Id<MessageMarker>>,
-    query: &str,
-    slot: &Arc<PostedSlot>,
-) {
+/// Sends the GIF as a separate message containing only its URL, leaving the text reply untouched.
+async fn attach_gif(bot: &Bot, req: &AiRequest, query: &str, slot: &Arc<PostedSlot>) {
     if bot.config.disable_gifs {
         return;
     }
@@ -247,16 +245,7 @@ async fn attach_gif(
             return;
         }
     };
-    let embeds = [gif::embed(url)];
-    let sent = if let Some(id) = posted {
-        bot.http.update_message(req.channel_id, id).embeds(Some(&embeds)).await.map(drop)
-    } else {
-        post(&bot.http, req.channel_id, req.message_id, None, embeds.to_vec(), slot).await;
-        return;
-    };
-    if let Err(error) = sent {
-        tracing::warn!(target: "gifs", msg_id = %req.message_id, "Posting GIF failed: {error}");
-    }
+    post(&bot.http, req.channel_id, req.message_id, Some(url), slot).await;
 }
 
 /// A reply stream that ran to the end.
@@ -279,6 +268,8 @@ async fn stream_to_discord(
     posted_slot: &Arc<PostedSlot>,
 ) -> Option<Streamed> {
     let mut deltas = pin!(deltas);
+    let started = Instant::now();
+    let mut first_delta = true;
     let mut raw = String::new();
     let mut failure = None;
     let mut changed = false;
@@ -289,6 +280,10 @@ async fn stream_to_discord(
         let (finished, edit_due) = tokio::select! {
             next = deltas.next() => match next {
                 Some(Ok(delta)) => {
+                    if first_delta && !delta.is_empty() {
+                        timing::record(reply_to, "first_delta", started);
+                        first_delta = false;
+                    }
                     raw.push_str(&delta);
                     changed = true;
                     (false, false)
@@ -317,14 +312,19 @@ async fn stream_to_discord(
                             changed = true;
                         }
                     }
-                } else {
-                    let id = post(http, channel_id, reply_to, Some(text.clone()), Vec::new(), posted_slot).await?;
+                } else if finished || text.split_whitespace().count() >= 2 || text.ends_with(char::is_whitespace) {
+                    let id = post(http, channel_id, reply_to, Some(text.clone()), posted_slot).await?;
+                    timing::record(reply_to, "first_post", started);
                     message_id = Some(id);
                     last_sent = text;
+                } else {
+                    // Keep a partial first word pending so completion flushes a one-word reply too.
+                    changed = true;
                 }
             }
         }
         if finished {
+            timing::record(reply_to, "stream_total", started);
             return failure.is_none().then(|| Streamed { posted: message_id.map(|id| (id, last_sent)), raw });
         }
     }
@@ -337,7 +337,6 @@ async fn post(
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
     text: Option<String>,
-    embeds: Vec<twilight_model::channel::message::Embed>,
     slot: &Arc<PostedSlot>,
 ) -> Option<Id<MessageMarker>> {
     let (http, slot) = (Arc::clone(http), Arc::clone(slot));
@@ -345,7 +344,7 @@ async fn post(
         if slot.lock().unwrap().cancelled {
             return None;
         }
-        let mut request = http.create_message(channel_id).reply(reply_to).embeds(&embeds);
+        let mut request = http.create_message(channel_id).reply(reply_to);
         if let Some(text) = &text {
             request = request.content(text);
         }
@@ -360,7 +359,7 @@ async fn post(
             if state.cancelled {
                 true
             } else {
-                state.id = Some(message.id);
+                state.ids.push(message.id);
                 false
             }
         };
@@ -445,6 +444,34 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), deleted.notified())
             .await
             .expect("a POST that finishes after cancellation must be deleted");
+    }
+
+    #[tokio::test]
+    async fn text_and_gif_are_separate_posts_and_both_are_tracked() {
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+        let captured = Arc::clone(&seen);
+        let app = Router::new().fallback(any(move |method: Method, Json(body): Json<Value>| {
+            let seen = Arc::clone(&captured);
+            async move {
+                assert_eq!(method, Method::POST);
+                assert!(body.get("embeds").is_none());
+                let content = body["content"].as_str().unwrap().to_owned();
+                let mut seen = seen.lock().await;
+                seen.push(body);
+                Json(serde_json::to_value(message(40 + seen.len() as u64, 3, "bot", &content)).unwrap())
+            }
+        }));
+        let address = crate::test_util::serve(app).await;
+        let http = Arc::new(
+            HttpClient::builder().token("test-token".into()).proxy(address.to_string(), true).ratelimiter(None).build(),
+        );
+        let slot = Arc::default();
+        post(&http, Id::new(1), Id::new(10), Some("skill issue".into()), &slot).await.unwrap();
+        post(&http, Id::new(1), Id::new(10), Some("https://example.com/reaction.gif".into()), &slot).await.unwrap();
+        let seen = seen.lock().await;
+        assert_eq!(seen[0]["content"], "skill issue");
+        assert_eq!(seen[1]["content"], "https://example.com/reaction.gif");
+        assert_eq!(slot.lock().unwrap().ids, [Id::new(41), Id::new(42)]);
     }
 
     type Seen = Arc<tokio::sync::Mutex<Vec<String>>>;
@@ -541,24 +568,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_post_waits_for_a_word_boundary_instead_of_a_letter() {
+        let (_, requests) = run_stream(deltas(&["h", "e", "llo ", "there"])).await;
+        assert_eq!(requests, ["hello ", "hello there"]);
+        let (_, requests) = run_stream(deltas(&["h", "i"])).await;
+        assert_eq!(requests, ["hi"], "a finished one-word reply must still be sent");
+    }
+
+    #[tokio::test]
     async fn completed_stream_flushes_final_text() {
         let (result, requests) = run_stream(deltas(&["Hi", " there"])).await;
         assert_eq!(result.unwrap().posted.unwrap().1, "hi there");
-        assert_eq!(requests, ["hi", "hi there"]);
+        assert_eq!(requests, ["hi there"]);
     }
 
     #[tokio::test]
     async fn failed_final_edit_returns_last_successfully_posted_text() {
-        let (result, _) = run_stream(deltas(&["Hi", " final failure"])).await;
-        assert_eq!(result.unwrap().posted.unwrap().1, "hi");
+        let (result, _) = run_stream(deltas(&["Hi ", "final failure"])).await;
+        assert_eq!(result.unwrap().posted.unwrap().1.trim(), "hi");
     }
 
     #[tokio::test]
     async fn stream_error_replaces_the_reply_and_reports_no_reply() {
-        let mut stream = deltas(&["Hi"]);
+        let mut stream = deltas(&["Hi "]);
         stream.push(Err(eyre!("overloaded")));
         let (result, requests) = run_stream(stream).await;
         assert!(result.is_none());
-        assert_eq!(requests, ["hi", "AI Error: overloaded"]);
+        assert_eq!(requests, ["hi ", "AI Error: overloaded"]);
     }
 }

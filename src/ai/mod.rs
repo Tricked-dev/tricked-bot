@@ -14,6 +14,7 @@ pub mod prompt;
 pub mod recall;
 pub mod refusal;
 pub mod reply;
+pub mod timing;
 
 use std::collections::HashMap;
 

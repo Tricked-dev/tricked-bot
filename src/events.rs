@@ -94,7 +94,7 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     let req = bot.snapshot(msg);
     // A newer message from someone still waiting on a reply restarts it, whether or not it pings the bot.
     let restarted = ai::reply::submit(bot, &req, false);
-    let response = messages::handle(bot, msg, &req, direct).await;
+    let response = ai::timing::measure(msg.id, "responders", messages::handle(bot, msg, &req, direct)).await;
     // Dispatch before sending a responder result, so even failed sends retain the durable check.
     let answered = restarted || direct || response.as_ref().map_or(true, |response| *response != Response::Nothing);
     let ask_reply = !answered && bot.ai.is_some() && bot.config.decider_reply_mode != ReplyMode::Off;

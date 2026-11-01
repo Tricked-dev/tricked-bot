@@ -6,7 +6,6 @@ use std::time::Duration;
 use color_eyre::{Result, eyre::eyre};
 use rand::seq::IndexedRandom;
 use serde::Deserialize;
-use twilight_model::channel::message::{Embed, embed::EmbedImage};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const NEKOS: &str = "https://nekos.best/api/v2";
@@ -154,25 +153,6 @@ fn klipy_urls(response: KlipyResponse) -> Vec<String> {
         .filter_map(|gif| [gif.file.md, gif.file.hd].into_iter().flatten().find_map(|sizes| sizes.gif))
         .map(|file| file.url)
         .collect()
-}
-
-/// An embed that shows just the GIF.
-pub fn embed(url: String) -> Embed {
-    Embed {
-        author: None,
-        color: None,
-        description: None,
-        fields: Vec::new(),
-        footer: None,
-        image: Some(EmbedImage { height: None, proxy_url: None, url, width: None }),
-        kind: "rich".into(),
-        provider: None,
-        thumbnail: None,
-        timestamp: None,
-        title: None,
-        url: None,
-        video: None,
-    }
 }
 
 #[cfg(test)]

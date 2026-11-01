@@ -4,7 +4,7 @@ use std::{cmp::Reverse, collections::HashMap, time::Duration};
 
 use color_eyre::{Result, eyre::eyre};
 
-use super::{AiRequest, embeddings};
+use super::{AiRequest, embeddings, timing};
 use crate::{
     bot::Bot,
     db::{self, Memory},
@@ -106,7 +106,7 @@ async fn similarity(bot: &Bot, req: &AiRequest) -> Result<HashMap<i64, f32>> {
 /// Shortlists memories by embedding similarity, then has the decider rank their names and content snippets. Full
 /// content is used only in the final reply prompt.
 pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Vec<Memory>> {
-    let mut memories = db::memories(&bot.db, req.user_id.get()).await?;
+    let mut memories = timing::measure(req.message_id, "memory_db", db::memories(&bot.db, req.user_id.get())).await?;
     if memories.is_empty() {
         return Ok(memories);
     }
@@ -114,7 +114,7 @@ pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Vec<Memory>> {
     let started = std::time::Instant::now();
     memories.sort_by_key(|m| Reverse(m.id));
     if memories.len() > SHORTLIST {
-        memories = match similarity(bot, req).await {
+        memories = match timing::measure(req.message_id, "memory_shortlist", similarity(bot, req)).await {
             Ok(similarity) => shortlist(memories, &similarity),
             Err(error) => {
                 tracing::warn!(target: "decider", kind = "recall", msg_id = %req.message_id,
