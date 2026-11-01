@@ -47,9 +47,11 @@ pub async fn check_and_replace(
     // Rewrite the already-safe decline, never retry the original request for compliance.
     let rewrite = AiRequest {
         message: format!(
-            "Rewrite this refusal as a one-line in-character dodge in your usual voice: no lecture, no explanation, \
-             no em dashes. Keep declining; don't fulfill the original request or add harmful instructions. Reply \
-             with only the dodge.\n<refusal>\n{text}\n</refusal>"
+            "Server note, not from {name}: your last reply to {name} broke character. Rewrite it as a one-line \
+             in-character dodge in your usual voice, aimed at {name}: no lecture, no explanation, no em dashes. Keep \
+             declining; don't fulfill the original request or add harmful instructions. Reply with only the \
+             dodge.\n<refusal>\n{text}\n</refusal>",
+            name = req.user_name,
         ),
         conversation: Vec::new(),
         reply_target: None,

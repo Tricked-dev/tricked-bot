@@ -206,9 +206,9 @@ pub async fn maybe_start(bot: &Bot, msg: &Message) -> Option<Response> {
 }
 
 const MATH_PROMPTS: [&str; 3] = [
-    "Generate a simple mental math expression that can be solved in your head. Use basic operations like addition, subtraction, multiplication, or division with small numbers (prefer numbers under 20, maximum 100). Output ONLY the mathematical expression, nothing else. Examples: {examples}",
-    "Create an easy math problem with 2-4 numbers that someone can calculate mentally. Use addition, subtraction, multiplication, or simple division. Keep numbers small and friendly (single or double digits preferred). Output ONLY the expression. Examples: {examples}",
-    "Write a simple arithmetic calculation using small, friendly numbers that can be computed without a calculator. Stick to basic operations (+, -, *, /). Output ONLY the math expression. Examples: {examples}",
+    "Generate a simple mental math expression that can be solved in your head. Use basic operations like addition, subtraction, multiplication, or division with small numbers (prefer numbers under 20, maximum 100). Examples: {examples}",
+    "Create an easy math problem with 2-4 numbers that someone can calculate mentally. Use addition, subtraction, multiplication, or simple division. Keep numbers small and friendly (single or double digits preferred). Examples: {examples}",
+    "Write a simple arithmetic calculation using small, friendly numbers that can be computed without a calculator. Stick to basic operations (+, -, *, /). Examples: {examples}",
 ];
 
 /// Four random example expressions so each prompt nudges the model somewhere new.
@@ -252,7 +252,7 @@ async fn math_question(bot: &Bot) -> Result<(String, f64)> {
                     Role::System,
                     "You generate simple arithmetic expressions for mental math challenges. Use only whole numbers, \
                      spaces, parentheses and the operators + - * /. Reply with only the expression: no answer, \
-                     no equals sign, no explanation, no other text.",
+                     no equals sign, no markdown, no trailing period. Any division must come out to a whole number.",
                 ),
                 ChatMessage::new(Role::User, prompt),
             ],
@@ -261,7 +261,10 @@ async fn math_question(bot: &Bot) -> Result<(String, f64)> {
             ..Default::default()
         };
         let question = match ai.complete(&request, Duration::from_secs(30)).await {
-            Ok(question) => question,
+            // Models like to wrap the expression in markdown or end it with a full stop.
+            Ok(question) => {
+                question.trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '`' | '*' | '.')).to_owned()
+            }
             Err(error) => {
                 tracing::warn!("Math question generation failed on attempt {attempt}: {error:?}");
                 continue;

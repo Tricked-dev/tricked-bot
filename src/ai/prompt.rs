@@ -48,8 +48,19 @@ const VIBE: &[(&str, &str)] = &[
 const SECTION_TAGS: usize = 256;
 
 /// Tags the prompt itself uses. Untrusted text can't open or close them.
-const TAGS: &[&str] =
-    &["context", "relationship", "memories", "recent_conversation", "reply_target", "current_message"];
+/// Covers the memory extractor's input too.
+const TAGS: &[&str] = &[
+    "context",
+    "relationship",
+    "memories",
+    "recent_conversation",
+    "reply_target",
+    "current_message",
+    "author",
+    "message",
+    "conversation",
+    "existing_memories",
+];
 
 /// `text` with the prompt's own tags turned harmless so a message can't fake or escape its section, or `None` when it
 /// has none.
@@ -72,7 +83,7 @@ fn defang(text: &str) -> Option<String> {
     Some(out)
 }
 
-fn defanged(text: &str) -> Cow<'_, str> {
+pub fn defanged(text: &str) -> Cow<'_, str> {
     defang(text).map_or(Cow::Borrowed(text), Cow::Owned)
 }
 
