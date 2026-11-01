@@ -15,6 +15,7 @@ pub mod recall;
 pub mod refusal;
 pub mod reply;
 pub mod timing;
+pub mod voice;
 
 use std::collections::HashMap;
 
@@ -44,6 +45,8 @@ pub struct AiRequest {
     pub channel_id: Id<ChannelMarker>,
     pub message_id: Id<MessageMarker>,
     pub message: String,
+    /// Original gateway content, independent of the transcript used by the models.
+    pub source_text: String,
     pub media: Vec<media::MediaSource>,
     /// Earlier channel messages as `name: text` lines, oldest first.
     pub conversation: Vec<String>,
@@ -101,7 +104,7 @@ impl Bot {
                 } else {
                     author.to_string()
                 };
-                transcript_line(&name, message.content())
+                transcript_line(&name, &self.voice.content(message.id().get(), message.content()))
             })
             .collect()
     }
@@ -118,14 +121,15 @@ impl Bot {
                 user_mentions.insert(reference.author.name.clone(), reference.author.id);
                 &reference.author.name
             };
-            transcript_line(name, &reference.content)
+            transcript_line(name, &self.voice.content(reference.id.get(), &reference.content))
         });
         AiRequest {
             user_id: msg.author.id,
             user_name: msg.author.name.clone(),
             channel_id: msg.channel_id,
             message_id: msg.id,
-            message: msg.content.chars().take(MESSAGE_CHARS).collect(),
+            message: self.voice.content(msg.id.get(), &msg.content).chars().take(MESSAGE_CHARS).collect(),
+            source_text: msg.content.clone(),
             media: media::sources(msg),
             conversation,
             reply_target,
@@ -148,6 +152,7 @@ pub mod tests {
             channel_id: Id::new(1),
             message_id: Id::new(3),
             message: message.into(),
+            source_text: message.into(),
             media: Vec::new(),
             conversation: Vec::new(),
             reply_target: None,

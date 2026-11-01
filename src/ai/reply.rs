@@ -19,7 +19,7 @@ use twilight_model::id::{
     marker::{ChannelMarker, MessageMarker, UserMarker},
 };
 
-use super::{AiRequest, gif, output, predictions, prompt, recall, refusal, timing};
+use super::{AiRequest, gif, output, predictions, prompt, recall, refusal, timing, voice};
 use crate::{bot::Bot, db};
 
 /// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
@@ -217,7 +217,7 @@ async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation:
 
 /// A missing or edited cached source must never trigger work from an old decision snapshot.
 pub fn is_current(bot: &Bot, req: &AiRequest) -> bool {
-    bot.cache.message(req.message_id).is_some_and(|message| message.content() == req.message)
+    bot.cache.message(req.message_id).is_some_and(|message| message.content() == req.source_text)
 }
 
 async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, generation: u64) -> Result<()> {
@@ -252,7 +252,14 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
             predictions::store(bot, req, prediction).await;
         }
     };
-    tokio::join!(gif, prediction);
+    // Post extras in order: the text owns the reply header, otherwise only the first extra does.
+    gif.await;
+    let audio = async {
+        if let Some(text) = &directives.voice {
+            attach_voice(bot, req, text, posted_slot).await;
+        }
+    };
+    tokio::join!(audio, prediction);
     if let Some(posted) = posted {
         refusal::check_and_replace(bot, req, user.as_ref(), &memories, posted).await;
     }
@@ -276,6 +283,38 @@ async fn attach_gif(bot: &Bot, req: &AiRequest, query: &str, text_posted: bool, 
         }
     };
     post_gif(&bot.http, req.channel_id, req.message_id, text_posted, url, slot).await;
+}
+
+async fn attach_voice(bot: &Bot, req: &AiRequest, text: &str, slot: &Arc<PostedSlot>) {
+    if bot.config.disable_voice || bot.config.openrouter_tts_model.is_empty() {
+        return;
+    }
+    let clip = match timing::measure(req.message_id, "tts", voice::synthesize(bot, text)).await {
+        Ok(clip) => clip,
+        Err(error) => {
+            tracing::warn!(target: "voice", msg_id = %req.message_id, %error, "Voice synthesis failed");
+            if slot.lock().unwrap().ids.is_empty() {
+                post(&bot.http, req.channel_id, Some(req.message_id), Some(output::discord_text(text)), slot).await;
+            }
+            return;
+        }
+    };
+    let spoken = clip.text.clone();
+    let reply_to = slot.lock().unwrap().ids.is_empty().then_some(req.message_id);
+    if let Some(id) = post_inner(&bot.http, req.channel_id, reply_to, None, Some(clip), slot).await {
+        bot.voice.remember(id.get(), spoken.clone());
+        if let Err(error) =
+            db::save_spoken_text(&bot.db, id.get(), req.channel_id.get(), &spoken, &bot.config.openrouter_tts_model)
+                .await
+        {
+            tracing::warn!(target: "voice", msg_id = %id, %error, "Saving generated speech text failed");
+        }
+    } else {
+        let empty = slot.lock().unwrap().ids.is_empty();
+        if empty {
+            post(&bot.http, req.channel_id, Some(req.message_id), Some(output::discord_text(text)), slot).await;
+        }
+    }
 }
 
 /// Only a GIF-only response gets a reply header; a GIF accompanying text is a plain follow-on message.
@@ -381,19 +420,39 @@ async fn post(
     text: Option<String>,
     slot: &Arc<PostedSlot>,
 ) -> Option<Id<MessageMarker>> {
+    post_inner(http, channel_id, reply_to, text, None, slot).await
+}
+
+async fn post_inner(
+    http: &Arc<HttpClient>,
+    channel_id: Id<ChannelMarker>,
+    reply_to: Option<Id<MessageMarker>>,
+    text: Option<String>,
+    voice: Option<voice::VoiceClip>,
+    slot: &Arc<PostedSlot>,
+) -> Option<Id<MessageMarker>> {
     let (http, slot) = (Arc::clone(http), Arc::clone(slot));
     tokio::spawn(async move {
         if slot.lock().unwrap().cancelled {
             return None;
         }
-        let mut request = http.create_message(channel_id);
-        if let Some(reply_to) = reply_to {
-            request = request.reply(reply_to);
+        let response = if let Some(clip) = &voice {
+            let request = voice::upload_request(channel_id.get(), reply_to.map(Id::get), clip)
+                .inspect_err(|error| tracing::warn!(%error, "Building voice message failed"))
+                .ok()?;
+            http.request::<twilight_model::channel::Message>(request).await
+        } else {
+            let mut request = http.create_message(channel_id);
+            if let Some(reply_to) = reply_to {
+                request = request.reply(reply_to);
+            }
+            if let Some(text) = &text {
+                request = request.content(text);
+            }
+            request.await
         }
-        if let Some(text) = &text {
-            request = request.content(text);
-        }
-        let response = request.await.inspect_err(|error| tracing::warn!("AI initial message failed: {error}")).ok()?;
+        .inspect_err(|error| tracing::warn!("AI initial message failed: {error}"))
+        .ok()?;
         let message = response
             .model()
             .await
@@ -538,6 +597,32 @@ mod tests {
             .unwrap();
         let seen = seen.lock().await;
         assert_eq!(seen[2]["message_reference"]["message_id"], "20");
+    }
+
+    #[tokio::test]
+    async fn native_voice_post_keeps_mime_metadata_and_tracking_through_the_http_client() {
+        let app = Router::new().fallback(any(|headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
+            assert!(headers["content-type"].to_str().unwrap().starts_with("multipart/form-data; boundary="));
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(body.contains("Content-Type: audio/ogg"));
+            assert!(body.contains("\"flags\":8192"));
+            assert!(body.contains("\"duration_secs\":1.0"));
+            assert!(!body.contains("message_reference"));
+            Json(serde_json::to_value(message(42, 3, "bot", "")).unwrap())
+        }));
+        let address = crate::test_util::serve(app).await;
+        let http = Arc::new(
+            HttpClient::builder().token("test-token".into()).proxy(address.to_string(), true).ratelimiter(None).build(),
+        );
+        let slot = Arc::default();
+        let clip = voice::VoiceClip {
+            bytes: b"OggS-fixture".to_vec(),
+            duration: 1.0,
+            waveform: "AA==".into(),
+            text: "hello".into(),
+        };
+        assert_eq!(post_inner(&http, Id::new(1), None, None, Some(clip), &slot).await, Some(Id::new(42)));
+        assert_eq!(slot.lock().unwrap().ids, [Id::new(42)]);
     }
 
     type Seen = Arc<tokio::sync::Mutex<Vec<String>>>;

@@ -13,7 +13,7 @@ use twilight_model::id::{
 };
 
 use crate::{
-    ai::{memory::AuthorLocks, openrouter::OpenRouter, reply::ReplyTasks},
+    ai::{memory::AuthorLocks, openrouter::OpenRouter, reply::ReplyTasks, voice::VoiceState},
     config::Config,
     currency::CurrencyRates,
     decider::{Decider, cooldown::Cooldown, reply_gate::ReplyGate},
@@ -48,6 +48,7 @@ pub struct Bot {
     /// When each channel last got a ruling or poll.
     pub ruling_cooldown: Mutex<Cooldown>,
     pub replies: ReplyTasks,
+    pub voice: VoiceState,
     pub memory_locks: AuthorLocks,
     pub quizzes: Mutex<HashMap<Id<ChannelMarker>, PendingQuiz>>,
     /// Minimum time between two channel topic changes.
@@ -93,6 +94,7 @@ impl Bot {
             note_cooldown: Mutex::default(),
             ruling_cooldown: Mutex::default(),
             replies: ReplyTasks::default(),
+            voice: VoiceState::default(),
             memory_locks: AuthorLocks::default(),
             quizzes: Mutex::default(),
             topic_limit: RateLimit::new(Duration::from_secs(150), 1),

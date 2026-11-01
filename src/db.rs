@@ -5,7 +5,7 @@ use postgres_from_row::FromRow;
 use crate::levels::xp_required_for_level;
 
 /// Every migration is idempotent and re-applied on startup, in order.
-const MIGRATIONS: [&str; 7] = [
+const MIGRATIONS: [&str; 8] = [
     include_str!("../migrations/001_init.sql"),
     include_str!("../migrations/002_improve_types.sql"),
     include_str!("../migrations/004_memory_archive.sql"),
@@ -13,6 +13,7 @@ const MIGRATIONS: [&str; 7] = [
     include_str!("../migrations/006_memory_embeddings.sql"),
     include_str!("../migrations/007_predictions.sql"),
     include_str!("../migrations/008_prediction_delivery.sql"),
+    include_str!("../migrations/009_voice_transcripts.sql"),
 ];
 
 const USER_COLUMNS: &str = r"id, level, xp, name, relationship, example_input, example_output";
@@ -375,6 +376,42 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL; creates and drops its own schema"]
+    async fn voice_transcripts_claim_once_and_survive_new_connections() {
+        let (pool, schema) = scratch_pool().await;
+        run_migrations(&pool).await.unwrap();
+        let claims = futures_util::future::join_all((0..8).map(|_| claim_voice(&pool, 10, 20, 30, "stt"))).await;
+        assert_eq!(claims.into_iter().filter(|r| *r.as_ref().unwrap()).count(), 1);
+        finish_voice(&pool, 10, Some("hello from audio")).await.unwrap();
+        let mut config: tokio_postgres::Config = std::env::var("TEST_DATABASE_URL").unwrap().parse().unwrap();
+        config.options(format!("-c search_path={schema}"));
+        let restarted = Pool::builder(deadpool_postgres::Manager::new(config, tokio_postgres::NoTls)).build().unwrap();
+        assert!(!claim_voice(&restarted, 10, 20, 30, "another-model").await.unwrap());
+        assert_eq!(voice_transcript(&restarted, 10).await.unwrap(), Some(("ready".into(), "hello from audio".into())));
+        assert_eq!(channel_voice_transcripts(&restarted, 30).await.unwrap(), [(10, "hello from audio".into())]);
+        assert!(claim_voice(&pool, 11, 21, 30, "stt").await.unwrap());
+        finish_voice(&pool, 11, None).await.unwrap();
+        assert!(!claim_voice(&pool, 11, 21, 30, "stt").await.unwrap());
+        assert_eq!(voice_transcript(&pool, 11).await.unwrap().unwrap().0, "failed");
+        assert!(claim_voice(&pool, 12, 22, 30, "stt").await.unwrap());
+        pool.get()
+            .await
+            .unwrap()
+            .execute(
+                "UPDATE voice_transcript SET created_at = now() - interval '10 minutes' WHERE message_id = 12",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(voice_transcript(&pool, 12).await.unwrap().unwrap().0, "failed");
+        assert!(!claim_voice(&pool, 12, 22, 30, "stt").await.unwrap());
+        save_spoken_text(&pool, 13, 30, "known spoken words", "tts").await.unwrap();
+        assert!(!claim_voice(&pool, 13, 0, 30, "stt").await.unwrap());
+        assert_eq!(voice_transcript(&pool, 13).await.unwrap().unwrap().1, "known spoken words");
+        pool.get().await.unwrap().batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL; creates and drops its own schema"]
     async fn claiming_predictions_retains_them_until_delivery() {
         let (pool, schema) = scratch_pool().await;
         run_migrations(&pool).await.unwrap();
@@ -577,4 +614,63 @@ mod memory_archive_tests {
             client.query_one("SELECT content FROM memory_archive WHERE memory_id = 1", &[]).await.unwrap().get(0);
         assert_eq!(content, "fact");
     }
+}
+
+/// Claims a clip before STT. A previous claim, including an interrupted one, is never silently rebilled.
+pub async fn claim_voice(pool: &Pool, message: u64, attachment: u64, channel: u64, model: &str) -> Result<bool> {
+    Ok(pool
+        .get()
+        .await?
+        .execute(
+            "INSERT INTO voice_transcript (message_id, attachment_id, channel_id, model, status)
+         VALUES ($1, $2, $3, $4, 'processing') ON CONFLICT (message_id) DO NOTHING",
+            &[&sql_id(message), &sql_id(attachment), &sql_id(channel), &model],
+        )
+        .await?
+        == 1)
+}
+
+pub async fn voice_transcript(pool: &Pool, message: u64) -> Result<Option<(String, String)>> {
+    Ok(pool.get().await?.query_opt("SELECT CASE WHEN status = 'processing' AND created_at < now() - interval '180 seconds' THEN 'failed' ELSE status END, transcript FROM voice_transcript WHERE message_id = $1", &[&sql_id(message)])
+        .await?.map(|row| (row.get(0), row.get(1))))
+}
+
+pub async fn finish_voice(pool: &Pool, message: u64, transcript: Option<&str>) -> Result<()> {
+    let status = if transcript.is_some() { "ready" } else { "failed" };
+    pool.get()
+        .await?
+        .execute(
+            "UPDATE voice_transcript SET status = $2, transcript = $3 WHERE message_id = $1 AND status = 'processing'",
+            &[&sql_id(message), &status, &transcript.unwrap_or_default()],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Generated speech is already known text: it must never go through STT to enter conversation context.
+pub async fn save_spoken_text(pool: &Pool, message: u64, channel: u64, text: &str, model: &str) -> Result<()> {
+    pool.get()
+        .await?
+        .execute(
+            "INSERT INTO voice_transcript (message_id, attachment_id, channel_id, model, status, transcript)
+         VALUES ($1, 0, $2, $3, 'ready', $4) ON CONFLICT (message_id) DO NOTHING",
+            &[&sql_id(message), &sql_id(channel), &model, &text],
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn channel_voice_transcripts(pool: &Pool, channel: u64) -> Result<Vec<(u64, String)>> {
+    Ok(pool
+        .get()
+        .await?
+        .query(
+            "SELECT message_id, transcript FROM voice_transcript WHERE channel_id = $1 AND status = 'ready'
+         ORDER BY message_id DESC LIMIT 100",
+            &[&sql_id(channel)],
+        )
+        .await?
+        .into_iter()
+        .map(|r| (r.get::<_, i64>(0).cast_unsigned(), r.get(1)))
+        .collect())
 }

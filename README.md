@@ -8,6 +8,8 @@ A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)
   per-user memories and image understanding. It can attach reaction GIFs (anime reactions from nekos.best with no
   key, or any GIF search with `KLIPY_API_KEY`; `DISABLE_GIFS` turns them off) and comes back to gloat about its
   predictions once they're due
+* Incoming recorded voice messages are transcribed once and saved; the Trickster can add a separate spoken punchline
+  or send a voice-only reply when delivery fits the moment
 * Unprompted Community Notes on confidently wrong claims, and rulings or polls when an argument drags on
 * XP and levels, plus surprise math and colour quizzes
 * Slash commands: `/level`, `/qalc`, `/translate` and currency conversion (`/usd`, `/euro`, `/yen`, `/pln`, `/cad`)
@@ -22,6 +24,21 @@ Configuration comes from flags or environment variables (a `.env` file is loaded
 Replies default to `anthropic/claude-haiku-5.5`; memory extraction defaults to `qwen/qwen3.5-9b`.
 Override them with `OPENROUTER_MODEL` and `OPENROUTER_MEMORY_MODEL`. Existing environment values take precedence
 over these defaults, so change `OPENROUTER_MEMORY_MODEL` explicitly when switching an existing deployment.
+
+Speech uses OpenRouter too: `OPENROUTER_TTS_MODEL` defaults to `fish-audio/s1-20260729`, and
+`OPENROUTER_STT_MODEL` to `mistralai/voxtral-small-transcribe-3-0`. `OPENROUTER_TTS_VOICE` optionally selects a
+Fish voice ID; unset uses its default voice. `DISABLE_VOICE=true` disables both directions, and an empty TTS or
+STT model disables that direction. Haiku chooses optional `[voice: spoken line]` directives; a text setup can precede
+a different spoken punchline. Native voice messages are Ogg/Opus with duration/waveform metadata, not MP3 downloads.
+Only the first message in a multi-message reply gets a reply header. The bot needs Discord's Send Voice Messages permission.
+
+Native incoming voice messages are limited to 8 MiB and two minutes. A PostgreSQL `voice_transcript` row is claimed
+before any speech API call, so duplicate events and restarts reuse saved results, even if the selected model changes.
+Failed or interrupted claims do not automatically retry and rebill; they remain available for manual review. Generated
+speech text is saved directly without STT. Outgoing speech is limited to 600 characters and 60 seconds. Clips use FFmpeg's
+single-threaded conversion; no local speech model is required. The opt-in `live_haiku_voice_choices` and
+`live_selected_speech_models_round_trip_native_audio` tests exercise the configured APIs on synthetic content without
+posting messages to Discord.
 
 ```sh
 nix run                # or: docker compose up

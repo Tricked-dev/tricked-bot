@@ -74,6 +74,7 @@ async fn follow_up(bot: &Bot, prediction: &Prediction) -> Result<()> {
         channel_id,
         message_id,
         message: follow_up_note(&user.name, prediction),
+        source_text: String::new(),
         media: Vec::new(),
         conversation,
         reply_target: None,

@@ -26,6 +26,7 @@ use crate::{
 /// The persona. It and the extras never change for a running bot, so the system prompt heads the cached prefix.
 const PERSONA_PROMPT: &str = include_str!("prompts/persona.md");
 const EXTRAS: &str = include_str!("prompts/extras.md");
+const VOICE: &str = include_str!("prompts/voice.md");
 const GIF_SEARCH: &str = include_str!("prompts/gif_search.md");
 const GIF_REACTIONS: &str = include_str!("prompts/gif_reactions.md");
 
@@ -38,7 +39,8 @@ fn system_prompt(config: &Config) -> String {
     } else {
         GIF_REACTIONS.replace("{reactions}", &gif::REACTIONS.join(", "))
     };
-    PERSONA_PROMPT.to_owned() + &EXTRAS.replace("{gif}", &gif)
+    let voice = if config.disable_voice || config.openrouter_tts_model.is_empty() { "" } else { VOICE };
+    PERSONA_PROMPT.to_owned() + &EXTRAS.replace("{gif}", &gif).replace("{voice}", voice)
 }
 
 /// Generic voice examples, shown as turns from "someone".
@@ -280,6 +282,20 @@ pub fn build_request(
     for (input, output) in VIBE {
         push_exchange(&mut messages, "someone", input, (*output).to_owned());
     }
+    if !config.disable_voice && !config.openrouter_tts_model.is_empty() {
+        for (input, output) in [
+            (
+                "the alert has been beeping for six hours",
+                "[voice: attention shoppers, the problem has become load-bearing]",
+            ),
+            (
+                "my backup drive is also dead",
+                "a two-for-one special\n[voice: [whispering] both copies have left the chat]",
+            ),
+        ] {
+            push_exchange(&mut messages, "someone", input, output.to_owned());
+        }
+    }
     if cache {
         messages.last_mut().expect("examples").cache_breakpoint();
     }
@@ -441,6 +457,52 @@ mod tests {
         ));
         let json = serde_json::to_string(&request).unwrap();
         assert!(!json.contains("cache_control"));
+    }
+
+    #[tokio::test]
+    #[ignore = "calls live Haiku on synthetic voice-choice cases; no Discord posts"]
+    async fn live_haiku_voice_choices() {
+        use super::super::openrouter::OpenRouter;
+        let cfg = Config {
+            openrouter_api_key: Some(std::env::var("OPENROUTER_API_KEY").expect("API key")),
+            openrouter_base_url: "https://openrouter.ai/api/v1".into(),
+            openrouter_tts_model: "fish-audio/s1-20260729".into(),
+            openrouter_max_request_tokens: 90000,
+            openrouter_max_reply_tokens: 350,
+            disable_gifs: true,
+            ..Config::default()
+        };
+        let ai = OpenRouter::from_config(reqwest::Client::new(), &cfg).unwrap();
+        let cases = [
+            ("say the server is offline as a dramatic airport announcement", Some(true)),
+            ("roast my broken deployment with a text setup then a different spoken punchline", Some(true)),
+            ("give my deleted prod database a tiny spoken eulogy", Some(true)),
+            ("how do i undo my last git commit but keep the changes?", Some(false)),
+            ("thanks", Some(false)),
+            ("i lost my job and i'm worried about rent", Some(false)),
+            ("roast my deployment, text only, no audio", Some(false)),
+            ("the build passed. everyone is afraid to touch anything", None),
+            ("we have gathered here today to mourn my hard drive", None),
+            ("bro give us the official announcement. prod is dead", None),
+            ("i spent eight hours debugging. it was a missing semicolon", None),
+        ];
+        let mut correct = 0;
+        for (input, expected) in cases {
+            let req = request(input, vec!["bob: prod is down again".into()]);
+            let body = build(&cfg, &req, None, &[], "anthropic/claude-haiku-5.5");
+            let reply = ai.complete(&body, std::time::Duration::from_secs(60)).await.unwrap();
+            let found = super::super::output::directives(&reply);
+            let voice = found.voice.is_some();
+            println!("{}", serde_json::json!({"input":input,"expected_voice":expected,"voice":voice,"reply":reply}));
+            if let Some(expected) = expected {
+                correct += usize::from(expected == voice);
+            }
+            if let Some(text) = found.voice {
+                assert!(text.chars().count() <= 600);
+            }
+        }
+        println!("voice-choice control cases correct: {correct}/7");
+        assert_eq!(correct, 7);
     }
 
     #[test]

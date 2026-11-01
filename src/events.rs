@@ -32,10 +32,7 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
             Some(_) => guild_message(&bot, &msg.0).await,
             None => direct_message(&bot, &msg.0).await,
         },
-        Event::MessageUpdate(msg) if !msg.author.bot => {
-            message_edit(&bot, &msg);
-            Ok(())
-        }
+        Event::MessageUpdate(msg) if !msg.author.bot => message_edit(&bot, &msg).await,
         Event::MessageDelete(deleted) => messages_deleted(&bot, deleted.channel_id, &[deleted.id]).await,
         Event::MessageDeleteBulk(deleted) => messages_deleted(&bot, deleted.channel_id, &deleted.ids).await,
         Event::TypingStart(typing) => typing_start(&bot, &typing).await,
@@ -60,7 +57,7 @@ async fn direct_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
         bot.http.create_message(msg.channel_id).content(&notice).reply(msg.id).await?;
         return Ok(());
     }
-    let req = bot.snapshot(msg);
+    let req = ai::voice::prepare(bot, msg).await?;
     if bot.ai.is_some() {
         ai::reply::submit(bot, &req, true);
     }
@@ -91,7 +88,7 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
         bot.reply_gate.lock().unwrap().count(msg.channel_id.get());
         tracing::info!(target: "decider", kind = "count", channel = %msg.channel_id, msg_id = %msg.id);
     }
-    let req = bot.snapshot(msg);
+    let req = ai::voice::prepare(bot, msg).await?;
     // A newer message from someone still waiting on a reply restarts it, whether or not it pings the bot.
     let restarted = ai::reply::submit(bot, &req, false);
     let response = ai::timing::measure(msg.id, "responders", messages::handle(bot, msg, &req, direct)).await;
@@ -103,8 +100,10 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
 }
 
 /// Editing the text of a message that is still being answered restarts the reply. Finished replies stay as they are.
-fn message_edit(bot: &Arc<Bot>, msg: &Message) {
-    ai::reply::submit(bot, &bot.snapshot(msg), false);
+async fn message_edit(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
+    let req = ai::voice::prepare(bot, msg).await?;
+    ai::reply::submit(bot, &req, false);
+    Ok(())
 }
 
 /// Deleting a message takes the bot's replies to it along: an unfinished one is cancelled and finished ones deleted.

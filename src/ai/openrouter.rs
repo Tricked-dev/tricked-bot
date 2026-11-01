@@ -155,9 +155,30 @@ pub struct OpenRouter {
     http: Client,
     endpoint: String,
     embeddings_endpoint: String,
+    speech_endpoint: String,
+    transcription_endpoint: String,
     api_key: String,
     site_url: Option<String>,
     site_name: Option<String>,
+}
+
+/// Bounded downloads also cover chunked responses with no Content-Length.
+pub(super) async fn audio_bytes(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    const LIMIT: usize = 8 * 1024 * 1024;
+    if response.content_length().is_some_and(|size| size > LIMIT as u64) {
+        bail!("Audio exceeds 8 MiB limit");
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > LIMIT {
+            bail!("Audio exceeds 8 MiB limit");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.is_empty() {
+        bail!("Empty audio response");
+    }
+    Ok(bytes)
 }
 
 const ATTEMPTS: u32 = 3;
@@ -169,6 +190,8 @@ impl OpenRouter {
             http,
             endpoint: format!("{base_url}/chat/completions"),
             embeddings_endpoint: format!("{base_url}/embeddings"),
+            speech_endpoint: format!("{base_url}/audio/speech"),
+            transcription_endpoint: format!("{base_url}/audio/transcriptions"),
             api_key: config.openrouter_api_key.clone()?,
             site_url: config.openrouter_site_url.clone(),
             site_name: config.openrouter_site_name.clone(),
@@ -209,6 +232,36 @@ impl OpenRouter {
             tokio::time::sleep(Duration::from_millis(500) * attempt).await;
             attempt += 1;
         }
+    }
+
+    /// Speech calls are single attempts: a timeout must not silently rebill an accepted audio request.
+    pub async fn speech(&self, model: &str, voice: Option<&str>, text: &str) -> Result<Vec<u8>> {
+        let mut body = serde_json::json!({"model": model, "input": text, "response_format": "mp3"});
+        if let Some(voice) = voice.filter(|v| !v.is_empty()) {
+            body["voice"] = voice.into();
+        }
+        let response =
+            self.post(&self.speech_endpoint, &body, Duration::from_secs(90)).send().await?.error_for_status()?;
+        audio_bytes(response).await
+    }
+
+    pub async fn transcribe(&self, model: &str, wav: &[u8]) -> Result<String> {
+        use base64::Engine;
+        let body = serde_json::json!({"model": model,
+            "input_audio": {"data": base64::engine::general_purpose::STANDARD.encode(wav), "format": "wav"},
+            "response_format": "json"});
+        let result: Value = self
+            .post(&self.transcription_endpoint, &body, Duration::from_secs(90))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let text = result["text"]
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| eyre!("Speech transcription returned no text"))?;
+        Ok(text.trim().chars().take(12000).collect())
     }
 
     /// Returns the trimmed text of the first choice.
@@ -313,6 +366,35 @@ mod tests {
         let base = format!("http://{}", crate::test_util::serve(app).await);
         let config = Config { openrouter_api_key: Some("key".into()), openrouter_base_url: base, ..Config::default() };
         OpenRouter::from_config(Client::new(), &config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn speech_apis_use_exact_models_and_bounded_audio_contracts() {
+        let app = Router::new()
+            .route(
+                "/audio/speech",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["model"], "fish-audio/s1-20260729");
+                    assert_eq!(body["response_format"], "mp3");
+                    assert!(body.get("voice").is_none());
+                    b"fake-mp3".to_vec()
+                }),
+            )
+            .route(
+                "/audio/transcriptions",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["model"], "mistralai/voxtral-small-transcribe-3-0");
+                    assert_eq!(body["input_audio"]["format"], "wav");
+                    assert_eq!(body["input_audio"]["data"], "d2F2");
+                    axum::Json(json!({"text":"hello from the clip"}))
+                }),
+            );
+        let client = client(app).await;
+        assert_eq!(client.speech("fish-audio/s1-20260729", None, "hello").await.unwrap(), b"fake-mp3");
+        assert_eq!(
+            client.transcribe("mistralai/voxtral-small-transcribe-3-0", b"wav").await.unwrap(),
+            "hello from the clip"
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ const PREDICTION_HOURS: (u64, u64) = (1, 30 * 24);
 #[derive(Debug, Default, PartialEq)]
 pub struct Directives {
     pub gif: Option<String>,
+    pub voice: Option<String>,
     pub prediction: Option<Prediction>,
 }
 
@@ -28,13 +29,17 @@ pub struct Prediction {
 fn directive(line: &str) -> Option<(&str, &str)> {
     let (head, value) = line.trim().strip_prefix('[')?.strip_suffix(']')?.split_once(':')?;
     let head = head.trim();
-    (head == "gif" || head.starts_with("predict ")).then(|| (head, value.trim()))
+    (head == "gif" || head == "voice" || head.starts_with("predict ")).then(|| (head, value.trim()))
 }
 
 /// Whether `line` is, or while streaming may still become, a directive.
 fn is_directive_line(line: &str) -> bool {
     let line = line.trim_start();
-    directive(line).is_some() || (line.starts_with('[') && !line.contains(']'))
+    line.starts_with("[voice:")
+        || line.starts_with("[gif:")
+        || line.starts_with("[predict ")
+        || directive(line).is_some()
+        || (line.starts_with('[') && !line.contains(']'))
 }
 
 /// `2w`, `3d` or `12h`, clamped to [`PREDICTION_HOURS`].
@@ -56,6 +61,8 @@ pub fn directives(reply: &str) -> Directives {
     for (head, value) in reply.lines().filter_map(directive).filter(|(_, value)| !value.is_empty()) {
         if head == "gif" {
             found.gif = Some(value.to_owned());
+        } else if head == "voice" {
+            found.voice = Some(value.chars().take(600).collect());
         } else if let Some(wait) = head.strip_prefix("predict ").and_then(parse_wait) {
             found.prediction = Some(Prediction { wait, claim: value.to_owned() });
         }
@@ -158,6 +165,7 @@ mod tests {
             directives(reply),
             Directives {
                 gif: Some("facepalm".into()),
+                voice: None,
                 prediction: Some(Prediction { wait: Duration::from_hours(14 * 24), claim: "back on windows".into() }),
             }
         );
@@ -165,6 +173,21 @@ mod tests {
         assert_eq!(presentable("skill issue\n[gi").as_deref(), Some("skill issue"));
         assert_eq!(presentable("[gif: smug]"), None);
         assert_eq!(presentable("[citation needed] lol").as_deref(), Some("[citation needed] lol"));
+    }
+
+    #[test]
+    fn voice_lines_are_hidden_even_with_nested_delivery_tags_while_streaming() {
+        let line = "[voice: [whispering] prod is gone]";
+        for (end, _) in line.char_indices().skip(1) {
+            assert_eq!(
+                presentable(&format!("the incident report is ready\n{}", &line[..end])).as_deref(),
+                Some("the incident report is ready")
+            );
+        }
+        let found = directives(line);
+        assert_eq!(found.voice.as_deref(), Some("[whispering] prod is gone"));
+        assert_eq!(presentable(line), None);
+        assert_eq!(directives(&format!("[voice: {}]", "😀".repeat(700))).voice.unwrap().chars().count(), 600);
     }
 
     #[test]

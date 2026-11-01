@@ -43,6 +43,18 @@ pub struct Config {
     /// Embeds memories so recall can shortlist them by content. Empty disables embeddings.
     #[arg(long, env, default_value = "openai/text-embedding-3-small")]
     pub openrouter_embedding_model: String,
+    /// Speech synthesis model. Empty disables spoken replies.
+    #[arg(long, env, default_value = "fish-audio/s1-20260729")]
+    pub openrouter_tts_model: String,
+    /// Optional Fish voice ID; unset uses the provider's default voice.
+    #[arg(long, env)]
+    pub openrouter_tts_voice: Option<String>,
+    /// Voice-message transcription model. Empty disables incoming transcription.
+    #[arg(long, env, default_value = "mistralai/voxtral-small-transcribe-3-0")]
+    pub openrouter_stt_model: String,
+    /// Disables both incoming transcription and outgoing voice messages.
+    #[arg(long, env)]
+    pub disable_voice: bool,
     /// Optional model for refusal style rewrites. Disabled by default: style false positives can corrupt valid replies.
     #[arg(long, env)]
     pub openrouter_fallback_model: Option<String>,
