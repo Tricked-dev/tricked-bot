@@ -285,9 +285,9 @@ main {
     font-size: 0.875rem;
 }
 
+/* Comes after .btn-sm, so small buttons grow too. */
 @media (pointer: coarse) {
-    .btn,
-    .btn-sm {
+    .btn {
         min-height: 2.75rem;
     }
 }

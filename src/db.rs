@@ -1,7 +1,6 @@
 use color_eyre::Result;
 use deadpool_postgres::Pool;
 use postgres_from_row::FromRow;
-use serde::Serialize;
 
 use crate::levels::xp_required_for_level;
 
@@ -14,9 +13,12 @@ const MIGRATIONS: [&str; 4] = [
 ];
 
 const USER_COLUMNS: &str = r"id, level, xp, name, relationship, example_input, example_output";
+/// Creates user `$1` named `$2` with a blank profile.
+const INSERT_USER: &str = r#"INSERT INTO "user" (id, name, level, xp, social_credit, relationship, example_input, example_output)
+    VALUES ($1, $2, 0, 0, 0, '', '', '')"#;
 const MEMORY_COLUMNS: &str = "id, user_id, key, content";
 
-#[derive(FromRow, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(FromRow, Debug, Clone, PartialEq, Eq)]
 pub struct User {
     pub id: i64,
     pub level: i32,
@@ -34,7 +36,7 @@ impl User {
     }
 }
 
-#[derive(FromRow, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(FromRow, Debug, Clone, PartialEq, Eq)]
 pub struct Memory {
     pub id: i64,
     pub user_id: i64,
@@ -57,14 +59,7 @@ pub async fn run_migrations(pool: &Pool) -> Result<()> {
 
 /// Both DM authors and users intercepted by responders must have a stable DB identity.
 pub async fn ensure_user(pool: &Pool, id: u64, name: &str) -> Result<()> {
-    pool.get()
-        .await?
-        .execute(
-            r#"INSERT INTO "user" (id, name, level, xp, social_credit, relationship, example_input, example_output)
-               VALUES ($1, $2, 0, 0, 0, '', '', '') ON CONFLICT (id) DO NOTHING"#,
-            &[&sql_id(id), &name],
-        )
-        .await?;
+    pool.get().await?.execute(&format!("{INSERT_USER} ON CONFLICT (id) DO NOTHING"), &[&sql_id(id), &name]).await?;
     Ok(())
 }
 
@@ -77,12 +72,10 @@ pub async fn award_xp(pool: &Pool, id: u64, name: &str, gained: i32, carry_over:
     let mut client = pool.get().await?;
     let transaction = client.transaction().await?;
     let award = transaction
-        .prepare_cached(
-            r#"INSERT INTO "user" (id, name, level, xp, social_credit, relationship, example_input, example_output)
-               VALUES ($1, $2, 0, 0, 0, '', '', '')
-               ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, xp = "user".xp + $3
-               RETURNING level, xp, (xmax = 0) AS inserted"#,
-        )
+        .prepare_cached(&format!(
+            r#"{INSERT_USER} ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, xp = "user".xp + $3
+               RETURNING level, xp, (xmax = 0) AS inserted"#
+        ))
         .await?;
     let row = transaction.query_one(&award, &[&sql_id(id), &name, &gained]).await?;
     let (level, xp, inserted): (i32, i32, bool) = (row.get(0), row.get(1), row.get(2));
@@ -156,15 +149,18 @@ pub async fn create_memory(pool: &Pool, user_id: u64, key: &str, content: &str) 
     Ok(())
 }
 
-pub async fn upsert_memory(pool: &Pool, user_id: u64, key: &str, content: &str) -> Result<()> {
-    pool.get()
-        .await?
-        .execute(
+/// Stores `(key, content)` memories, replacing the content of keys the user already has.
+pub async fn upsert_memories(pool: &Pool, user_id: u64, memories: &[(&str, &str)]) -> Result<()> {
+    let client = pool.get().await?;
+    let upsert = client
+        .prepare_cached(
             "INSERT INTO memory (user_id, key, content) VALUES ($1, $2, $3)
              ON CONFLICT (user_id, key) DO UPDATE SET content = EXCLUDED.content",
-            &[&sql_id(user_id), &key, &content],
         )
         .await?;
+    for (key, content) in memories {
+        client.execute(&upsert, &[&sql_id(user_id), key, content]).await?;
+    }
     Ok(())
 }
 
@@ -287,8 +283,8 @@ mod tests {
         let spent: i32 = (1..carol.level).map(xp_required_for_level).sum();
         assert_eq!(spent + carol.xp, 8 * 15, "racing awards with carry-over never lose XP");
 
-        upsert_memory(&pool, 1, "work", "builds bots").await.unwrap();
-        upsert_memory(&pool, 1, "work", "builds better bots").await.unwrap();
+        upsert_memories(&pool, 1, &[("work", "builds bots")]).await.unwrap();
+        upsert_memories(&pool, 1, &[("work", "builds better bots")]).await.unwrap();
         create_memory(&pool, 1, "food", "hates cilantro").await.unwrap();
         let memories = memories(&pool, 1).await.unwrap();
         assert_eq!(
@@ -326,7 +322,7 @@ mod memory_archive_tests {
             .batch_execute(
                 "CREATE TEMP TABLE memory (id BIGINT PRIMARY KEY, user_id BIGINT, key TEXT, content TEXT);
                  CREATE TEMP TABLE memory_archive (memory_id BIGINT, user_id BIGINT, key TEXT, content TEXT, reason TEXT);
-                 INSERT INTO memory SELECT i, 1, 'key' || i, 'fact' FROM generate_series(1, 256) i;",
+                 INSERT INTO memory SELECT i, 1, 'key' || i, 'fact' FROM generate_series(1, 255) i;",
             )
             .await
             .unwrap();
@@ -341,7 +337,7 @@ mod memory_archive_tests {
             axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
                 let options = body["questions"]["selection"]["criteria"].as_object().unwrap();
                 assert_eq!(options.len(), 32);
-                assert!(!options.contains_key("m256"));
+                assert!(!options.contains_key("m255"));
                 let probabilities: serde_json::Map<_, _> = options
                     .keys()
                     .map(|id| (id.clone(), serde_json::json!(if id == "m1" { 1.0 } else { 0.0 })))
@@ -349,18 +345,15 @@ mod memory_archive_tests {
                 axum::Json(serde_json::json!({"answers": {"selection": {"probabilities": probabilities}}}))
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let url = format!("http://{}", crate::test_util::serve(app).await);
         let decider = crate::decider::Decider::new(reqwest::Client::new(), url, "test".into()).unwrap();
         cleanup::clean_user(&pool, &decider, &AuthorLocks::default(), 1).await.unwrap();
-        server.abort();
 
         let next = Memory { id: 2, user_id: 1, key: "key2".into(), content: "fact".into() };
         assert!(!archive_overflow_memory(&pool, &next, LIMIT).await.unwrap());
         let client = pool.get().await.unwrap();
         let count: i64 = client.query_one("SELECT count(*) FROM memory", &[]).await.unwrap().get(0);
-        assert_eq!(count, 255);
+        assert_eq!(count, i64::try_from(LIMIT).unwrap());
         let content: String =
             client.query_one("SELECT content FROM memory_archive WHERE memory_id = 1", &[]).await.unwrap().get(0);
         assert_eq!(content, "fact");

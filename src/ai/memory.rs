@@ -147,9 +147,9 @@ async fn write(bot: &Bot, req: &AiRequest) -> Result<usize> {
     let ai = bot.ai.as_ref().ok_or_else(|| eyre!("OpenRouter API key not configured"))?;
     let author = req.user_id.get();
     db::ensure_user(&bot.db, author, &req.user_name).await?;
-    let user = db::user(&bot.db, author).await?.ok_or_else(|| eyre!("author disappeared"))?;
-    let existing: Vec<_> =
-        db::memories(&bot.db, author).await?.into_iter().map(|m| json!({"key": m.key, "content": m.content})).collect();
+    let (user, memories) = tokio::try_join!(db::user(&bot.db, author), db::memories(&bot.db, author))?;
+    let user = user.ok_or_else(|| eyre!("author disappeared"))?;
+    let existing: Vec<_> = memories.into_iter().map(|m| json!({"key": m.key, "content": m.content})).collect();
     let prompt = build_memory_prompt(
         &user.name,
         &req.message,
@@ -165,17 +165,22 @@ async fn write(bot: &Bot, req: &AiRequest) -> Result<usize> {
         ..Default::default()
     };
     let response = parse_response(&ai.complete(&request, Duration::from_secs(120)).await?)?;
-    let mut stored = 0;
-    for entry in response.memories {
-        // Names are exact: the model must not write memories about other people in the conversation.
-        if entry.username != user.name {
-            tracing::warn!(user = author, "Ignoring memory for another author");
-            continue;
-        }
-        db::upsert_memory(&bot.db, author, &entry.key, &entry.content).await?;
-        stored += 1;
+    // Names are exact: the model must not write memories about other people in the conversation.
+    let own: Vec<_> = response
+        .memories
+        .iter()
+        .filter(|entry| entry.username == user.name)
+        .map(|entry| (entry.key.as_str(), entry.content.as_str()))
+        .collect();
+    if own.len() < response.memories.len() {
+        tracing::warn!(
+            user = author,
+            ignored = response.memories.len() - own.len(),
+            "Ignoring memories for another author"
+        );
     }
-    Ok(stored)
+    db::upsert_memories(&bot.db, author, &own).await?;
+    Ok(own.len())
 }
 
 #[cfg(test)]

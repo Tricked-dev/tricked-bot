@@ -239,13 +239,17 @@ mod tests {
         }
     }
 
+    fn memory_with_id(id: i64) -> Memory {
+        Memory { id, user_id: 7, key: "work".into(), content: "builds bots".into() }
+    }
+
     #[test]
     fn pages_render_and_escape_user_content() {
         let html = UsersPage { users: vec![user("alice"), user("")] }.render().unwrap();
         assert!(html.contains("alice") && html.contains("User 7"));
         assert!(html.contains("&#60;b&#62;nemesis") || html.contains("&lt;b&gt;nemesis"));
         assert!(!html.contains("<b>nemesis"));
-        let memory = Memory { id: 1, user_id: 7, key: "work".into(), content: "builds bots".into() };
+        let memory = memory_with_id(1);
         let html = MemoriesPage { user: user("alice"), memories: vec![memory.clone()] }.render().unwrap();
         assert!(html.contains("builds bots") && html.contains("/memory/1/edit"));
         assert!(MemoriesPage { user: user("alice"), memories: vec![] }.render().unwrap().contains("No memories"));
@@ -257,6 +261,12 @@ mod tests {
         ] {
             assert!(html.contains("Memory Manager</title>"));
         }
+        let quoted = Memory { key: "a\"b".into(), ..memory_with_id(2) };
+        let html = EditMemoryPage { memory: quoted }.render().unwrap();
+        assert!(html.contains(r#"value="a&#34;b""#) || html.contains(r#"value="a&quot;b""#));
+        assert!(html.contains(r#"href="/user/7/memories" class="btn">Cancel"#) && html.contains("Save Changes"));
+        let html = NewMemoryPage { user: user("alice") }.render().unwrap();
+        assert!(html.contains(r#"value="""#) && html.contains("Create Memory"));
     }
 
     #[test]
