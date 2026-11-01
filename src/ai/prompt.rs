@@ -134,7 +134,6 @@ fn build_character_prompt(
     now: &str,
 ) -> String {
     let per_user = relationship.map_or_else(String::new, |relationship| {
-        let relationship = relationship.replace("{{char}}", PERSONA).replace("{{user}}", user_name);
         format!(
             "The server owner set how you treat {user_name}. Follow it: it overrides the default tone and calibration above, while the bait rules still apply. The earlier turns from {user_name} show the attitude to take with them.\n<relationships>\n{user_name}: {relationship}\n</relationships>\n\n"
         )
@@ -240,7 +239,8 @@ pub async fn user_turn(bot: &Bot, req: &AiRequest) -> Result<Content> {
 /// Builds the full chat request for a reply to `req`, ending in the user turn `turn`.
 ///
 /// The conversation and memories are optional background: they get whatever the token budget leaves after everything
-/// else, the newest conversation first and then the most relevant memories. Stored memories are never modified.
+/// else: the newest conversation first, then the relationship, then the most relevant memories. Stored memories are
+/// never modified.
 pub fn build_request(
     config: &Config,
     req: &AiRequest,
@@ -255,18 +255,21 @@ pub fn build_request(
     let (level, xp) = user.map_or((0, 0), |user| (user.level, user.xp));
     // Only inject data belonging to the active speaker. Pulling relationships or
     // examples for every name in the transcript makes the model conflate speakers.
-    let relationship = user.map(|user| user.relationship.as_str()).filter(|relationship| !relationship.is_empty());
+    let relationship = user
+        .filter(|user| !user.relationship.is_empty())
+        .map(|user| user.relationship.replace("{{char}}", PERSONA).replace("{{user}}", &req.user_name));
     let examples = user
         .filter(|user| !user.example_input.is_empty() && !user.example_output.is_empty())
         .map(|user| (user.example_input.as_str(), user.example_output.as_str()));
     let now = Timestamp::from_secs(unix_now().as_secs().cast_signed())?.iso_8601().with_microseconds(false).to_string();
-    let system = |memories: &[Memory], context: &str| {
+    let system = |memories: &[Memory], context: &str, relationship: Option<&str>| {
         let prompt =
             build_character_prompt(&req.user_name, level, xp, context, &format_memories(memories), relationship, &now);
         Message::new(Role::System, prompt)
     };
 
-    let mut messages = vec![system(&[], "")];
+    // Measure everything else with the optional sections empty, keeping the relationship's framing.
+    let mut messages = vec![system(&[], "", relationship.as_ref().map(|_| ""))];
     for (input, output) in style_turns(&req.user_name, examples) {
         messages.extend([Message::new(Role::User, input), Message::new(Role::Assistant, output)]);
     }
@@ -279,15 +282,14 @@ pub fn build_request(
     };
 
     let mut spare = budget::spare_bytes(&request, config.openrouter_max_request_tokens);
-    let mut fits = |line: &str| {
-        // Each line also costs its escaped newline.
-        let cost = budget::json_len(line) + 2;
-        spare.checked_sub(cost).inspect(|left| spare = *left).is_some()
-    };
+    // Each line also costs its escaped newline.
+    let line_cost = |line: &str| budget::json_len(line) + 2;
     let lines: Vec<&str> = context.lines().collect();
-    let newest = lines.iter().rev().take_while(|line| fits(line)).count();
-    let relevant = memories.iter().take_while(|memory| fits(&memory_line(memory))).count();
-    request.messages[0] = system(&memories[..relevant], &lines[lines.len() - newest..].join("\n"));
+    let newest = lines.iter().rev().take_while(|line| budget::spend(&mut spare, line_cost(line))).count();
+    let relationship = relationship.as_deref().map(|relationship| budget::fitting_prefix(relationship, &mut spare));
+    let relevant =
+        memories.iter().take_while(|memory| budget::spend(&mut spare, line_cost(&memory_line(memory)))).count();
+    request.messages[0] = system(&memories[..relevant], &lines[lines.len() - newest..].join("\n"), relationship);
 
     let budget = budget::check(&request, config.openrouter_max_request_tokens)?;
     tracing::info!(target: "ai_usage", msg_id = %req.message_id, model,
@@ -317,9 +319,9 @@ mod prompt_tests {
     }
     #[test]
     fn prompt_has_date_and_discord_persona() {
-        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", Some("nemesis of {{char}}"), "2026-09-26");
+        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", Some("your nemesis"), "2026-09-26");
         assert!(p.contains("Current time: 2026-09-26"));
-        assert!(p.contains("<relationships>\nalice: nemesis of The Trickster\n</relationships>"));
+        assert!(p.contains("<relationships>\nalice: your nemesis\n</relationships>"));
         assert!(p.contains("regular in a Discord server"));
         assert!(p.contains("Default to 1–2 short sentences"));
     }
@@ -377,5 +379,35 @@ mod prompt_tests {
         assert!(!prompt.contains("xxx"));
         let last = request.messages.last().unwrap();
         assert_eq!(last.content, Content::Text(wrap_message("alice", "what did you mean by that?")));
+    }
+
+    #[test]
+    fn oversized_relationship_is_truncated_instead_of_failing_the_reply() {
+        let config = Config { openrouter_max_request_tokens: 20_000, ..Config::default() };
+        let req = AiRequest {
+            user_id: Id::new(2),
+            user_name: "alice".into(),
+            channel_id: Id::new(1),
+            message_id: Id::new(3),
+            message: "hi".into(),
+            media: Vec::new(),
+            context: "alice: earlier".into(),
+            user_mentions: HashMap::new(),
+        };
+        let user = User {
+            id: 2,
+            level: 1,
+            xp: 0,
+            name: "alice".into(),
+            relationship: format!("roast {{{{user}}}} \"hard\" {}", "x".repeat(300_000)),
+            example_input: String::new(),
+            example_output: String::new(),
+        };
+        let turn = Content::Text(text_turn(&req));
+        let request = build_request(&config, &req, Some(&user), &[], turn, "anthropic/claude-haiku-5.5").unwrap();
+        assert!(budget::estimate(&request) <= 20_000);
+        let Content::Text(prompt) = &request.messages[0].content else { panic!() };
+        assert!(prompt.contains("alice: earlier"));
+        assert!(prompt.contains("<relationships>\nalice: roast alice \"hard\" xxx"));
     }
 }

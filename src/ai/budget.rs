@@ -64,6 +64,29 @@ pub fn estimate(request: &ChatRequest) -> u64 {
     text.div_ceil(BYTES_PER_TOKEN) + reserve * images.len() as u64 + FRAMING_RESERVE + u64::from(request.max_tokens)
 }
 
+/// Takes `cost` bytes from `spare` if it has that many left. Returns whether it did.
+pub fn spend(spare: &mut u64, cost: u64) -> bool {
+    spare.checked_sub(cost).inspect(|left| *spare = *left).is_some()
+}
+
+/// The longest prefix of `text` whose JSON-escaped length fits in `spare`, which it takes from `spare`.
+pub fn fitting_prefix<'a>(text: &'a str, spare: &mut u64) -> &'a str {
+    let mut end = 0;
+    for (start, ch) in text.char_indices() {
+        // Control characters escape to at most six bytes (`\u001f`).
+        let cost = match ch {
+            '"' | '\\' => 2,
+            ch if ch.is_ascii_control() => 6,
+            ch => ch.len_utf8() as u64,
+        };
+        if !spend(spare, cost) {
+            break;
+        }
+        end = start + ch.len_utf8();
+    }
+    &text[..end]
+}
+
 /// Bytes of JSON text that can still be added to `request` without exceeding `max_total` tokens.
 pub fn spare_bytes(request: &ChatRequest, max_total: u32) -> u64 {
     u64::from(max_total).saturating_sub(estimate(request)) * BYTES_PER_TOKEN
@@ -105,6 +128,16 @@ mod tests {
         request.max_tokens = 10_000;
         assert!(check(&request, 90_000).is_err());
         assert_eq!(json_len("a\"\n"), 5);
+    }
+
+    #[test]
+    fn fitting_prefix_counts_escapes_and_keeps_whole_characters() {
+        let mut spare = 5;
+        assert_eq!(fitting_prefix("a\"🙂b", &mut spare), "a\"");
+        assert_eq!(spare, 2);
+        let mut spare = 100;
+        assert_eq!(fitting_prefix("short", &mut spare), "short");
+        assert_eq!(spare, 95);
     }
 
     #[test]

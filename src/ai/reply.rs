@@ -175,7 +175,11 @@ pub async fn stream_to_discord(
                 if let Some(id) = message_id {
                     match http.update_message(channel_id, id).content(Some(&text)).await {
                         Ok(_) => last_sent = text,
-                        Err(error) => tracing::warn!("AI message update failed: {error}"),
+                        Err(error) => {
+                            tracing::warn!("AI message update failed: {error}");
+                            // Retry on the next tick or the final flush, even if no more text arrives.
+                            changed = true;
+                        }
                     }
                 } else {
                     let id = post(http, channel_id, reply_to, &text).await?;
