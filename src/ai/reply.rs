@@ -1,7 +1,7 @@
 //! Running AI replies: one in-flight reply per author and channel, streamed into a Discord message.
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{BTreeMap, HashMap, hash_map::Entry},
     pin::pin,
     sync::{
         Arc, Mutex,
@@ -64,6 +64,14 @@ struct Tasks {
     in_flight: HashMap<ReplyKey, InFlight>,
     /// Finished text with ancillary work still running. New messages leave it alone; source deletion cancels it.
     finishing: HashMap<u64, (ReplyKey, InFlight)>,
+    /// Recently finished multi-message replies, whose plain GIF has no Discord reply reference.
+    completed: BTreeMap<Id<MessageMarker>, CompletedReply>,
+}
+
+#[derive(Debug)]
+struct CompletedReply {
+    channel: Id<ChannelMarker>,
+    ids: Vec<Id<MessageMarker>>,
 }
 
 impl InFlight {
@@ -85,10 +93,21 @@ impl ReplyTasks {
 
     fn finish(&self, key: ReplyKey, generation: u64) {
         let mut tasks = self.tasks.lock().unwrap();
-        if tasks.in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
-            tasks.in_flight.remove(&key);
+        let entry = if tasks.in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
+            tasks.in_flight.remove(&key)
+        } else {
+            tasks.finishing.remove(&generation).map(|(_, entry)| entry)
+        };
+        if let Some(entry) = entry {
+            let ids = entry.posted.lock().unwrap().ids.clone();
+            if ids.len() > 1 {
+                tasks.completed.insert(entry.message_id, CompletedReply { channel: key.0, ids });
+                // Bound bookkeeping for completed GIFs, like Discord's finite message cache.
+                while tasks.completed.len() > 1000 {
+                    tasks.completed.pop_first();
+                }
+            }
         }
-        tasks.finishing.remove(&generation);
     }
 }
 
@@ -100,13 +119,17 @@ fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) -> Vec<I
         std::mem::take(&mut state.ids)
     };
     entry.abort.abort();
-    for id in &posted {
+    delete_posts(bot, channel, &posted);
+    posted
+}
+
+fn delete_posts(bot: &Arc<Bot>, channel: Id<ChannelMarker>, ids: &[Id<MessageMarker>]) {
+    for id in ids {
         let (bot, id) = (Arc::clone(bot), *id);
         tokio::spawn(async move {
             let _ = bot.http.delete_message(channel, id).await;
         });
     }
-    posted
 }
 
 /// Cancels the unfinished replies to any of the `deleted` messages in `channel`. Returns the partial replies that are
@@ -128,6 +151,13 @@ pub fn cancel_answering(
     };
     tasks.in_flight.retain(|key, entry| keep(key, entry));
     tasks.finishing.retain(|_, (key, entry)| keep(key, entry));
+    for source in deleted {
+        if tasks.completed.get(source).is_some_and(|entry| entry.channel == channel) {
+            let ids = tasks.completed.remove(source).unwrap().ids;
+            delete_posts(bot, channel, &ids);
+            posted.extend(ids);
+        }
+    }
     posted
 }
 
@@ -176,7 +206,7 @@ async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation:
         post(
             &bot.http,
             req.channel_id,
-            req.message_id,
+            Some(req.message_id),
             Some(format!("{AI_ERROR}: reply or memory recall unavailable.")),
             &posted,
         )
@@ -214,7 +244,7 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
     let directives = output::directives(&raw);
     let gif = async {
         if let Some(query) = &directives.gif {
-            attach_gif(bot, req, query, posted_slot).await;
+            attach_gif(bot, req, query, posted.is_some(), posted_slot).await;
         }
     };
     let prediction = async {
@@ -230,7 +260,7 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
 }
 
 /// Sends the GIF as a separate message containing only its URL, leaving the text reply untouched.
-async fn attach_gif(bot: &Bot, req: &AiRequest, query: &str, slot: &Arc<PostedSlot>) {
+async fn attach_gif(bot: &Bot, req: &AiRequest, query: &str, text_posted: bool, slot: &Arc<PostedSlot>) {
     if bot.config.disable_gifs {
         return;
     }
@@ -245,7 +275,19 @@ async fn attach_gif(bot: &Bot, req: &AiRequest, query: &str, slot: &Arc<PostedSl
             return;
         }
     };
-    post(&bot.http, req.channel_id, req.message_id, Some(url), slot).await;
+    post_gif(&bot.http, req.channel_id, req.message_id, text_posted, url, slot).await;
+}
+
+/// Only a GIF-only response gets a reply header; a GIF accompanying text is a plain follow-on message.
+async fn post_gif(
+    http: &Arc<HttpClient>,
+    channel: Id<ChannelMarker>,
+    source: Id<MessageMarker>,
+    text_posted: bool,
+    url: String,
+    slot: &Arc<PostedSlot>,
+) -> Option<Id<MessageMarker>> {
+    post(http, channel, (!text_posted).then_some(source), Some(url), slot).await
 }
 
 /// A reply stream that ran to the end.
@@ -313,7 +355,7 @@ async fn stream_to_discord(
                         }
                     }
                 } else if finished || text.split_whitespace().count() >= 2 || text.ends_with(char::is_whitespace) {
-                    let id = post(http, channel_id, reply_to, Some(text.clone()), posted_slot).await?;
+                    let id = post(http, channel_id, Some(reply_to), Some(text.clone()), posted_slot).await?;
                     timing::record(reply_to, "first_post", started);
                     message_id = Some(id);
                     last_sent = text;
@@ -335,7 +377,7 @@ async fn stream_to_discord(
 async fn post(
     http: &Arc<HttpClient>,
     channel_id: Id<ChannelMarker>,
-    reply_to: Id<MessageMarker>,
+    reply_to: Option<Id<MessageMarker>>,
     text: Option<String>,
     slot: &Arc<PostedSlot>,
 ) -> Option<Id<MessageMarker>> {
@@ -344,7 +386,10 @@ async fn post(
         if slot.lock().unwrap().cancelled {
             return None;
         }
-        let mut request = http.create_message(channel_id).reply(reply_to);
+        let mut request = http.create_message(channel_id);
+        if let Some(reply_to) = reply_to {
+            request = request.reply(reply_to);
+        }
         if let Some(text) = &text {
             request = request.content(text);
         }
@@ -466,12 +511,33 @@ mod tests {
             HttpClient::builder().token("test-token".into()).proxy(address.to_string(), true).ratelimiter(None).build(),
         );
         let slot = Arc::default();
-        post(&http, Id::new(1), Id::new(10), Some("skill issue".into()), &slot).await.unwrap();
-        post(&http, Id::new(1), Id::new(10), Some("https://example.com/reaction.gif".into()), &slot).await.unwrap();
-        let seen = seen.lock().await;
-        assert_eq!(seen[0]["content"], "skill issue");
-        assert_eq!(seen[1]["content"], "https://example.com/reaction.gif");
+        post(&http, Id::new(1), Some(Id::new(10)), Some("skill issue".into()), &slot).await.unwrap();
+        post_gif(&http, Id::new(1), Id::new(10), true, "https://example.com/reaction.gif".into(), &slot).await.unwrap();
+        let requests = seen.lock().await;
+        assert_eq!(requests[0]["content"], "skill issue");
+        assert_eq!(requests[1]["content"], "https://example.com/reaction.gif");
+        assert_eq!(requests[0]["message_reference"]["message_id"], "10");
+        assert!(
+            requests[1].get("message_reference").is_none(),
+            "the accompanying GIF must not repeat the reply header"
+        );
         assert_eq!(slot.lock().unwrap().ids, [Id::new(41), Id::new(42)]);
+        drop(requests);
+        let mut bot = test_bot();
+        bot.http = Arc::clone(&http);
+        let bot = Arc::new(bot);
+        let key = (Id::new(1), Id::new(2));
+        let entry = InFlight { posted: slot, ..in_flight(10, "hello", 0) };
+        bot.replies.tasks.lock().unwrap().in_flight.insert(key, entry);
+        bot.replies.finish(key, 0);
+        assert_eq!(cancel_answering(&bot, Id::new(9), &[Id::new(10)]), Vec::<Id<MessageMarker>>::new());
+        assert_eq!(cancel_answering(&bot, Id::new(1), &[Id::new(10)]), [Id::new(41), Id::new(42)]);
+        assert!(bot.replies.tasks.lock().unwrap().completed.is_empty());
+        post_gif(&http, Id::new(1), Id::new(20), false, "https://example.com/solo.gif".into(), &Arc::default())
+            .await
+            .unwrap();
+        let seen = seen.lock().await;
+        assert_eq!(seen[2]["message_reference"]["message_id"], "20");
     }
 
     type Seen = Arc<tokio::sync::Mutex<Vec<String>>>;
