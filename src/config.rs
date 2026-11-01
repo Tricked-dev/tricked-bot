@@ -41,7 +41,7 @@ pub struct Config {
     #[arg(long, env, default_value = "1024", value_parser = clap::value_parser!(u32).range(1..=4096))]
     pub openrouter_max_reply_tokens: u32,
     /// Memory extraction needs deterministic JSON, not the chat model's long reasoning mode.
-    #[arg(long, env, default_value = "tencent/hy3-preview")]
+    #[arg(long, env, default_value = "qwen/qwen3.5-9b")]
     pub openrouter_memory_model: String,
     /// Embeds memories so recall can shortlist them by content. Empty disables embeddings.
     #[arg(long, env, default_value = "openai/text-embedding-3-small")]

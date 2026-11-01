@@ -19,6 +19,10 @@ A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)
 Configuration comes from flags or environment variables (a `.env` file is loaded); see `tricked-bot --help`.
 `TOKEN`, `DISCORD` (the guild to register slash commands in) and `DATABASE_URL` are the essentials.
 
+Replies default to `anthropic/claude-haiku-5.5`; memory extraction defaults to `qwen/qwen3.5-9b`.
+Override them with `OPENROUTER_MODEL` and `OPENROUTER_MEMORY_MODEL`. Existing environment values take precedence
+over these defaults, so change `OPENROUTER_MEMORY_MODEL` explicitly when switching an existing deployment.
+
 ```sh
 nix run                # or: docker compose up
 ```
