@@ -19,7 +19,7 @@ use twilight_model::{
 };
 
 use crate::{
-    ai::openrouter::{ChatRequest, Message as ChatMessage, Role},
+    ai::openrouter::{self, ChatRequest, Message as ChatMessage, Role},
     bot::Bot,
     db,
     messages::Response,
@@ -256,7 +256,8 @@ async fn math_question(bot: &Bot) -> Result<(String, f64)> {
                 ),
                 ChatMessage::new(Role::User, prompt),
             ],
-            temperature: Some(0.9),
+            temperature: openrouter::temperature(&bot.config.openrouter_model, 0.9),
+            reasoning: Some(openrouter::no_reasoning()),
             max_tokens: 50,
             ..Default::default()
         };

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use color_eyre::Result;
 
-use crate::ai::openrouter::{ChatRequest, Message, OpenRouter, Role};
+use crate::ai::openrouter::{self, ChatRequest, Message, OpenRouter, Role};
 
 const COMMAND_PREFIX: &str = "t!ratewaifu";
 
@@ -51,7 +51,8 @@ pub async fn explanation(ai: &OpenRouter, model: &str, candidate: &str, score: u
             ),
             Message::new(Role::User, format!("<rating>{score}/10</rating>\n<candidate>\n{candidate}\n</candidate>")),
         ],
-        temperature: Some(0.7),
+        temperature: openrouter::temperature(model, 0.7),
+        reasoning: Some(openrouter::no_reasoning()),
         max_tokens: 100,
         ..Default::default()
     };

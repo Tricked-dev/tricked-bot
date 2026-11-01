@@ -33,7 +33,7 @@ pub struct Config {
     pub openrouter_api_key: Option<String>,
     #[arg(long, env, default_value = "https://openrouter.ai/api/v1")]
     pub openrouter_base_url: String,
-    #[arg(long, env, default_value = "openai/gpt-6-luna")]
+    #[arg(long, env, default_value = "anthropic/claude-haiku-5.5")]
     pub openrouter_model: String,
     /// Estimated per-request token target including prompt text, images and maximum output (10% headroom by default).
     #[arg(long, env, default_value = "90000", value_parser = clap::value_parser!(u32).range(4096..=99000))]

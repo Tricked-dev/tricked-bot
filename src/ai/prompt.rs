@@ -307,6 +307,8 @@ pub fn build_request(
         model: model.to_owned(),
         messages,
         max_tokens: config.openrouter_max_reply_tokens,
+        // Quick banter doesn't need much thought, and thinking delays the first streamed words.
+        reasoning: Some(serde_json::json!({ "effort": "low" })),
         ..Default::default()
     };
     let mut spare =

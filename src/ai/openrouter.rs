@@ -101,6 +101,16 @@ pub struct ChatRequest {
     pub reasoning: Option<Value>,
 }
 
+/// `temperature` for `model`, or `None` for Claude models, which reject sampling parameters since Claude Haiku 5.5.
+pub fn temperature(model: &str, temperature: f32) -> Option<f32> {
+    (!model.starts_with("anthropic/")).then_some(temperature)
+}
+
+/// Turns thinking off for short, simple completions, where it would only eat the output budget.
+pub fn no_reasoning() -> Value {
+    serde_json::json!({ "enabled": false })
+}
+
 #[derive(Deserialize)]
 struct Completion {
     #[serde(default)]
