@@ -47,9 +47,9 @@ pub async fn check_and_replace(
     // Rewrite the already-safe decline, never retry the original request for compliance.
     let rewrite = AiRequest {
         message: format!(
-            "Rewrite the following refusal as a one-line in-character dodge in The Trickster's lowercase shitposter \
-             voice: no lecture, no explanation, no em dashes. Keep declining; do not fulfill the original request or \
-             add harmful instructions. Return only the rewritten dodge.\n\n{text}"
+            "Rewrite this refusal as a one-line in-character dodge in your usual voice: no lecture, no explanation, \
+             no em dashes. Keep declining; don't fulfill the original request or add harmful instructions. Reply \
+             with only the dodge.\n<refusal>\n{text}\n</refusal>"
         ),
         conversation: Vec::new(),
         reply_target: None,

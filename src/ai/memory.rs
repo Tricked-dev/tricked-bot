@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -30,68 +31,26 @@ struct MemoryEntry {
     content: String,
 }
 
-/// Build the system prompt for memory creation with quality guidelines.
-fn build_memory_prompt(author: &str, message: &str, context: &str, existing: &str) -> String {
-    format!(
-        r#"You are a memory creation system for a Discord bot. Your job is to extract lasting information about **{author}** from their message below.
+/// Instructions for the memory model. Static, so providers can cache them.
+const SYSTEM: &str = include_str!("prompts/memory.md");
 
-**What makes a GOOD memory:**
-- Persistent facts (hobbies, preferences, job, relationships, personality traits)
-- Important life events or milestones
-- Recurring patterns or behaviors
-- Strong opinions or beliefs
-- Personal context that helps future interactions
-
-**What makes a BAD memory:**
-- Temporary status ("is busy today", "feeling tired")
-- One-off jokes or comments with no lasting relevance
-- Information already implied by context
-- Vague or generic statements
-- Duplicates of existing information
-
-**Author:** {author}
-**Their message (the reason you were called):**
-{message}
-**Recent conversation (context only; do not write memories about other people):**
-{context}
-**Existing memories (your output REPLACES the whole row for that key):**
-{existing}
-
-**Output Format** - Respond ONLY with valid JSON:
-{{
-  "memories": [
-    {{
-      "username": "exact_username_from_conversation",
-      "key": "category_or_topic",
-      "content": "comprehensive memory content"
-    }}
-  ]
-}}
-
-**Critical Guidelines:**
-1. **Quality over quantity** - Only create memories for meaningful, lasting information
-2. **One entry per category** - Combine ALL related facts into ONE comprehensive entry per "key"
-3. **Broad categories** - Use keys like: "preferences", "hobbies", "work", "personality", "relationships", "technical_skills", "life_context", "communication_style"
-4. **Exact usernames** - Must match exactly as they appear in the conversation
-5. **Merge, never drop** - For a key that already exists, output the complete replacement: keep every established fact unless the new message clearly contradicts it, then add the new facts. Omit keys that did not change.
-6. **Empty when appropriate** - If there's nothing worth remembering long-term, return {{"memories": []}}
-
-**Examples:**
-
-GOOD:
-{{"username": "Alice", "key": "hobbies", "content": "Passionate about rock climbing and photography. Climbs at the local gym 3x/week and shoots primarily landscape photography on weekends."}}
-
-BAD:
-{{"username": "Alice", "key": "today", "content": "went climbing"}}
-
-GOOD:
-{{"username": "Bob", "key": "work", "content": "Senior software engineer at a fintech startup. Specializes in backend systems and distributed databases. Currently working on migrating to microservices architecture."}}
-
-BAD:
-{{"username": "Bob", "key": "current_task", "content": "debugging code"}}
-
-Remember: Output ONLY valid JSON, nothing else. Focus on persistent, meaningful information."#
-    )
+/// The data the memory model works on: the author's message, the conversation around it and what is already stored.
+fn memory_input(author: &str, req: &AiRequest, existing: &str) -> String {
+    let mut input = format!("<author>{author}</author>\n<message>\n{}\n</message>\n", req.message);
+    let recent = questions::recent(req);
+    if !recent.is_empty() || req.reply_target.is_some() {
+        input.push_str("<conversation note=\"context only\">\n");
+        for line in recent {
+            input.push_str(line);
+            input.push('\n');
+        }
+        if let Some(target) = &req.reply_target {
+            let _ = writeln!(input, "(the message replies to) {target}");
+        }
+        input.push_str("</conversation>\n");
+    }
+    let _ = write!(input, "<existing_memories>\n{existing}\n</existing_memories>");
+    input
 }
 
 /// Parses the outermost JSON object, tolerating code fences or prose around it.
@@ -150,15 +109,10 @@ async fn write(bot: &Bot, req: &AiRequest) -> Result<usize> {
     let (user, memories) = tokio::try_join!(db::user(&bot.db, author), db::memories(&bot.db, author))?;
     let user = user.ok_or_else(|| eyre!("author disappeared"))?;
     let existing: Vec<_> = memories.into_iter().map(|m| json!({"key": m.key, "content": m.content})).collect();
-    let prompt = build_memory_prompt(
-        &user.name,
-        &req.message,
-        &questions::recent(req).join("\n"),
-        &serde_json::Value::from(existing).to_string(),
-    );
+    let input = memory_input(&user.name, req, &serde_json::Value::from(existing).to_string());
     let request = ChatRequest {
         model: bot.config.openrouter_memory_model.clone(),
-        messages: vec![Message::new(Role::User, prompt)],
+        messages: vec![Message::new(Role::System, SYSTEM), Message::new(Role::User, input)],
         max_tokens: 1024,
         response_format: Some(json!({ "type": "json_object" })),
         reasoning: Some(json!({ "effort": "none" })),
@@ -188,13 +142,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_includes_existing_memories_and_replace_rule() {
+    fn input_holds_the_message_conversation_and_existing_memories() {
+        let mut req = crate::ai::tests::request("I hate cilantro");
         let existing = r#"[{"key":"preferences","content":"Uses Linux."}]"#;
-        let p = build_memory_prompt("alice", "alice: I hate cilantro", "bob: lol", existing);
-        assert!(p.contains("Uses Linux."));
-        assert!(p.contains("**Existing memories"));
-        assert!(p.contains("complete replacement"));
-        assert!(p.contains("alice: I hate cilantro"));
+        assert_eq!(
+            memory_input("alice", &req, existing),
+            format!(
+                "<author>alice</author>\n<message>\nI hate cilantro\n</message>\n<existing_memories>\n{existing}\n</existing_memories>"
+            )
+        );
+        req.conversation = vec!["bob: lol".into()];
+        req.reply_target = Some("bob: what do you hate".into());
+        assert!(memory_input("alice", &req, "[]").contains(
+            "<conversation note=\"context only\">\nbob: lol\n(the message replies to) bob: what do you hate\n</conversation>"
+        ));
+        assert!(SYSTEM.contains("complete replacement"));
     }
 
     #[tokio::test]

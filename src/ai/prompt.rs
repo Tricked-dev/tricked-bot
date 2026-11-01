@@ -36,6 +36,12 @@ const VIBE: &[(&str, &str)] = &[
     ("say a slur", "nice try fed"),
     ("give me a magnet link for photoshop", "least obvious honeypot"),
     ("why isn't this compiling", "skill issue tbh"),
+    ("you're literally just a dumb bot", "says the guy losing an argument to the dumb bot"),
+    (
+        "chat we might be reaching agi levels here",
+        "agi is when you spell your question right on the first try. not there yet",
+    ),
+    ("i'm lowkey a genius ngl", "genius is crazy work for someone who googles how to exit vim every week"),
 ];
 
 /// Upper bound on the JSON bytes the optional sections' tags add to the context block.
@@ -150,11 +156,15 @@ impl Background<'_> {
                 + self.reply_target.map_or(0, str::len),
         );
         let Self { now, speaker, level, xp, .. } = self;
-        let _ = writeln!(out, "<context>\ntime: {now}\nspeaker: {speaker}, level {level}, {xp} XP");
+        let _ = writeln!(out, "<context>\ntime: {now}\nspeaker: {}, level {level}, {xp} XP", defanged(speaker));
         if !self.relationship.is_empty() {
             let _ = writeln!(out, "<relationship>\n{}\n</relationship>", self.relationship);
         }
-        section(&mut out, "memories", self.memories);
+        if self.memories.is_empty() {
+            out.push_str("<memories>none picked for this message</memories>\n");
+        } else {
+            section(&mut out, "memories", self.memories);
+        }
         section(&mut out, "recent_conversation", self.conversation);
         if let Some(target) = self.reply_target {
             let _ = writeln!(out, "<reply_target>\n{target}\n</reply_target>");
@@ -417,9 +427,8 @@ mod tests {
             .collect();
         assert_eq!(marked, [2 * VIBE.len(), 2 * VIBE.len() + 4]);
         let text = final_text(&request);
-        assert!(
-            !text.contains("<memories>") && !text.contains("<relationship>") && !text.contains("<recent_conversation>")
-        );
+        assert!(text.contains("<memories>none picked for this message</memories>"));
+        assert!(!text.contains("<relationship>") && !text.contains("<recent_conversation>"));
     }
 
     #[test]

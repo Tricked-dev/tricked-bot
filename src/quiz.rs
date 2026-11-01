@@ -250,9 +250,9 @@ async fn math_question(bot: &Bot) -> Result<(String, f64)> {
             messages: vec![
                 ChatMessage::new(
                     Role::System,
-                    "You are a math expression generator for mental math challenges. Generate simple arithmetic \
-                     expressions that can be solved mentally. Output ONLY the mathematical expression with numbers \
-                     and operators, no explanations, no greetings, no additional text.",
+                    "You generate simple arithmetic expressions for mental math challenges. Use only whole numbers, \
+                     spaces, parentheses and the operators + - * /. Reply with only the expression: no answer, \
+                     no equals sign, no explanation, no other text.",
                 ),
                 ChatMessage::new(Role::User, prompt),
             ],
