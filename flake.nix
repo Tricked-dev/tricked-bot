@@ -36,13 +36,14 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Keep Cargo sources plus the templates, stylesheet and migrations that
+        # Keep Cargo sources plus the prompts, templates, stylesheet and migrations that
         # are compiled into the binary; filterCargoSources alone strips them.
         src = lib.cleanSourceWith {
           src = ./.;
           filter =
             path: type:
             (craneLib.filterCargoSources path type)
+            || (builtins.match ".*/src/ai/prompts(/.*)?" path != null)
             || (builtins.match ".*/(web|migrations)(/.*)?" path != null);
         };
 
