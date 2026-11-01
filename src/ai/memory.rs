@@ -153,7 +153,7 @@ async fn write(bot: &Bot, req: &AiRequest) -> Result<usize> {
     let prompt = build_memory_prompt(
         &user.name,
         &req.message,
-        &questions::short_context(&req.context),
+        &questions::recent(req).join("\n"),
         &serde_json::Value::from(existing).to_string(),
     );
     let request = ChatRequest {

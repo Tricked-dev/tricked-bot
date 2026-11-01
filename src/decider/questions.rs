@@ -1,18 +1,22 @@
 use serde_json::{Value, json};
 
 use super::Question;
-use crate::db::Memory;
+use crate::{ai::AiRequest, db::Memory};
 
 pub const CONTEXT_LINES: usize = 8;
 
-/// The last `CONTEXT_LINES` transcript lines before the current message.
-pub fn short_context(context: &str) -> String {
-    let lines: Vec<&str> = context.lines().filter(|l| !l.trim().is_empty()).collect();
-    lines[lines.len().saturating_sub(CONTEXT_LINES)..].join("\n")
+/// The last [`CONTEXT_LINES`] transcript lines before the current message.
+pub fn recent(req: &AiRequest) -> &[String] {
+    &req.conversation[req.conversation.len().saturating_sub(CONTEXT_LINES)..]
 }
 
-pub fn state(context: &str, author: &str, text: &str) -> Value {
-    json!({ "conversation": short_context(context), "last_message": { "author": author, "text": text } })
+/// What the decider sees of a message: the recent conversation and the message itself.
+pub fn state(req: &AiRequest) -> Value {
+    let mut last = json!({ "author": req.user_name, "text": req.message });
+    if let Some(target) = &req.reply_target {
+        last["replying_to"] = target.as_str().into();
+    }
+    json!({ "conversation": recent(req).join("\n"), "last_message": last })
 }
 
 pub fn reply_state(user_message: &str, reply: &str) -> Value {
@@ -75,21 +79,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_context_keeps_last_lines() {
-        let ctx = (1..=12).map(|i| format!("u: {i}")).collect::<Vec<_>>().join("\n");
-        let s = short_context(&ctx);
-        assert_eq!(s.lines().count(), CONTEXT_LINES);
-        assert!(s.starts_with("u: 5") && s.ends_with("u: 12"));
-    }
-
-    #[test]
-    fn state_keeps_current_message_separate_and_skips_blank_lines() {
-        assert_eq!(short_context("\n  \nalice: café\n\n"), "alice: café");
-        let s = state("old context", "alice", "新しい message");
-        assert_eq!(s["conversation"], "old context");
-        assert_eq!(s["last_message"]["author"], "alice");
-        assert_eq!(s["last_message"]["text"], "新しい message");
-        assert_eq!(short_context(""), "");
+    fn state_keeps_the_last_lines_and_the_current_message_separate() {
+        let mut req = crate::ai::tests::request("新しい message");
+        req.conversation = (1..=12).map(|i| format!("u: {i}")).collect();
+        let s = state(&req);
+        assert_eq!(s["conversation"], (5..=12).map(|i| format!("u: {i}")).collect::<Vec<_>>().join("\n"));
+        assert_eq!(s["last_message"], json!({"author": "alice", "text": "新しい message"}));
+        req.reply_target = Some("bob: hi".into());
+        assert_eq!(state(&req)["last_message"]["replying_to"], "bob: hi");
     }
 
     #[test]

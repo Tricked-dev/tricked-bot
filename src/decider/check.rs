@@ -42,7 +42,7 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
             qs.insert("followup".into(), questions::followup());
         }
         let started = std::time::Instant::now();
-        let state = questions::state(&req.context, &req.user_name, &req.message);
+        let state = questions::state(&req);
         let timeout = Duration::from_millis(cfg.decider_check_timeout_ms);
         let scores = match decider.noul(&state, qs, timeout).await {
             Ok(scores) => scores,
@@ -55,7 +55,8 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
         let reply = scores.get("reply").copied();
         let followup = scores.get("followup").copied();
         let speaker = format!("{PERSONA}: ");
-        let bot_in_context = questions::short_context(&req.context).lines().any(|line| line.starts_with(&speaker));
+        let bot_in_context =
+            questions::recent(&req).iter().chain(&req.reply_target).any(|line| line.starts_with(&speaker));
         let ReplyDecision { wants, responding, fire } = decide_reply(
             cfg,
             &mut bot.reply_gate.lock().unwrap(),

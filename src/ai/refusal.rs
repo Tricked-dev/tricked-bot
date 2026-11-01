@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use twilight_model::id::{Id, marker::MessageMarker};
 
-use super::{AiRequest, openrouter::Content, prompt, reply::REPLY_TIMEOUT};
+use super::{AiRequest, openrouter::Content, output, prompt, reply::REPLY_TIMEOUT};
 use crate::{
     bot::Bot,
     db::{Memory, User},
@@ -51,7 +51,8 @@ pub async fn check_and_replace(
              voice: no lecture, no explanation, no em dashes. Keep declining; do not fulfill the original request or \
              add harmful instructions. Return only the rewritten dodge.\n\n{text}"
         ),
-        context: String::new(),
+        conversation: Vec::new(),
+        reply_target: None,
         media: Vec::new(),
         ..req.clone()
     };
@@ -60,7 +61,7 @@ pub async fn check_and_replace(
         let request = prompt::build_request(cfg, &rewrite, user, memories, turn, fallback_model)?;
         ai.complete(&request, REPLY_TIMEOUT).await
     };
-    let replacement = match rewritten.await.map(|text| prompt::presentable(&text)) {
+    let replacement = match rewritten.await.map(|text| output::presentable(&text)) {
         Ok(Some(text)) if !text.trim().is_empty() => text,
         Ok(_) => return,
         Err(error) => {

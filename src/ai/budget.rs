@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn images_count_as_visual_tokens_and_can_push_a_request_over_budget() {
-        let text = Part::Text { text: "describe these".into() };
+        let text = Part::text("describe these");
         let one = request("x".repeat(240_000), Content::Parts(vec![text.clone(), image(&"a".repeat(1_000_000))]));
         assert!(check(&one, 90_000).is_ok());
         let two = request("x".repeat(240_000), Content::Parts(vec![text, image(&"a".repeat(1_000_000)), image("b")]));

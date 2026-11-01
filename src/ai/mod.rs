@@ -5,6 +5,7 @@ pub mod cleanup;
 pub mod media;
 pub mod memory;
 pub mod openrouter;
+pub mod output;
 pub mod prompt;
 pub mod recall;
 pub mod refusal;
@@ -39,9 +40,19 @@ pub struct AiRequest {
     pub message_id: Id<MessageMarker>,
     pub message: String,
     pub media: Vec<media::MediaSource>,
-    pub context: String,
+    /// Earlier channel messages as `name: text` lines, oldest first.
+    pub conversation: Vec<String>,
+    /// The message this one replies to, as a `name: text` line.
+    pub reply_target: Option<String>,
     /// Display names for Discord mentions in this conversation.
     pub user_mentions: HashMap<String, Id<UserMarker>>,
+}
+
+impl AiRequest {
+    /// Who each mentioned ID is, for resolving `<@id>` mentions.
+    pub fn mention_names(&self) -> HashMap<Id<UserMarker>, &str> {
+        self.user_mentions.iter().map(|(name, id)| (*id, name.as_str())).collect()
+    }
 }
 
 /// Whether the message pings or replies to the bot.
@@ -60,7 +71,7 @@ fn transcript_line(name: &str, content: &str) -> String {
 impl Bot {
     pub fn snapshot(&self, msg: &Message) -> AiRequest {
         let mut user_mentions = HashMap::from([(msg.author.name.clone(), msg.author.id)]);
-        let mut rows = Vec::new();
+        let mut conversation = Vec::new();
         if let Some(ids) = self.cache.channel_messages(msg.channel_id) {
             let mut earlier: Vec<_> = ids.iter().copied().filter(|id| *id < msg.id).collect();
             earlier.sort_unstable();
@@ -77,20 +88,20 @@ impl Bot {
                 } else {
                     author.to_string()
                 };
-                rows.push(transcript_line(&name, message.content()));
+                conversation.push(transcript_line(&name, message.content()));
             }
         }
         // A reply can target an older message outside the cached transcript. Keep
         // its identity and content explicit even when newer channel messages exist.
-        if let Some(reference) = &msg.referenced_message {
+        let reply_target = msg.referenced_message.as_ref().map(|reference| {
             let name = if reference.author.id == self.id {
-                PERSONA.to_owned()
+                PERSONA
             } else {
                 user_mentions.insert(reference.author.name.clone(), reference.author.id);
-                reference.author.name.clone()
+                &reference.author.name
             };
-            rows.push(format!("<reply_target>\n{}\n</reply_target>", transcript_line(&name, &reference.content)));
-        }
+            transcript_line(name, &reference.content)
+        });
         AiRequest {
             user_id: msg.author.id,
             user_name: msg.author.name.clone(),
@@ -98,17 +109,33 @@ impl Bot {
             message_id: msg.id,
             message: msg.content.chars().take(MESSAGE_CHARS).collect(),
             media: media::sources(msg),
-            context: rows.join("\n"),
+            conversation,
+            reply_target,
             user_mentions,
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::bot::tests::{message, test_bot};
     use twilight_model::gateway::{event::Event, payload::incoming::MessageCreate};
+
+    /// A request from alice with no conversation around it.
+    pub fn request(message: &str) -> AiRequest {
+        AiRequest {
+            user_id: Id::new(2),
+            user_name: "alice".into(),
+            channel_id: Id::new(1),
+            message_id: Id::new(3),
+            message: message.into(),
+            media: Vec::new(),
+            conversation: Vec::new(),
+            reply_target: None,
+            user_mentions: HashMap::new(),
+        }
+    }
 
     #[tokio::test]
     async fn explicit_reply_target_is_kept_when_channel_history_exists() {
@@ -117,8 +144,8 @@ mod tests {
         let mut current = message(42, 2, "alice", "Thoughts?");
         current.referenced_message = Some(Box::new(message(20, 3, "bot_account", "Level: 37, position: 12")));
         let req = bot.snapshot(&current);
-        assert!(req.context.contains("<reply_target>\nThe Trickster: Level: 37, position: 12\n</reply_target>"));
-        assert!(req.context.contains("old bird topic"));
+        assert_eq!(req.reply_target.as_deref(), Some("The Trickster: Level: 37, position: 12"));
+        assert_eq!(req.conversation, ["alice: old bird topic"]);
     }
 
     #[test]

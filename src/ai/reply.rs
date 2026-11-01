@@ -19,7 +19,7 @@ use twilight_model::id::{
     marker::{ChannelMarker, MessageMarker, UserMarker},
 };
 
-use super::{AiRequest, prompt, recall, refusal};
+use super::{AiRequest, output, prompt, recall, refusal};
 use crate::{bot::Bot, db};
 
 /// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
@@ -159,7 +159,7 @@ pub async fn stream_to_discord(
                 }
                 Some(Err(error)) => {
                     tracing::error!("AI stream failed: {error}");
-                    failure = Some(prompt::discord_text(&format!("{AI_ERROR}: {error}")));
+                    failure = Some(output::discord_text(&format!("{AI_ERROR}: {error}")));
                     changed = true;
                     (true, false)
                 }
@@ -170,7 +170,7 @@ pub async fn stream_to_discord(
         // Cleaning up the text is linear in its length, so it only happens when the result is about to be sent.
         if changed && (finished || edit_due || message_id.is_none()) {
             changed = false;
-            let text = failure.clone().or_else(|| prompt::presentable(&raw)).unwrap_or_default();
+            let text = failure.clone().or_else(|| output::presentable(&raw)).unwrap_or_default();
             if !text.trim().is_empty() && text != last_sent {
                 if let Some(id) = message_id {
                     match http.update_message(channel_id, id).content(Some(&text)).await {

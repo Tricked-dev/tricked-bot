@@ -62,7 +62,7 @@ pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Vec<Memory>> {
     let started = std::time::Instant::now();
     let probabilities = decider
         .choice(
-            &questions::state(&req.context, &req.user_name, &req.message),
+            &questions::state(req),
             "Which stored memory name would help answer the last message? Choose the no-memory option if no memory \
              would help.",
             options,

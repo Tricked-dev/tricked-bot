@@ -31,8 +31,28 @@ pub enum Content {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Part {
-    Text { text: String },
-    ImageUrl { image_url: ImageUrl },
+    Text {
+        text: String,
+        /// Ends a cacheable prompt prefix, for providers that only cache at explicit breakpoints.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    ImageUrl {
+        image_url: ImageUrl,
+    },
+}
+
+impl Part {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into(), cache_control: None }
+    }
+}
+
+/// Anthropic's prompt cache marker, which `OpenRouter` passes through. Entries live for five minutes after last use.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum CacheControl {
+    Ephemeral,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -49,6 +69,20 @@ pub struct Message {
 impl Message {
     pub fn new(role: Role, text: impl Into<String>) -> Self {
         Self { role, content: Content::Text(text.into()) }
+    }
+
+    /// Marks the end of this message as a prompt cache breakpoint.
+    pub fn cache_breakpoint(&mut self) {
+        // Only content parts can carry the marker.
+        if let Content::Text(text) = &mut self.content {
+            let text = std::mem::take(text);
+            self.content = Content::Parts(vec![Part::text(text)]);
+        }
+        let Content::Parts(parts) = &mut self.content else { return };
+        if let Some(Part::Text { cache_control, .. }) = parts.iter_mut().rfind(|part| matches!(part, Part::Text { .. }))
+        {
+            *cache_control = Some(CacheControl::Ephemeral);
+        }
     }
 }
 
@@ -234,7 +268,7 @@ mod tests {
                 Message {
                     role: Role::User,
                     content: Content::Parts(vec![
-                        Part::Text { text: "look".into() },
+                        Part::text("look"),
                         Part::ImageUrl { image_url: ImageUrl { url: "data:x".into() } },
                     ]),
                 },
@@ -251,6 +285,16 @@ mod tests {
                     {"type": "image_url", "image_url": {"url": "data:x"}}
                 ]}
             ]})
+        );
+    }
+
+    #[test]
+    fn cache_breakpoints_mark_the_last_text_part() {
+        let mut message = Message::new(Role::Assistant, "kek");
+        message.cache_breakpoint();
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "kek", "cache_control": {"type": "ephemeral"}}]})
         );
     }
 
