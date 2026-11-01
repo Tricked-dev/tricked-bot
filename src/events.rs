@@ -32,6 +32,12 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
             Some(_) => guild_message(&bot, &msg.0).await,
             None => direct_message(&bot, &msg.0).await,
         },
+        Event::MessageUpdate(msg) if !msg.author.bot => {
+            message_edit(&bot, &msg);
+            Ok(())
+        }
+        Event::MessageDelete(deleted) => messages_deleted(&bot, deleted.channel_id, &[deleted.id]).await,
+        Event::MessageDeleteBulk(deleted) => messages_deleted(&bot, deleted.channel_id, &deleted.ids).await,
         Event::TypingStart(typing) => typing_start(&bot, &typing).await,
         Event::Ready(_) => {
             tracing::info!("Connected");
@@ -94,6 +100,43 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     let ask_reply = !answered && bot.ai.is_some() && bot.config.decider_reply_mode != ReplyMode::Off;
     check::spawn(Arc::clone(bot), req, ask_reply);
     send(bot, msg, response?).await
+}
+
+/// Editing the text of a message that is still being answered restarts the reply. Finished replies stay as they are.
+fn message_edit(bot: &Arc<Bot>, msg: &Message) {
+    ai::reply::submit(bot, &bot.snapshot(msg), false);
+}
+
+/// Deleting a message takes the bot's replies to it along: an unfinished one is cancelled and finished ones deleted.
+async fn messages_deleted(bot: &Arc<Bot>, channel: Id<ChannelMarker>, deleted: &[Id<MessageMarker>]) -> Result<()> {
+    let cancelled = ai::reply::cancel_answering(bot, channel, deleted);
+    for reply in replies_to(bot, channel, deleted).into_iter().filter(|reply| !cancelled.contains(reply)) {
+        if let Err(error) = bot.http.delete_message(channel, reply).await {
+            tracing::warn!(channel = %channel, msg_id = %reply, "Deleting a reply to a deleted message failed: {error}");
+        }
+    }
+    Ok(())
+}
+
+/// The bot's cached messages in `channel` that reply to one of `targets`.
+fn replies_to(bot: &Bot, channel: Id<ChannelMarker>, targets: &[Id<MessageMarker>]) -> Vec<Id<MessageMarker>> {
+    let (Some(ids), Some(oldest)) = (bot.cache.channel_messages(channel), targets.iter().min()) else {
+        return Vec::new();
+    };
+    // Snowflakes are chronological, so only messages newer than a target can reply to it.
+    ids.iter()
+        .copied()
+        .filter(|id| id > oldest)
+        .filter(|id| {
+            bot.cache.message(*id).is_some_and(|message| {
+                message.author() == bot.id
+                    && message
+                        .reference()
+                        .and_then(|reference| reference.message_id)
+                        .is_some_and(|target| targets.contains(&target))
+            })
+        })
+        .collect()
 }
 
 async fn send(bot: &Bot, msg: &Message, response: Response) -> Result<()> {
@@ -174,4 +217,46 @@ fn logged_content(content: &str, attachments: &[Attachment], embeds: &[Embed]) -
         let _ = write!(text, " [embed: {url}]");
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot::tests::{message, test_bot};
+    use twilight_model::{
+        channel::message::{MessageReference, MessageReferenceType},
+        gateway::payload::incoming::MessageCreate,
+    };
+
+    fn reply(id: u64, author: u64, to: u64) -> Message {
+        let mut reply = message(id, author, "someone", "reply");
+        reply.reference = Some(MessageReference {
+            channel_id: Some(Id::new(1)),
+            guild_id: None,
+            kind: MessageReferenceType::Default,
+            message_id: Some(Id::new(to)),
+            fail_if_not_exists: None,
+        });
+        reply
+    }
+
+    #[tokio::test]
+    async fn only_the_bots_replies_to_a_deleted_message_are_found() {
+        let bot = test_bot();
+        let cached = vec![
+            message(10, 2, "alice", "question"),
+            reply(11, 3, 10),
+            message(12, 3, "bot", "unrelated"),
+            reply(13, 2, 10),
+            reply(14, 3, 12),
+            reply(15, 3, 10),
+        ];
+        for msg in cached {
+            bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(msg))));
+        }
+        let mut found = replies_to(&bot, Id::new(1), &[Id::new(10)]);
+        found.sort_unstable();
+        assert_eq!(found, [Id::new(11), Id::new(15)]);
+        assert!(replies_to(&bot, Id::new(2), &[Id::new(10)]).is_empty(), "other channels are not searched");
+    }
 }

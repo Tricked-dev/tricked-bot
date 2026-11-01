@@ -23,6 +23,7 @@ use super::{AiRequest, output, prompt, recall, refusal};
 use crate::{bot::Bot, db};
 
 /// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
+/// An edit to the text being answered also counts as a restart.
 const MAX_RESTARTS: u8 = 2;
 /// How often a streaming reply is edited with newly generated text.
 const EDIT_INTERVAL: Duration = Duration::from_millis(1500);
@@ -37,6 +38,8 @@ type ReplyKey = (Id<ChannelMarker>, Id<UserMarker>);
 #[derive(Debug)]
 struct InFlight {
     message_id: Id<MessageMarker>,
+    /// The text being answered, so an edit that only resolves link previews leaves the reply alone.
+    message: String,
     generation: u64,
     restarts: u8,
     abort: AbortHandle,
@@ -50,6 +53,14 @@ pub struct ReplyTasks {
     generation: AtomicU64,
 }
 
+impl InFlight {
+    /// Whether `req` replaces this reply: it answers a newer message, or this message after its text was edited.
+    fn replaced_by(&self, req: &AiRequest) -> bool {
+        let edited = self.message_id == req.message_id && self.message != req.message;
+        (self.message_id < req.message_id || edited) && self.restarts < MAX_RESTARTS
+    }
+}
+
 impl ReplyTasks {
     fn finish(&self, key: ReplyKey, generation: u64) {
         let mut in_flight = self.in_flight.lock().unwrap();
@@ -59,20 +70,42 @@ impl ReplyTasks {
     }
 }
 
-/// Aborts a superseded reply and deletes whatever part of it was already posted.
-fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) {
+/// Aborts an unfinished reply and deletes whatever part of it was already posted, returning that part.
+fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) -> Option<Id<MessageMarker>> {
     entry.abort.abort();
-    if let Some(posted) = *entry.posted.lock().unwrap() {
+    let posted = *entry.posted.lock().unwrap();
+    if let Some(posted) = posted {
         let bot = Arc::clone(bot);
         tokio::spawn(async move {
             let _ = bot.http.delete_message(channel, posted).await;
         });
     }
-    tracing::info!(target: "decider", kind = "restart", superseded = %entry.message_id, restarts = entry.restarts + 1);
+    posted
 }
 
-/// Answers `req`, replacing the author's unfinished reply to an older message. Without an unfinished reply, one only
-/// starts when `start_new` is set. Returns whether a reply to `req` started.
+/// Cancels the unfinished replies to any of the `deleted` messages in `channel`. Returns the partial replies that are
+/// being deleted along with them.
+pub fn cancel_answering(
+    bot: &Arc<Bot>,
+    channel: Id<ChannelMarker>,
+    deleted: &[Id<MessageMarker>],
+) -> Vec<Id<MessageMarker>> {
+    let mut in_flight = bot.replies.in_flight.lock().unwrap();
+    let mut posted = Vec::new();
+    in_flight.retain(|&(entry_channel, _), entry| {
+        if entry_channel != channel || !deleted.contains(&entry.message_id) {
+            return true;
+        }
+        posted.extend(cancel(bot, entry, channel));
+        tracing::info!(target: "decider", kind = "cancel", deleted = %entry.message_id);
+        false
+    });
+    posted
+}
+
+/// Answers `req`, replacing the author's unfinished reply to an older message, or to the same message before its text
+/// was edited. Without an unfinished reply, one only starts when `start_new` is set. Returns whether a reply to `req`
+/// started.
 ///
 /// Events are handled concurrently, so an older message can arrive here after a newer one. Snowflakes are
 /// chronological, which makes "newer" a plain ID comparison.
@@ -81,17 +114,21 @@ pub fn submit(bot: &Arc<Bot>, req: &AiRequest, start_new: bool) -> bool {
     let mut in_flight = bot.replies.in_flight.lock().unwrap();
     let restarts = match in_flight.entry(key) {
         Entry::Vacant(_) if start_new => 0,
-        Entry::Occupied(entry) if entry.get().message_id < req.message_id && entry.get().restarts < MAX_RESTARTS => {
+        Entry::Occupied(entry) if entry.get().replaced_by(req) => {
             let superseded = entry.remove();
             cancel(bot, &superseded, req.channel_id);
-            superseded.restarts + 1
+            let restarts = superseded.restarts + 1;
+            tracing::info!(target: "decider", kind = "restart", superseded = %superseded.message_id, restarts);
+            restarts
         }
         _ => return false,
     };
     let generation = bot.replies.generation.fetch_add(1, Ordering::Relaxed);
     let posted = Arc::default();
     let abort = tokio::spawn(run(Arc::clone(bot), req.clone(), Arc::clone(&posted), generation)).abort_handle();
-    in_flight.insert(key, InFlight { message_id: req.message_id, generation, restarts, abort, posted });
+    let entry =
+        InFlight { message_id: req.message_id, message: req.message.clone(), generation, restarts, abort, posted };
+    in_flight.insert(key, entry);
     true
 }
 
@@ -217,6 +254,7 @@ async fn post(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::tests::{message, test_bot};
     use axum::{Json, Router, extract::State, http::Method, http::StatusCode, routing::any};
     use futures_util::stream;
     use serde_json::{Value, json};
@@ -260,6 +298,28 @@ mod tests {
 
     fn deltas(texts: &[&str]) -> Vec<Result<String>> {
         texts.iter().map(|text| Ok((*text).to_owned())).collect()
+    }
+
+    fn in_flight(message_id: u64, message: &str, restarts: u8) -> InFlight {
+        InFlight {
+            message_id: Id::new(message_id),
+            message: message.to_owned(),
+            generation: 0,
+            restarts,
+            abort: tokio::spawn(async {}).abort_handle(),
+            posted: Arc::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn newer_messages_and_text_edits_replace_a_reply() {
+        let bot = test_bot();
+        let entry = in_flight(10, "hello", 0);
+        assert!(entry.replaced_by(&bot.snapshot(&message(11, 2, "alice", "more"))));
+        assert!(entry.replaced_by(&bot.snapshot(&message(10, 2, "alice", "hello there"))));
+        assert!(!entry.replaced_by(&bot.snapshot(&message(10, 2, "alice", "hello"))), "only a link preview resolved");
+        assert!(!entry.replaced_by(&bot.snapshot(&message(9, 2, "alice", "older"))));
+        assert!(!in_flight(10, "hello", MAX_RESTARTS).replaced_by(&bot.snapshot(&message(10, 2, "alice", "edited"))));
     }
 
     #[tokio::test]
