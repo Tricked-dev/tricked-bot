@@ -3,38 +3,48 @@
 {% block title %}Memories for User {{ user.id }}{% endblock %}
 
 {% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    <ol>
+        <li><a href="/">Users</a></li>
+        <li><a href="/user/{{ user.id }}">{{ user.display_name() }}</a></li>
+        <li aria-current="page">Memories</li>
+    </ol>
+</nav>
+
 <div class="page-header">
-    <h1>Memories for {{ user.display_name() }}</h1>
+    <div class="page-title">
+        <h1>Memories for {{ user.display_name() }}</h1>
+        <p class="page-meta">{{ memories.len() }} {% if memories.len() == 1 %}memory{% else %}memories{% endif %}</p>
+    </div>
+    {% if !memories.is_empty() %}
     <div class="actions">
         <a href="/user/{{ user.id }}/memory/new" class="btn btn-primary">New Memory</a>
-        <a href="/user/{{ user.id }}" class="btn">Back to User</a>
     </div>
-</div>
-
-<div class="memories-list">
-    {% for memory in memories %}
-    <div class="memory-card">
-        <div class="memory-header">
-            <h3>{{ memory.key }}</h3>
-            <span class="memory-id">ID: {{ memory.id }}</span>
-        </div>
-        <div class="memory-content">
-            <pre>{{ memory.content }}</pre>
-        </div>
-        <div class="memory-actions">
-            <a href="/memory/{{ memory.id }}/edit" class="btn btn-sm btn-primary">Edit</a>
-            <form method="post" action="/memory/{{ memory.id }}/delete" style="display: inline;">
-                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete this memory?')">Delete</button>
-            </form>
-        </div>
-    </div>
-    {% endfor %}
+    {% endif %}
 </div>
 
 {% if memories.is_empty() %}
 <div class="no-data">
-    <p>No memories found for this user.</p>
+    <p>No memories for {{ user.display_name() }} yet. The bot saves them as it learns lasting things about this person, or you can add one yourself.</p>
     <a href="/user/{{ user.id }}/memory/new" class="btn btn-primary">Create First Memory</a>
 </div>
+{% else %}
+<ul class="memory-list">
+    {% for memory in memories %}
+    <li class="memory">
+        <div class="memory-header">
+            <h2 class="memory-key">{{ memory.key }}</h2>
+            <span class="memory-id">ID {{ memory.id }}</span>
+        </div>
+        <p class="memory-content">{{ memory.content }}</p>
+        <div class="memory-actions">
+            <a href="/memory/{{ memory.id }}/edit" class="btn btn-sm">Edit</a>
+            <form method="post" action="/memory/{{ memory.id }}/delete" class="inline-form" onsubmit="return confirm('Are you sure you want to delete this memory?')">
+                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+        </div>
+    </li>
+    {% endfor %}
+</ul>
 {% endif %}
 {% endblock %}

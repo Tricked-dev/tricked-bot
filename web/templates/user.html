@@ -3,45 +3,53 @@
 {% block title %}User {{ user.id }}{% endblock %}
 
 {% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    <ol>
+        <li><a href="/">Users</a></li>
+        <li aria-current="page">{{ user.display_name() }}</li>
+    </ol>
+</nav>
+
 <div class="page-header">
-    <h1>{{ user.display_name() }}</h1>
+    <div class="page-title">
+        <h1>{{ user.display_name() }}</h1>
+        <p class="page-meta">ID {{ user.id }}</p>
+    </div>
     <div class="actions">
         <a href="/user/{{ user.id }}/edit" class="btn btn-primary">Edit User</a>
-        <a href="/user/{{ user.id }}/memories" class="btn btn-secondary">View Memories</a>
+        <a href="/user/{{ user.id }}/memories" class="btn">View Memories</a>
     </div>
 </div>
 
-<div class="detail-card">
+<section class="panel">
     <h2>User Information</h2>
     <dl class="detail-list">
-        <dt>User ID:</dt>
-        <dd>{{ user.id }}</dd>
+        <dt>Name</dt>
+        <dd>{% if !user.name.is_empty() %}{{ user.name }}{% else %}<span class="unset">Not set</span>{% endif %}</dd>
 
-        <dt>Name:</dt>
-        <dd>{% if !user.name.is_empty() %}{{ user.name }}{% else %}Not set{% endif %}</dd>
+        <dt>Level</dt>
+        <dd class="num">{{ user.level }}</dd>
 
-        <dt>Level:</dt>
-        <dd>{{ user.level }}</dd>
+        <dt>XP</dt>
+        <dd class="num">{{ user.xp }}</dd>
 
-        <dt>XP:</dt>
-        <dd>{{ user.xp }}</dd>
-
-        <dt>Relationship:</dt>
-        <dd>{% if !user.relationship.is_empty() %}{{ user.relationship }}{% else %}Not set{% endif %}</dd>
+        <dt>Relationship</dt>
+        <dd>{% if !user.relationship.is_empty() %}{{ user.relationship }}{% else %}<span class="unset">Not set</span>{% endif %}</dd>
     </dl>
-</div>
+</section>
 
-<div class="detail-card">
+<section class="panel">
     <h2>Example Interactions</h2>
-
-    <div class="example-section">
-        <h3>Example Input:</h3>
-        <pre>{% if !user.example_input.is_empty() %}{{ user.example_input }}{% else %}Not set{% endif %}</pre>
+    <p class="panel-help">Line N of the input pairs with line N of the output.</p>
+    <div class="examples">
+        <div class="example">
+            <h3>Example Input</h3>
+            {% if !user.example_input.is_empty() %}<pre>{{ user.example_input }}</pre>{% else %}<p class="unset">Not set</p>{% endif %}
+        </div>
+        <div class="example">
+            <h3>Example Output</h3>
+            {% if !user.example_output.is_empty() %}<pre>{{ user.example_output }}</pre>{% else %}<p class="unset">Not set</p>{% endif %}
+        </div>
     </div>
-
-    <div class="example-section">
-        <h3>Example Output:</h3>
-        <pre>{% if !user.example_output.is_empty() %}{{ user.example_output }}{% else %}Not set{% endif %}</pre>
-    </div>
-</div>
+</section>
 {% endblock %}

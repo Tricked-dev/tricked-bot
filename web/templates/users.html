@@ -4,43 +4,45 @@
 
 {% block content %}
 <div class="page-header">
-    <h1>Users</h1>
-    <div class="actions">
-        <a href="/export/prompts.json" class="btn btn-primary" download>Export Prompts (JSON)</a>
-        <a href="/export/users.csv" class="btn btn-secondary" download>Export Users (CSV)</a>
+    <div class="page-title">
+        <h1>Users</h1>
+        <p class="page-meta">{{ users.len() }} {% if users.len() == 1 %}user{% else %}users{% endif %}</p>
     </div>
-</div>
-
-<div class="users-grid">
-    {% for user in users %}
-    <div class="user-card">
-        <div class="user-header">
-            <h3>{{ user.display_name() }}</h3>
-            <span class="user-id">ID: {{ user.id }}</span>
-        </div>
-        <div class="user-stats">
-            <div class="stat">
-                <span class="stat-label">Level:</span>
-                <span class="stat-value">{{ user.level }}</span>
-            </div>
-            <div class="stat">
-                <span class="stat-label">XP:</span>
-                <span class="stat-value">{{ user.xp }}</span>
-            </div>
-        </div>
-        {% if !user.relationship.is_empty() %}
-        <p class="relationship"><strong>Relationship:</strong> {{ user.relationship }}</p>
-        {% endif %}
-        <div class="user-actions">
-            <a href="/user/{{ user.id }}" class="btn btn-sm">View</a>
-            <a href="/user/{{ user.id }}/edit" class="btn btn-sm btn-primary">Edit</a>
-            <a href="/user/{{ user.id }}/memories" class="btn btn-sm btn-secondary">Memories</a>
-        </div>
-    </div>
-    {% endfor %}
 </div>
 
 {% if users.is_empty() %}
-<p class="no-data">No users found.</p>
+<div class="no-data">
+    <p>No users yet. People show up here after their first message in the server.</p>
+</div>
+{% else %}
+<div class="table-wrap">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">ID</th>
+                <th scope="col" class="num">Level</th>
+                <th scope="col" class="num">XP</th>
+                <th scope="col">Relationship</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td class="name"><a href="/user/{{ user.id }}">{{ user.display_name() }}</a></td>
+                <td class="id">{{ user.id }}</td>
+                <td class="num">{{ user.level }}</td>
+                <td class="num">{{ user.xp }}</td>
+                <td class="relationship">{% if !user.relationship.is_empty() %}{{ user.relationship }}{% else %}<span class="unset">Not set</span>{% endif %}</td>
+                <td class="row-actions">
+                    <a href="/user/{{ user.id }}/edit" class="btn btn-sm">Edit</a>
+                    <a href="/user/{{ user.id }}/memories" class="btn btn-sm">Memories</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endif %}
 {% endblock %}
