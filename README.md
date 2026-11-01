@@ -8,6 +8,7 @@ A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)
   per-user memories and image understanding. It can attach reaction GIFs (anime reactions from nekos.best with no
   key, or any GIF search with `KLIPY_API_KEY`; `DISABLE_GIFS` turns them off) and comes back to gloat about its
   predictions once they're due
+* Unprompted Community Notes on confidently wrong claims, and rulings or polls when an argument drags on
 * XP and levels, plus surprise math and colour quizzes
 * Slash commands: `/level`, `/qalc`, `/translate` and currency conversion (`/usd`, `/euro`, `/yen`, `/pln`, `/cad`)
 * Responders, `t!ratewaifu`, a rotating channel topic and a daily profile picture
