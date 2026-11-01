@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 
@@ -28,7 +28,7 @@ pub struct Bot {
     pub config: Config,
     pub id: Id<UserMarker>,
     pub application_id: Id<ApplicationMarker>,
-    pub http: HttpClient,
+    pub http: Arc<HttpClient>,
     pub cache: DefaultInMemoryCache,
     pub db: Pool,
     /// General-purpose HTTP client with a shared connection pool.
@@ -77,7 +77,7 @@ impl Bot {
             ai: OpenRouter::from_config(web.clone(), &config),
             id,
             application_id,
-            http,
+            http: Arc::new(http),
             cache: DefaultInMemoryCache::builder()
                 .resource_types(ResourceType::MESSAGE | ResourceType::MEMBER | ResourceType::USER)
                 .build(),

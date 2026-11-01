@@ -98,15 +98,25 @@ pub fn spawn(bot: Arc<Bot>) {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let due = match db::take_due_predictions(&bot.db, PER_SWEEP).await {
-                Ok(due) => due,
-                Err(error) => {
-                    tracing::warn!(target: "predictions", "Loading due predictions failed: {error}");
-                    continue;
+            // Claim just before attempting delivery so later entries do not lose their lease while waiting on
+            // earlier model requests. Each attempt is bounded below the ten-minute database lease.
+            for _ in 0..PER_SWEEP {
+                let due = match db::claim_due_predictions(&bot.db, 1).await {
+                    Ok(due) => due,
+                    Err(error) => {
+                        tracing::warn!(target: "predictions", "Loading due predictions failed: {error}");
+                        break;
+                    }
+                };
+                let Some(prediction) = due.first() else { break };
+                let result = match tokio::time::timeout(Duration::from_secs(300), follow_up(&bot, prediction)).await {
+                    Ok(result) => result,
+                    Err(error) => Err(error.into()),
+                };
+                if let Err(error) = db::finish_prediction(&bot.db, prediction, result.is_ok()).await {
+                    tracing::warn!(target: "predictions", id = prediction.id, %error, "Acknowledging prediction failed");
                 }
-            };
-            for prediction in &due {
-                match follow_up(&bot, prediction).await {
+                match result {
                     Ok(()) => {
                         tracing::info!(target: "predictions", user = prediction.user_id, claim = prediction.claim,
                             "Followed up on prediction");
@@ -135,6 +145,8 @@ mod tests {
     #[test]
     fn follow_up_note_names_the_claim_and_forbids_new_directives() {
         let prediction = Prediction {
+            id: 1,
+            claim_version: 1,
             channel_id: 1,
             message_id: 2,
             user_id: 3,

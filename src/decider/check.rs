@@ -119,6 +119,10 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
             }
         };
         let durable = scores["durable"];
+        if !crate::ai::reply::is_current(&bot, &req) {
+            tracing::info!(target: "decider", kind = "check", msg_id = %req.message_id, "Discarding stale check");
+            return;
+        }
         let reply = scores.get("reply").copied();
         let followup = scores.get("followup").copied();
         let wrong_claim = scores.get("wrong_claim").copied();

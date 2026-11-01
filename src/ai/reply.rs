@@ -32,7 +32,13 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Prefix of the messages that stand in for a reply that failed.
 const AI_ERROR: &str = "AI Error";
 
-type PostedSlot = Mutex<Option<Id<MessageMarker>>>;
+#[derive(Debug, Default)]
+struct PostedState {
+    id: Option<Id<MessageMarker>>,
+    cancelled: bool,
+}
+
+type PostedSlot = Mutex<PostedState>;
 type ReplyKey = (Id<ChannelMarker>, Id<UserMarker>);
 
 #[derive(Debug)]
@@ -49,8 +55,15 @@ struct InFlight {
 /// Unfinished replies, keyed by channel and author.
 #[derive(Debug, Default)]
 pub struct ReplyTasks {
-    in_flight: Mutex<HashMap<ReplyKey, InFlight>>,
+    tasks: Mutex<Tasks>,
     generation: AtomicU64,
+}
+
+#[derive(Debug, Default)]
+struct Tasks {
+    in_flight: HashMap<ReplyKey, InFlight>,
+    /// Finished text with ancillary work still running. New messages leave it alone; source deletion cancels it.
+    finishing: HashMap<u64, (ReplyKey, InFlight)>,
 }
 
 impl InFlight {
@@ -62,18 +75,31 @@ impl InFlight {
 }
 
 impl ReplyTasks {
-    fn finish(&self, key: ReplyKey, generation: u64) {
-        let mut in_flight = self.in_flight.lock().unwrap();
-        if in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
-            in_flight.remove(&key);
+    fn complete(&self, key: ReplyKey, generation: u64) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
+            let entry = tasks.in_flight.remove(&key).unwrap();
+            tasks.finishing.insert(generation, (key, entry));
         }
+    }
+
+    fn finish(&self, key: ReplyKey, generation: u64) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
+            tasks.in_flight.remove(&key);
+        }
+        tasks.finishing.remove(&generation);
     }
 }
 
 /// Aborts an unfinished reply and deletes whatever part of it was already posted, returning that part.
 fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) -> Option<Id<MessageMarker>> {
+    let posted = {
+        let mut state = entry.posted.lock().unwrap();
+        state.cancelled = true;
+        state.id.take()
+    };
     entry.abort.abort();
-    let posted = *entry.posted.lock().unwrap();
     if let Some(posted) = posted {
         let bot = Arc::clone(bot);
         tokio::spawn(async move {
@@ -90,16 +116,18 @@ pub fn cancel_answering(
     channel: Id<ChannelMarker>,
     deleted: &[Id<MessageMarker>],
 ) -> Vec<Id<MessageMarker>> {
-    let mut in_flight = bot.replies.in_flight.lock().unwrap();
+    let mut tasks = bot.replies.tasks.lock().unwrap();
     let mut posted = Vec::new();
-    in_flight.retain(|&(entry_channel, _), entry| {
+    let mut keep = |&(entry_channel, _): &ReplyKey, entry: &InFlight| {
         if entry_channel != channel || !deleted.contains(&entry.message_id) {
             return true;
         }
         posted.extend(cancel(bot, entry, channel));
         tracing::info!(target: "decider", kind = "cancel", deleted = %entry.message_id);
         false
-    });
+    };
+    tasks.in_flight.retain(|key, entry| keep(key, entry));
+    tasks.finishing.retain(|_, (key, entry)| keep(key, entry));
     posted
 }
 
@@ -111,7 +139,13 @@ pub fn cancel_answering(
 /// chronological, which makes "newer" a plain ID comparison.
 pub fn submit(bot: &Arc<Bot>, req: &AiRequest, start_new: bool) -> bool {
     let key = (req.channel_id, req.user_id);
-    let mut in_flight = bot.replies.in_flight.lock().unwrap();
+    let mut tasks = bot.replies.tasks.lock().unwrap();
+    let in_flight = &mut tasks.in_flight;
+    // The gateway updates the cache in order, before dispatching concurrent handlers. Validate while holding the
+    // reply lock so an edit/delete handler either prevents this start or cancels the newly registered task.
+    if !is_current(bot, req) {
+        return false;
+    }
     let restarts = match in_flight.entry(key) {
         Entry::Vacant(_) if start_new => 0,
         Entry::Occupied(entry) if entry.get().replaced_by(req) => {
@@ -135,19 +169,27 @@ pub fn submit(bot: &Arc<Bot>, req: &AiRequest, start_new: bool) -> bool {
 async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation: u64) {
     let key = (req.channel_id, req.user_id);
     let result = reply(&bot, &req, &posted, generation).await;
-    bot.replies.finish(key, generation);
     if let Err(error) = result {
         tracing::error!(target: "decider", kind = "reply", msg_id = %req.message_id, "AI reply failed: {error}");
-        let _ = bot
-            .http
-            .create_message(req.channel_id)
-            .content(&format!("{AI_ERROR}: reply or memory recall unavailable."))
-            .reply(req.message_id)
-            .await;
+        post(
+            &bot.http,
+            req.channel_id,
+            req.message_id,
+            Some(format!("{AI_ERROR}: reply or memory recall unavailable.")),
+            Vec::new(),
+            &posted,
+        )
+        .await;
     }
+    bot.replies.finish(key, generation);
 }
 
-async fn reply(bot: &Bot, req: &AiRequest, posted: &PostedSlot, generation: u64) -> Result<()> {
+/// A missing or edited cached source must never trigger work from an old decision snapshot.
+pub fn is_current(bot: &Bot, req: &AiRequest) -> bool {
+    bot.cache.message(req.message_id).is_some_and(|message| message.content() == req.message)
+}
+
+async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, generation: u64) -> Result<()> {
     let ai = bot.ai.as_ref().ok_or_else(|| eyre!("OpenRouter API key not configured"))?;
     // Memory recall waits on the decider, so the profile lookup and image downloads run alongside it.
     let user = async {
@@ -158,9 +200,9 @@ async fn reply(bot: &Bot, req: &AiRequest, posted: &PostedSlot, generation: u64)
     let request =
         prompt::build_request(&bot.config, req, user.as_ref(), &memories, turn, &bot.config.openrouter_model)?;
     let deltas = ai.stream(&request, REPLY_TIMEOUT).await?;
-    let streamed = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted).await;
-    // A complete reply stays; newer messages no longer cancel it.
-    bot.replies.finish((req.channel_id, req.user_id), generation);
+    let streamed = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted_slot).await;
+    // New messages leave completed text alone, but deleting its source still cancels GIF lookup and side effects.
+    bot.replies.complete((req.channel_id, req.user_id), generation);
     let Some(Streamed { posted, raw }) = streamed else {
         return Ok(());
     };
@@ -168,7 +210,7 @@ async fn reply(bot: &Bot, req: &AiRequest, posted: &PostedSlot, generation: u64)
     let posted_id = posted.as_ref().map(|(id, _)| *id);
     let gif = async {
         if let Some(query) = &directives.gif {
-            attach_gif(bot, req, posted_id, query).await;
+            attach_gif(bot, req, posted_id, query, posted_slot).await;
         }
     };
     let prediction = async {
@@ -184,7 +226,13 @@ async fn reply(bot: &Bot, req: &AiRequest, posted: &PostedSlot, generation: u64)
 }
 
 /// Adds the GIF found for `query` to the posted reply, or posts it as the reply when the model sent only the GIF.
-async fn attach_gif(bot: &Bot, req: &AiRequest, posted: Option<Id<MessageMarker>>, query: &str) {
+async fn attach_gif(
+    bot: &Bot,
+    req: &AiRequest,
+    posted: Option<Id<MessageMarker>>,
+    query: &str,
+    slot: &Arc<PostedSlot>,
+) {
     if bot.config.disable_gifs {
         return;
     }
@@ -200,9 +248,11 @@ async fn attach_gif(bot: &Bot, req: &AiRequest, posted: Option<Id<MessageMarker>
         }
     };
     let embeds = [gif::embed(url)];
-    let sent = match posted {
-        Some(id) => bot.http.update_message(req.channel_id, id).embeds(Some(&embeds)).await.map(drop),
-        None => bot.http.create_message(req.channel_id).embeds(&embeds).reply(req.message_id).await.map(drop),
+    let sent = if let Some(id) = posted {
+        bot.http.update_message(req.channel_id, id).embeds(Some(&embeds)).await.map(drop)
+    } else {
+        post(&bot.http, req.channel_id, req.message_id, None, embeds.to_vec(), slot).await;
+        return;
     };
     if let Err(error) = sent {
         tracing::warn!(target: "gifs", msg_id = %req.message_id, "Posting GIF failed: {error}");
@@ -221,12 +271,12 @@ pub struct Streamed {
 /// the end. A stream error replaces the text with the error.
 ///
 /// Returns `None` when the stream failed or the reply couldn't be posted.
-pub async fn stream_to_discord(
-    http: &HttpClient,
+async fn stream_to_discord(
+    http: &Arc<HttpClient>,
     deltas: impl Stream<Item = Result<String>>,
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
-    posted_slot: &PostedSlot,
+    posted_slot: &Arc<PostedSlot>,
 ) -> Option<Streamed> {
     let mut deltas = pin!(deltas);
     let mut raw = String::new();
@@ -268,9 +318,8 @@ pub async fn stream_to_discord(
                         }
                     }
                 } else {
-                    let id = post(http, channel_id, reply_to, &text).await?;
+                    let id = post(http, channel_id, reply_to, Some(text.clone()), Vec::new(), posted_slot).await?;
                     message_id = Some(id);
-                    *posted_slot.lock().unwrap() = Some(id);
                     last_sent = text;
                 }
             }
@@ -281,23 +330,52 @@ pub async fn stream_to_discord(
     }
 }
 
-/// Posts `text` as a reply to `reply_to`, returning the new message.
+/// Finish a Discord POST even if its caller is aborted. Register the ID and cancellation under one lock, deleting
+/// a late result when cancellation won the race. Covers text, GIF-only replies and error messages.
 async fn post(
-    http: &HttpClient,
+    http: &Arc<HttpClient>,
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
-    text: &str,
+    text: Option<String>,
+    embeds: Vec<twilight_model::channel::message::Embed>,
+    slot: &Arc<PostedSlot>,
 ) -> Option<Id<MessageMarker>> {
-    let response = http
-        .create_message(channel_id)
-        .content(text)
-        .reply(reply_to)
-        .await
-        .inspect_err(|error| tracing::warn!("AI initial message failed: {error}"))
-        .ok()?;
-    let message =
-        response.model().await.inspect_err(|error| tracing::warn!("AI posted message decode failed: {error}"));
-    message.ok().map(|message| message.id)
+    let (http, slot) = (Arc::clone(http), Arc::clone(slot));
+    tokio::spawn(async move {
+        if slot.lock().unwrap().cancelled {
+            return None;
+        }
+        let mut request = http.create_message(channel_id).reply(reply_to).embeds(&embeds);
+        if let Some(text) = &text {
+            request = request.content(text);
+        }
+        let response = request.await.inspect_err(|error| tracing::warn!("AI initial message failed: {error}")).ok()?;
+        let message = response
+            .model()
+            .await
+            .inspect_err(|error| tracing::warn!("AI posted message decode failed: {error}"))
+            .ok()?;
+        let cancelled = {
+            let mut state = slot.lock().unwrap();
+            if state.cancelled {
+                true
+            } else {
+                state.id = Some(message.id);
+                false
+            }
+        };
+        if cancelled {
+            if let Err(error) = http.delete_message(channel_id, message.id).await {
+                tracing::warn!(%error, msg_id = %message.id, "Deleting cancelled late reply failed");
+            }
+            None
+        } else {
+            Some(message.id)
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[cfg(test)]
@@ -307,6 +385,67 @@ mod tests {
     use axum::{Json, Router, extract::State, http::Method, http::StatusCode, routing::any};
     use futures_util::stream;
     use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn stale_edited_and_deleted_requests_never_start_a_reply() {
+        use twilight_gateway::Event;
+        use twilight_model::gateway::payload::incoming::{MessageCreate, MessageDelete};
+        let bot = Arc::new(test_bot());
+        let original = message(10, 2, "alice", "old text");
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(original.clone()))));
+        let req = bot.snapshot(&original);
+        let edited = message(10, 2, "alice", "edited text");
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(edited))));
+        assert!(!submit(&bot, &req, true), "a delayed check must not answer the old text");
+        bot.cache.update(&Event::MessageDelete(MessageDelete {
+            channel_id: Id::new(1),
+            guild_id: None,
+            id: Id::new(10),
+        }));
+        assert!(!submit(&bot, &req, true), "a delayed check must not answer a deleted message");
+    }
+
+    #[tokio::test]
+    async fn cancelling_while_discord_accepts_a_post_deletes_the_late_message() {
+        let accepted = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let deleted = Arc::new(tokio::sync::Notify::new());
+        let (a, r, d) = (Arc::clone(&accepted), Arc::clone(&release), Arc::clone(&deleted));
+        let app = Router::new().fallback(any(move |method: Method| {
+            let (a, r, d) = (Arc::clone(&a), Arc::clone(&r), Arc::clone(&d));
+            async move {
+                if method == Method::DELETE {
+                    d.notify_one();
+                    return (StatusCode::NO_CONTENT, Json(json!(null)));
+                }
+                a.notify_one();
+                r.notified().await;
+                (StatusCode::OK, Json(serde_json::to_value(message(42, 3, "bot", "hi")).unwrap()))
+            }
+        }));
+        let address = crate::test_util::serve(app).await;
+        let mut bot = test_bot();
+        bot.http = HttpClient::builder()
+            .token("test-token".into())
+            .proxy(address.to_string(), true)
+            .ratelimiter(None)
+            .build()
+            .into();
+        let bot = Arc::new(bot);
+        let posted = Arc::default();
+        let (task_bot, task_posted) = (Arc::clone(&bot), Arc::clone(&posted));
+        let task = tokio::spawn(async move {
+            stream_to_discord(&task_bot.http, stream::iter(deltas(&["hi"])), Id::new(1), Id::new(10), &task_posted)
+                .await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), accepted.notified()).await.unwrap();
+        let entry = InFlight { abort: task.abort_handle(), posted, ..in_flight(10, "hello", 0) };
+        cancel(&bot, &entry, Id::new(1));
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), deleted.notified())
+            .await
+            .expect("a POST that finishes after cancellation must be deleted");
+    }
 
     type Seen = Arc<tokio::sync::Mutex<Vec<String>>>;
 
@@ -335,12 +474,14 @@ mod tests {
         let seen = Seen::default();
         let app = Router::new().fallback(any(mock_discord)).with_state(Arc::clone(&seen));
         let address = crate::test_util::serve(app).await;
-        let http = HttpClient::builder()
-            .token("test-token".to_owned())
-            .proxy(address.to_string(), true)
-            .ratelimiter(None)
-            .build();
-        let result = stream_to_discord(&http, stream::iter(deltas), Id::new(1), Id::new(2), &Mutex::default()).await;
+        let http = Arc::new(
+            HttpClient::builder()
+                .token("test-token".to_owned())
+                .proxy(address.to_string(), true)
+                .ratelimiter(None)
+                .build(),
+        );
+        let result = stream_to_discord(&http, stream::iter(deltas), Id::new(1), Id::new(2), &Arc::default()).await;
         let requests = seen.lock().await.clone();
         (result, requests)
     }
@@ -358,6 +499,27 @@ mod tests {
             abort: tokio::spawn(async {}).abort_handle(),
             posted: Arc::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn completed_text_allows_new_replies_but_source_deletion_cancels_ancillary_work() {
+        use twilight_gateway::Event;
+        use twilight_model::gateway::payload::incoming::MessageCreate;
+        let bot = Arc::new(test_bot());
+        let key = (Id::new(1), Id::new(2));
+        let entry = InFlight { generation: 9, ..in_flight(10, "old", 0) };
+        let slot = Arc::clone(&entry.posted);
+        bot.replies.tasks.lock().unwrap().in_flight.insert(key, entry);
+        bot.replies.complete(key, 9);
+        assert!(bot.replies.tasks.lock().unwrap().in_flight.is_empty());
+        let newer = message(20, 2, "alice", "new");
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(newer.clone()))));
+        assert!(submit(&bot, &bot.snapshot(&newer), true), "completed text must allow an independent reply");
+        cancel_answering(&bot, Id::new(1), &[Id::new(10)]);
+        assert!(slot.lock().unwrap().cancelled, "source deletion cancels the old GIF/fallback work");
+        bot.replies.finish(key, 9);
+        assert_eq!(bot.replies.tasks.lock().unwrap().in_flight[&key].message_id, Id::new(20));
+        cancel_answering(&bot, Id::new(1), &[Id::new(20)]);
     }
 
     #[tokio::test]

@@ -5,13 +5,14 @@ use postgres_from_row::FromRow;
 use crate::levels::xp_required_for_level;
 
 /// Every migration is idempotent and re-applied on startup, in order.
-const MIGRATIONS: [&str; 6] = [
+const MIGRATIONS: [&str; 7] = [
     include_str!("../migrations/001_init.sql"),
     include_str!("../migrations/002_improve_types.sql"),
     include_str!("../migrations/004_memory_archive.sql"),
     include_str!("../migrations/005_drop_profile_evolution.sql"),
     include_str!("../migrations/006_memory_embeddings.sql"),
     include_str!("../migrations/007_predictions.sql"),
+    include_str!("../migrations/008_prediction_delivery.sql"),
 ];
 
 const USER_COLUMNS: &str = r"id, level, xp, name, relationship, example_input, example_output";
@@ -278,6 +279,8 @@ const OPEN_PREDICTIONS: i64 = 3;
 /// A prediction that came due, with how long ago it was made.
 #[derive(FromRow, Debug, Clone, PartialEq, Eq)]
 pub struct Prediction {
+    pub id: i64,
+    pub claim_version: i64,
     pub channel_id: i64,
     pub message_id: i64,
     pub user_id: i64,
@@ -295,9 +298,12 @@ pub async fn add_prediction(
     claim: &str,
     wait_secs: f64,
 ) -> Result<bool> {
-    let inserted = pool
-        .get()
-        .await?
+    let mut client = pool.get().await?;
+    let tx = client.transaction().await?;
+    // The count must use a snapshot taken after earlier writers commit. A separate transaction-scoped advisory
+    // lock serializes this user's writers, including writers on other bot instances. Hash collisions only queue.
+    tx.query_one("SELECT pg_advisory_xact_lock(15, hashint8($1::bigint))", &[&sql_id(user_id)]).await?;
+    let inserted = tx
         .execute(
             "INSERT INTO prediction (channel_id, message_id, user_id, claim, due_at)
              SELECT $1, $2, $3, $4, now() + make_interval(secs => $5)
@@ -305,24 +311,38 @@ pub async fn add_prediction(
             &[&sql_id(channel_id), &sql_id(message_id), &sql_id(user_id), &claim, &wait_secs, &OPEN_PREDICTIONS],
         )
         .await?;
+    tx.commit().await?;
     Ok(inserted == 1)
 }
 
-/// Removes and returns up to `limit` of the predictions that are due, the longest overdue first. Concurrent callers
-/// never get the same one.
-pub async fn take_due_predictions(pool: &Pool, limit: i64) -> Result<Vec<Prediction>> {
+/// Claims due predictions for ten minutes without deleting them. Concurrent workers skip claimed rows; a crashed
+/// worker's lease expires. Versions prevent an old worker from acknowledging a newer claim.
+pub async fn claim_due_predictions(pool: &Pool, limit: i64) -> Result<Vec<Prediction>> {
     let rows = pool
         .get()
         .await?
         .query(
-            "DELETE FROM prediction WHERE id IN (
-                 SELECT id FROM prediction WHERE due_at <= now() ORDER BY due_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
-             RETURNING channel_id, message_id, user_id, claim,
+            "UPDATE prediction SET retry_at = now() + interval '10 minutes', claim_version = claim_version + 1
+             WHERE id IN (
+                 SELECT id FROM prediction WHERE due_at <= now() AND retry_at <= now()
+                 ORDER BY due_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
+             RETURNING id, claim_version, channel_id, message_id, user_id, claim,
                  extract(epoch FROM now() - made_at)::bigint AS age_secs",
             &[&limit],
         )
         .await?;
     Ok(rows.iter().map(Prediction::from_row).collect())
+}
+
+/// Acknowledge successful delivery, or schedule a failed attempt for the next sweep. A stale claim cannot change
+/// a prediction that has already been reclaimed by another worker.
+pub async fn finish_prediction(pool: &Pool, prediction: &Prediction, delivered: bool) -> Result<bool> {
+    let sql = if delivered {
+        "DELETE FROM prediction WHERE id = $1 AND claim_version = $2"
+    } else {
+        "UPDATE prediction SET retry_at = now() + interval '1 minute' WHERE id = $1 AND claim_version = $2"
+    };
+    Ok(pool.get().await?.execute(sql, &[&prediction.id, &prediction.claim_version]).await? == 1)
 }
 
 pub async fn remember_math_question(pool: &Pool, question: &str, answer: f64) -> Result<bool> {
@@ -345,12 +365,74 @@ mod tests {
     /// A pool whose connections live in a fresh schema of the `TEST_DATABASE_URL` database.
     async fn scratch_pool() -> (Pool, String) {
         let url = std::env::var("TEST_DATABASE_URL").expect("test database");
-        let schema = format!("tricked_bot_test_{}", std::process::id());
+        let schema = format!("tricked_bot_test_{}_{}", std::process::id(), rand::random::<u32>());
         let mut config: tokio_postgres::Config = url.parse().unwrap();
         config.options(format!("-c search_path={schema}"));
         let pool = Pool::builder(deadpool_postgres::Manager::new(config, tokio_postgres::NoTls)).build().unwrap();
         pool.get().await.unwrap().batch_execute(&format!("CREATE SCHEMA {schema}")).await.unwrap();
         (pool, schema)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL; creates and drops its own schema"]
+    async fn claiming_predictions_retains_them_until_delivery() {
+        let (pool, schema) = scratch_pool().await;
+        run_migrations(&pool).await.unwrap();
+        assert!(add_prediction(&pool, 1, 10, 1, "claim", 0.0).await.unwrap());
+        let due = claim_due_predictions(&pool, 1).await.unwrap();
+        assert_eq!(due.len(), 1);
+        let remaining: i64 =
+            pool.get().await.unwrap().query_one("SELECT count(*) FROM prediction", &[]).await.unwrap().get(0);
+        assert_eq!(remaining, 1, "a failed delivery or crashed worker must leave the prediction recoverable");
+        assert!(claim_due_predictions(&pool, 1).await.unwrap().is_empty(), "an active lease excludes other workers");
+        assert!(finish_prediction(&pool, &due[0], false).await.unwrap());
+        assert!(claim_due_predictions(&pool, 1).await.unwrap().is_empty(), "failures back off before retrying");
+        // Simulate lease expiration after a crash or the failure backoff without waiting on wall time.
+        pool.get()
+            .await
+            .unwrap()
+            .batch_execute("UPDATE prediction SET retry_at = now() - interval '1 second'")
+            .await
+            .unwrap();
+        let reclaimed = claim_due_predictions(&pool, 1).await.unwrap();
+        assert_eq!(reclaimed[0].id, due[0].id);
+        assert!(reclaimed[0].claim_version > due[0].claim_version);
+        assert!(
+            !finish_prediction(&pool, &due[0], true).await.unwrap(),
+            "an expired worker cannot acknowledge a new claim"
+        );
+        assert!(
+            !finish_prediction(&pool, &due[0], false).await.unwrap(),
+            "an expired worker cannot postpone a new claim"
+        );
+        assert!(finish_prediction(&pool, &reclaimed[0], true).await.unwrap());
+        let remaining: i64 =
+            pool.get().await.unwrap().query_one("SELECT count(*) FROM prediction", &[]).await.unwrap().get(0);
+        assert_eq!(remaining, 0, "only successful delivery removes the row");
+        pool.get().await.unwrap().batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL; creates and drops its own schema"]
+    async fn concurrent_prediction_writers_respect_the_cap() {
+        let (pool, schema) = scratch_pool().await;
+        run_migrations(&pool).await.unwrap();
+        for _ in 0..2 {
+            assert!(add_prediction(&pool, 1, 10, 1, "existing", 0.0).await.unwrap());
+        }
+        pool.get().await.unwrap().batch_execute(
+            "CREATE FUNCTION slow_prediction() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN PERFORM pg_sleep(0.2); RETURN NEW; END $$;
+             CREATE TRIGGER slow_prediction BEFORE INSERT ON prediction FOR EACH ROW EXECUTE FUNCTION slow_prediction();"
+        ).await.unwrap();
+        let writes = (0..8).map(|_| add_prediction(&pool, 1, 10, 1, "racing", 0.0));
+        let results = futures_util::future::join_all(writes).await;
+        assert_eq!(
+            results.into_iter().filter(|r| *r.as_ref().unwrap()).count(),
+            1,
+            "only one concurrent writer may fill the last slot"
+        );
+        pool.get().await.unwrap().batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
     }
 
     #[tokio::test]
@@ -431,12 +513,12 @@ mod tests {
         }
         assert!(!add_prediction(&pool, 1, 11, 1, "one too many", 0.0).await.unwrap(), "open predictions are capped");
         assert!(add_prediction(&pool, 1, 12, 2, "not due yet", 3600.0).await.unwrap());
-        let mut due = take_due_predictions(&pool, 2).await.unwrap();
+        let mut due = claim_due_predictions(&pool, 2).await.unwrap();
         due.sort_by(|a, b| a.claim.cmp(&b.claim));
         assert_eq!(due.iter().map(|p| p.claim.as_str()).collect::<Vec<_>>(), ["back on windows", "quits vim"]);
         assert_eq!((due[0].channel_id, due[0].message_id, due[0].user_id), (1, 10, 1));
-        assert_eq!(take_due_predictions(&pool, 10).await.unwrap().len(), 1, "taken predictions are gone");
-        assert!(take_due_predictions(&pool, 10).await.unwrap().is_empty(), "later ones wait until due");
+        assert_eq!(claim_due_predictions(&pool, 10).await.unwrap().len(), 1, "claimed predictions are leased");
+        assert!(claim_due_predictions(&pool, 10).await.unwrap().is_empty(), "later ones wait until due");
 
         pool.get().await.unwrap().batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
     }
