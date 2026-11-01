@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
     currency::spawn_refresh(Arc::clone(&bot));
     ai::cleanup::spawn(Arc::clone(&bot));
     ai::embeddings::spawn(Arc::clone(&bot));
+    ai::predictions::spawn(Arc::clone(&bot));
     pfp::spawn_daily(Arc::clone(&bot));
     if let Some(port) = bot.config.web_port {
         let db = bot.db.clone();

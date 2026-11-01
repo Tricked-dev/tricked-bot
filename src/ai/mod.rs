@@ -3,10 +3,12 @@
 pub mod budget;
 pub mod cleanup;
 pub mod embeddings;
+pub mod gif;
 pub mod media;
 pub mod memory;
 pub mod openrouter;
 pub mod output;
+pub mod predictions;
 pub mod prompt;
 pub mod recall;
 pub mod refusal;
@@ -70,28 +72,41 @@ fn transcript_line(name: &str, content: &str) -> String {
 }
 
 impl Bot {
-    pub fn snapshot(&self, msg: &Message) -> AiRequest {
-        let mut user_mentions = HashMap::from([(msg.author.name.clone(), msg.author.id)]);
-        let mut conversation = Vec::new();
-        if let Some(ids) = self.cache.channel_messages(msg.channel_id) {
-            let mut earlier: Vec<_> = ids.iter().copied().filter(|id| *id < msg.id).collect();
-            earlier.sort_unstable();
-            for id in &earlier[earlier.len().saturating_sub(CONTEXT_MESSAGES)..] {
-                let Some(message) = self.cache.message(*id) else {
-                    continue;
-                };
+    /// The last [`CONTEXT_MESSAGES`] cached messages in `channel` before `before`, as transcript lines, recording the
+    /// names of their authors in `mentions`.
+    pub fn transcript(
+        &self,
+        channel: Id<ChannelMarker>,
+        before: Id<MessageMarker>,
+        mentions: &mut HashMap<String, Id<UserMarker>>,
+    ) -> Vec<String> {
+        let Some(ids) = self.cache.channel_messages(channel) else {
+            return Vec::new();
+        };
+        let mut earlier: Vec<_> = ids.iter().copied().filter(|id| *id < before).collect();
+        earlier.sort_unstable();
+        let recent = &earlier[earlier.len().saturating_sub(CONTEXT_MESSAGES)..];
+        recent
+            .iter()
+            .filter_map(|id| self.cache.message(*id))
+            .map(|message| {
                 let author = message.author();
                 let name = if author == self.id {
                     PERSONA.to_owned()
                 } else if let Some(user) = self.cache.user(author) {
-                    user_mentions.insert(user.name.clone(), author);
+                    mentions.insert(user.name.clone(), author);
                     user.name.clone()
                 } else {
                     author.to_string()
                 };
-                conversation.push(transcript_line(&name, message.content()));
-            }
-        }
+                transcript_line(&name, message.content())
+            })
+            .collect()
+    }
+
+    pub fn snapshot(&self, msg: &Message) -> AiRequest {
+        let mut user_mentions = HashMap::from([(msg.author.name.clone(), msg.author.id)]);
+        let conversation = self.transcript(msg.channel_id, msg.id, &mut user_mentions);
         // A reply can target an older message outside the cached transcript. Keep
         // its identity and content explicit even when newer channel messages exist.
         let reply_target = msg.referenced_message.as_ref().map(|reference| {

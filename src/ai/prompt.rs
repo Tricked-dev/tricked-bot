@@ -13,7 +13,7 @@ use twilight_model::{
 };
 
 use super::{
-    AiRequest, PERSONA, budget, media,
+    AiRequest, PERSONA, budget, gif, media,
     openrouter::{ChatRequest, Content, Message, Part, Role},
 };
 use crate::{
@@ -23,8 +23,23 @@ use crate::{
     time::unix_now,
 };
 
-/// The system prompt. It never changes, so it heads the cached prefix.
-const SYSTEM: &str = include_str!("prompts/persona.md");
+/// The persona. It and the extras never change for a running bot, so the system prompt heads the cached prefix.
+const PERSONA_PROMPT: &str = include_str!("prompts/persona.md");
+const EXTRAS: &str = include_str!("prompts/extras.md");
+const GIF_SEARCH: &str = include_str!("prompts/gif_search.md");
+const GIF_REACTIONS: &str = include_str!("prompts/gif_reactions.md");
+
+/// The persona plus the directives this bot's configuration supports.
+fn system_prompt(config: &Config) -> String {
+    let gif = if config.disable_gifs {
+        String::new()
+    } else if config.klipy_api_key.is_some() {
+        GIF_SEARCH.to_owned()
+    } else {
+        GIF_REACTIONS.replace("{reactions}", &gif::REACTIONS.join(", "))
+    };
+    PERSONA_PROMPT.to_owned() + &EXTRAS.replace("{gif}", &gif)
+}
 
 /// Generic voice examples, shown as turns from "someone".
 const VIBE: &[(&str, &str)] = &[
@@ -259,7 +274,7 @@ pub fn build_request(
 ) -> Result<ChatRequest> {
     let cache = explicit_caching(model);
     let mut messages = Vec::with_capacity(2 * VIBE.len() + 8);
-    messages.push(Message::new(Role::System, SYSTEM));
+    messages.push(Message::new(Role::System, system_prompt(config)));
     for (input, output) in VIBE {
         push_exchange(&mut messages, "someone", input, (*output).to_owned());
     }
@@ -409,7 +424,7 @@ mod tests {
         let memories = [Memory { id: 1, user_id: 2, key: "work".into(), content: "dentist".into() }];
         let request = build(&config(90_000), &req, Some(&user), &memories, "openai/gpt-6-luna");
 
-        assert_eq!(request.messages[0].content, Content::Text(SYSTEM.into()));
+        assert_eq!(request.messages[0].content, Content::Text(system_prompt(&config(90_000))));
         assert_eq!(request.messages.len(), 1 + 2 * VIBE.len() + 2 + 1);
         let own = &request.messages[1 + 2 * VIBE.len()..];
         assert_eq!(own[0].content, Content::Text("<current_message author=\"alice\">\nhi\n</current_message>".into()));
@@ -424,6 +439,16 @@ mod tests {
         ));
         let json = serde_json::to_string(&request).unwrap();
         assert!(!json.contains("cache_control"));
+    }
+
+    #[test]
+    fn system_prompt_offers_the_configured_gif_source() {
+        let reactions = system_prompt(&config(90_000));
+        assert!(reactions.contains("must be exactly one of: angry, baka,") && reactions.contains("[predict <wait>"));
+        let search = system_prompt(&Config { klipy_api_key: Some("key".into()), ..config(90_000) });
+        assert!(search.contains("The search is free text") && !search.contains("{gif}"));
+        let none = system_prompt(&Config { disable_gifs: true, ..config(90_000) });
+        assert!(!none.contains("[gif:") && none.contains("[predict <wait>"));
     }
 
     #[test]

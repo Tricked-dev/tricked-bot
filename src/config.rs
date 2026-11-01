@@ -49,6 +49,12 @@ pub struct Config {
     /// Optional model for refusal style rewrites. Disabled by default: style false positives can corrupt valid replies.
     #[arg(long, env)]
     pub openrouter_fallback_model: Option<String>,
+    /// Lets replies search any GIF through Klipy. Without it they pick from a fixed set of keyless anime reactions.
+    #[arg(long, env)]
+    pub klipy_api_key: Option<String>,
+    /// Stops replies from sending GIFs at all.
+    #[arg(long, env)]
+    pub disable_gifs: bool,
     #[arg(long, env)]
     pub openrouter_site_url: Option<String>,
     #[arg(long, env)]

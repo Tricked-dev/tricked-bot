@@ -19,7 +19,7 @@ use twilight_model::id::{
     marker::{ChannelMarker, MessageMarker, UserMarker},
 };
 
-use super::{AiRequest, output, prompt, recall, refusal};
+use super::{AiRequest, gif, output, predictions, prompt, recall, refusal};
 use crate::{bot::Bot, db};
 
 /// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
@@ -158,27 +158,76 @@ async fn reply(bot: &Bot, req: &AiRequest, posted: &PostedSlot, generation: u64)
     let request =
         prompt::build_request(&bot.config, req, user.as_ref(), &memories, turn, &bot.config.openrouter_model)?;
     let deltas = ai.stream(&request, REPLY_TIMEOUT).await?;
-    let posted = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted).await;
+    let streamed = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted).await;
     // A complete reply stays; newer messages no longer cancel it.
     bot.replies.finish((req.channel_id, req.user_id), generation);
+    let Some(Streamed { posted, raw }) = streamed else {
+        return Ok(());
+    };
+    let directives = output::directives(&raw);
+    let posted_id = posted.as_ref().map(|(id, _)| *id);
+    let gif = async {
+        if let Some(query) = &directives.gif {
+            attach_gif(bot, req, posted_id, query).await;
+        }
+    };
+    let prediction = async {
+        if let Some(prediction) = &directives.prediction {
+            predictions::store(bot, req, prediction).await;
+        }
+    };
+    tokio::join!(gif, prediction);
     if let Some(posted) = posted {
         refusal::check_and_replace(bot, req, user.as_ref(), &memories, posted).await;
     }
     Ok(())
 }
 
+/// Adds the GIF found for `query` to the posted reply, or posts it as the reply when the model sent only the GIF.
+async fn attach_gif(bot: &Bot, req: &AiRequest, posted: Option<Id<MessageMarker>>, query: &str) {
+    if bot.config.disable_gifs {
+        return;
+    }
+    let url = match gif::find(&bot.web, bot.config.klipy_api_key.as_deref(), query).await {
+        Ok(Some(url)) => url,
+        Ok(None) => {
+            tracing::info!(target: "gifs", msg_id = %req.message_id, query, "No GIF found");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(target: "gifs", msg_id = %req.message_id, query, "GIF search failed: {error}");
+            return;
+        }
+    };
+    let embeds = [gif::embed(url)];
+    let sent = match posted {
+        Some(id) => bot.http.update_message(req.channel_id, id).embeds(Some(&embeds)).await.map(drop),
+        None => bot.http.create_message(req.channel_id).embeds(&embeds).reply(req.message_id).await.map(drop),
+    };
+    if let Err(error) = sent {
+        tracing::warn!(target: "gifs", msg_id = %req.message_id, "Posting GIF failed: {error}");
+    }
+}
+
+/// A reply stream that ran to the end.
+pub struct Streamed {
+    /// The posted message and the last text Discord accepted, or `None` when nothing presentable came.
+    pub posted: Option<(Id<MessageMarker>, String)>,
+    /// Everything the model sent, directives included.
+    pub raw: String,
+}
+
 /// Posts the reply as soon as it has presentable text, then edits it at most every [`EDIT_INTERVAL`] and once more at
 /// the end. A stream error replaces the text with the error.
 ///
-/// Returns the posted message and the last text Discord accepted, or `None` when nothing was posted or the stream
-/// failed.
+/// Returns `None` when the stream failed or the reply couldn't be posted.
 pub async fn stream_to_discord(
     http: &HttpClient,
     deltas: impl Stream<Item = Result<String>>,
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
     posted_slot: &PostedSlot,
-) -> Option<(Id<MessageMarker>, String)> {
+) -> Option<Streamed> {
     let mut deltas = pin!(deltas);
     let mut raw = String::new();
     let mut failure = None;
@@ -227,7 +276,7 @@ pub async fn stream_to_discord(
             }
         }
         if finished {
-            return message_id.filter(|_| failure.is_none()).map(|id| (id, last_sent));
+            return failure.is_none().then(|| Streamed { posted: message_id.map(|id| (id, last_sent)), raw });
         }
     }
 }
@@ -282,7 +331,7 @@ mod tests {
         )
     }
 
-    async fn run_stream(deltas: Vec<Result<String>>) -> (Option<(Id<MessageMarker>, String)>, Vec<String>) {
+    async fn run_stream(deltas: Vec<Result<String>>) -> (Option<Streamed>, Vec<String>) {
         let seen = Seen::default();
         let app = Router::new().fallback(any(mock_discord)).with_state(Arc::clone(&seen));
         let address = crate::test_util::serve(app).await;
@@ -325,21 +374,21 @@ mod tests {
     #[tokio::test]
     async fn completed_short_stream_is_posted_presentably() {
         let (result, requests) = run_stream(deltas(&["The Trickster: Hi."])).await;
-        assert_eq!(result.unwrap().1, "hi");
+        assert_eq!(result.unwrap().posted.unwrap().1, "hi");
         assert_eq!(requests, ["hi"]);
     }
 
     #[tokio::test]
     async fn completed_stream_flushes_final_text() {
         let (result, requests) = run_stream(deltas(&["Hi", " there"])).await;
-        assert_eq!(result.unwrap().1, "hi there");
+        assert_eq!(result.unwrap().posted.unwrap().1, "hi there");
         assert_eq!(requests, ["hi", "hi there"]);
     }
 
     #[tokio::test]
     async fn failed_final_edit_returns_last_successfully_posted_text() {
         let (result, _) = run_stream(deltas(&["Hi", " final failure"])).await;
-        assert_eq!(result.unwrap().1, "hi");
+        assert_eq!(result.unwrap().posted.unwrap().1, "hi");
     }
 
     #[tokio::test]

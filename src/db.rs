@@ -5,12 +5,13 @@ use postgres_from_row::FromRow;
 use crate::levels::xp_required_for_level;
 
 /// Every migration is idempotent and re-applied on startup, in order.
-const MIGRATIONS: [&str; 5] = [
+const MIGRATIONS: [&str; 6] = [
     include_str!("../migrations/001_init.sql"),
     include_str!("../migrations/002_improve_types.sql"),
     include_str!("../migrations/004_memory_archive.sql"),
     include_str!("../migrations/005_drop_profile_evolution.sql"),
     include_str!("../migrations/006_memory_embeddings.sql"),
+    include_str!("../migrations/007_predictions.sql"),
 ];
 
 const USER_COLUMNS: &str = r"id, level, xp, name, relationship, example_input, example_output";
@@ -271,6 +272,59 @@ pub async fn archive_overflow_memory(pool: &Pool, memory: &Memory, limit: usize)
 }
 
 /// Stores a newly generated quiz question. Returns `false` when it was asked before.
+/// Open predictions one person can have at a time, so the bot can't promise a channel a flood of follow-ups.
+const OPEN_PREDICTIONS: i64 = 3;
+
+/// A prediction that came due, with how long ago it was made.
+#[derive(FromRow, Debug, Clone, PartialEq, Eq)]
+pub struct Prediction {
+    pub channel_id: i64,
+    pub message_id: i64,
+    pub user_id: i64,
+    pub claim: String,
+    pub age_secs: i64,
+}
+
+/// Stores a prediction about `user_id` to check back on after `wait_secs`, replying to `message_id`. Returns whether
+/// it was stored; it isn't once the person already has [`OPEN_PREDICTIONS`].
+pub async fn add_prediction(
+    pool: &Pool,
+    channel_id: u64,
+    message_id: u64,
+    user_id: u64,
+    claim: &str,
+    wait_secs: f64,
+) -> Result<bool> {
+    let inserted = pool
+        .get()
+        .await?
+        .execute(
+            "INSERT INTO prediction (channel_id, message_id, user_id, claim, due_at)
+             SELECT $1, $2, $3, $4, now() + make_interval(secs => $5)
+             WHERE (SELECT count(*) FROM prediction WHERE user_id = $3) < $6",
+            &[&sql_id(channel_id), &sql_id(message_id), &sql_id(user_id), &claim, &wait_secs, &OPEN_PREDICTIONS],
+        )
+        .await?;
+    Ok(inserted == 1)
+}
+
+/// Removes and returns up to `limit` of the predictions that are due, the longest overdue first. Concurrent callers
+/// never get the same one.
+pub async fn take_due_predictions(pool: &Pool, limit: i64) -> Result<Vec<Prediction>> {
+    let rows = pool
+        .get()
+        .await?
+        .query(
+            "DELETE FROM prediction WHERE id IN (
+                 SELECT id FROM prediction WHERE due_at <= now() ORDER BY due_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
+             RETURNING channel_id, message_id, user_id, claim,
+                 extract(epoch FROM now() - made_at)::bigint AS age_secs",
+            &[&limit],
+        )
+        .await?;
+    Ok(rows.iter().map(Prediction::from_row).collect())
+}
+
 pub async fn remember_math_question(pool: &Pool, question: &str, answer: f64) -> Result<bool> {
     let inserted = pool
         .get()
@@ -371,6 +425,18 @@ mod tests {
 
         assert!(remember_math_question(&pool, "1 + 1", 2.0).await.unwrap());
         assert!(!remember_math_question(&pool, "1 + 1", 2.0).await.unwrap());
+
+        for claim in ["back on windows", "quits vim", "buys a mac"] {
+            assert!(add_prediction(&pool, 1, 10, 1, claim, 0.0).await.unwrap());
+        }
+        assert!(!add_prediction(&pool, 1, 11, 1, "one too many", 0.0).await.unwrap(), "open predictions are capped");
+        assert!(add_prediction(&pool, 1, 12, 2, "not due yet", 3600.0).await.unwrap());
+        let mut due = take_due_predictions(&pool, 2).await.unwrap();
+        due.sort_by(|a, b| a.claim.cmp(&b.claim));
+        assert_eq!(due.iter().map(|p| p.claim.as_str()).collect::<Vec<_>>(), ["back on windows", "quits vim"]);
+        assert_eq!((due[0].channel_id, due[0].message_id, due[0].user_id), (1, 10, 1));
+        assert_eq!(take_due_predictions(&pool, 10).await.unwrap().len(), 1, "taken predictions are gone");
+        assert!(take_due_predictions(&pool, 10).await.unwrap().is_empty(), "later ones wait until due");
 
         pool.get().await.unwrap().batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
     }
