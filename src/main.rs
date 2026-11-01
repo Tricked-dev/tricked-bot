@@ -104,6 +104,7 @@ async fn main() -> Result<()> {
     tokio::spawn(qalc::update_rates());
     currency::spawn_refresh(Arc::clone(&bot));
     ai::cleanup::spawn(Arc::clone(&bot));
+    ai::embeddings::spawn(Arc::clone(&bot));
     pfp::spawn_daily(Arc::clone(&bot));
     if let Some(port) = bot.config.web_port {
         let db = bot.db.clone();

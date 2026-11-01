@@ -43,6 +43,9 @@ pub struct Config {
     /// Memory extraction needs deterministic JSON, not the chat model's long reasoning mode.
     #[arg(long, env, default_value = "tencent/hy3-preview")]
     pub openrouter_memory_model: String,
+    /// Embeds memories so recall can shortlist them by content. Empty disables embeddings.
+    #[arg(long, env, default_value = "openai/text-embedding-3-small")]
+    pub openrouter_embedding_model: String,
     /// Optional model for refusal style rewrites. Disabled by default: style false positives can corrupt valid replies.
     #[arg(long, env)]
     pub openrouter_fallback_model: Option<String>,

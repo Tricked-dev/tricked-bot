@@ -2,6 +2,7 @@
 
 pub mod budget;
 pub mod cleanup;
+pub mod embeddings;
 pub mod media;
 pub mod memory;
 pub mod openrouter;

@@ -1,4 +1,4 @@
-//! Minimal `OpenRouter` chat-completions client sharing the bot's connection pool.
+//! Minimal `OpenRouter` chat-completions and embeddings client sharing the bot's connection pool.
 
 use std::time::Duration;
 
@@ -120,10 +120,31 @@ struct Delta {
     content: Option<String>,
 }
 
+#[derive(Serialize)]
+struct EmbeddingRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
+    dimensions: u32,
+}
+
+#[derive(Deserialize)]
+struct Embeddings {
+    #[serde(default)]
+    data: Vec<Embedding>,
+    error: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct Embedding {
+    embedding: Vec<f32>,
+    index: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct OpenRouter {
     http: Client,
     endpoint: String,
+    embeddings_endpoint: String,
     api_key: String,
     site_url: Option<String>,
     site_name: Option<String>,
@@ -133,17 +154,19 @@ const ATTEMPTS: u32 = 3;
 
 impl OpenRouter {
     pub fn from_config(http: Client, config: &Config) -> Option<Self> {
+        let base_url = config.openrouter_base_url.trim_end_matches('/');
         Some(Self {
             http,
-            endpoint: format!("{}/chat/completions", config.openrouter_base_url.trim_end_matches('/')),
+            endpoint: format!("{base_url}/chat/completions"),
+            embeddings_endpoint: format!("{base_url}/embeddings"),
             api_key: config.openrouter_api_key.clone()?,
             site_url: config.openrouter_site_url.clone(),
             site_name: config.openrouter_site_name.clone(),
         })
     }
 
-    fn post(&self, request: &ChatRequest, timeout: Duration) -> RequestBuilder {
-        let mut builder = self.http.post(&self.endpoint).bearer_auth(&self.api_key).timeout(timeout).json(request);
+    fn post(&self, url: &str, request: &impl Serialize, timeout: Duration) -> RequestBuilder {
+        let mut builder = self.http.post(url).bearer_auth(&self.api_key).timeout(timeout).json(request);
         if let Some(url) = &self.site_url {
             builder = builder.header("HTTP-Referer", url);
         }
@@ -154,10 +177,10 @@ impl OpenRouter {
     }
 
     /// Sends the request, retrying connection failures, rate limits and server errors with linear backoff.
-    async fn send(&self, request: &ChatRequest, timeout: Duration) -> Result<reqwest::Response> {
+    async fn send(&self, url: &str, request: &(impl Serialize + Sync), timeout: Duration) -> Result<reqwest::Response> {
         let mut attempt = 1;
         loop {
-            let result = self.post(request, timeout).send().await;
+            let result = self.post(url, request, timeout).send().await;
             let retryable = match &result {
                 Ok(response) => {
                     response.status() == StatusCode::TOO_MANY_REQUESTS || response.status().is_server_error()
@@ -180,7 +203,7 @@ impl OpenRouter {
 
     /// Returns the trimmed text of the first choice.
     pub async fn complete(&self, request: &ChatRequest, timeout: Duration) -> Result<String> {
-        let completion: Completion = self.send(request, timeout).await?.json().await?;
+        let completion: Completion = self.send(&self.endpoint, request, timeout).await?.json().await?;
         let text = completion
             .choices
             .into_iter()
@@ -200,7 +223,7 @@ impl OpenRouter {
         timeout: Duration,
     ) -> Result<impl Stream<Item = Result<String>> + Send + use<>> {
         let request = ChatRequest { stream: true, ..request.clone() };
-        let body = self.send(&request, timeout).await?.bytes_stream();
+        let body = self.send(&self.endpoint, &request, timeout).await?.bytes_stream();
         Ok(stream::try_unfold((body, Vec::new()), |(mut body, mut buffer)| async move {
             loop {
                 if let Some(end) = buffer.iter().position(|&byte| byte == b'\n') {
@@ -218,6 +241,26 @@ impl OpenRouter {
                 }
             }
         }))
+    }
+
+    /// Embeds every input with `dimensions` components, returning the vectors in input order.
+    pub async fn embed(
+        &self,
+        model: &str,
+        input: &[String],
+        dimensions: u32,
+        timeout: Duration,
+    ) -> Result<Vec<Vec<f32>>> {
+        let request = EmbeddingRequest { model, input, dimensions };
+        let mut response: Embeddings = self.send(&self.embeddings_endpoint, &request, timeout).await?.json().await?;
+        if let Some(error) = response.error {
+            bail!("OpenRouter embeddings error: {error}");
+        }
+        response.data.sort_by_key(|embedding| embedding.index);
+        if !response.data.iter().map(|embedding| embedding.index).eq(0..input.len()) {
+            bail!("OpenRouter returned {} embeddings for {} inputs", response.data.len(), input.len());
+        }
+        Ok(response.data.into_iter().map(|embedding| embedding.embedding).collect())
     }
 }
 
@@ -253,7 +296,10 @@ mod tests {
     use serde_json::json;
 
     async fn serve(body: &'static str) -> OpenRouter {
-        let app = Router::new().route("/chat/completions", post(move || async move { body }));
+        client(Router::new().route("/chat/completions", post(move || async move { body }))).await
+    }
+
+    async fn client(app: Router) -> OpenRouter {
         let base = format!("http://{}", crate::test_util::serve(app).await);
         let config = Config { openrouter_api_key: Some("key".into()), openrouter_base_url: base, ..Config::default() };
         OpenRouter::from_config(Client::new(), &config).unwrap()
@@ -330,5 +376,33 @@ mod tests {
     async fn complete_returns_trimmed_content() {
         let client = serve(r#"{"choices":[{"message":{"content":"  hi there \n"}}]}"#).await;
         assert_eq!(client.complete(&ChatRequest::default(), Duration::from_secs(5)).await.unwrap(), "hi there");
+    }
+
+    #[tokio::test]
+    async fn embed_orders_vectors_by_index() {
+        let app = Router::new().route(
+            "/embeddings",
+            post(|axum::Json(body): axum::Json<Value>| async move {
+                assert_eq!(body, json!({"model": "e", "input": ["a", "b"], "dimensions": 2}));
+                axum::Json(json!({"data": [
+                    {"object": "embedding", "embedding": [0.0, 1.0], "index": 1},
+                    {"object": "embedding", "embedding": [1.0, 0.0], "index": 0}
+                ]}))
+            }),
+        );
+        let input = ["a".to_owned(), "b".to_owned()];
+        let vectors = client(app).await.embed("e", &input, 2, Duration::from_secs(5)).await.unwrap();
+        assert_eq!(vectors, [[1.0, 0.0], [0.0, 1.0]]);
+    }
+
+    #[tokio::test]
+    async fn embed_rejects_errors_and_missing_vectors() {
+        let app = Router::new()
+            .route("/embeddings", post(|| async { axum::Json(json!({"data": [{"embedding": [1.0], "index": 0}]})) }));
+        let input = ["a".to_owned(), "b".to_owned()];
+        assert!(client(app).await.embed("e", &input, 1, Duration::from_secs(5)).await.is_err());
+        let app = Router::new()
+            .route("/embeddings", post(|| async { axum::Json(json!({"error": {"message": "no such model"}})) }));
+        assert!(client(app).await.embed("e", &input, 1, Duration::from_secs(5)).await.is_err());
     }
 }

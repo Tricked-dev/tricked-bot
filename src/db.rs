@@ -5,11 +5,12 @@ use postgres_from_row::FromRow;
 use crate::levels::xp_required_for_level;
 
 /// Every migration is idempotent and re-applied on startup, in order.
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     include_str!("../migrations/001_init.sql"),
     include_str!("../migrations/002_improve_types.sql"),
     include_str!("../migrations/004_memory_archive.sql"),
     include_str!("../migrations/005_drop_profile_evolution.sql"),
+    include_str!("../migrations/006_memory_embeddings.sql"),
 ];
 
 const USER_COLUMNS: &str = r"id, level, xp, name, relationship, example_input, example_output";
@@ -150,12 +151,16 @@ pub async fn create_memory(pool: &Pool, user_id: u64, key: &str, content: &str) 
 }
 
 /// Stores `(key, content)` memories, replacing the content of keys the user already has.
+///
+/// Changed content drops the stale embedding. Identical content leaves the row untouched.
 pub async fn upsert_memories(pool: &Pool, user_id: u64, memories: &[(&str, &str)]) -> Result<()> {
     let client = pool.get().await?;
     let upsert = client
         .prepare_cached(
             "INSERT INTO memory (user_id, key, content) VALUES ($1, $2, $3)
-             ON CONFLICT (user_id, key) DO UPDATE SET content = EXCLUDED.content",
+             ON CONFLICT (user_id, key)
+             DO UPDATE SET content = EXCLUDED.content, embedding = NULL, embedding_model = NULL
+             WHERE memory.content IS DISTINCT FROM EXCLUDED.content",
         )
         .await?;
     for (key, content) in memories {
@@ -164,14 +169,63 @@ pub async fn upsert_memories(pool: &Pool, user_id: u64, memories: &[(&str, &str)
     Ok(())
 }
 
-/// Returns the owner of the updated memory, or `None` when it doesn't exist.
+/// Returns the owner of the updated memory, or `None` when it doesn't exist. The memory is re-embedded later.
 pub async fn update_memory(pool: &Pool, id: i64, key: &str, content: &str) -> Result<Option<i64>> {
     let row = pool
         .get()
         .await?
-        .query_opt("UPDATE memory SET key = $1, content = $2 WHERE id = $3 RETURNING user_id", &[&key, &content, &id])
+        .query_opt(
+            "UPDATE memory SET key = $1, content = $2, embedding = NULL, embedding_model = NULL
+             WHERE id = $3 RETURNING user_id",
+            &[&key, &content, &id],
+        )
         .await?;
     Ok(row.map(|row| row.get(0)))
+}
+
+/// `(memory id, embedding)` for each of the user's memories embedded by `model`.
+pub async fn memory_embeddings(pool: &Pool, user_id: u64, model: &str) -> Result<Vec<(i64, Vec<f32>)>> {
+    let client = pool.get().await?;
+    let statement = client
+        .prepare_cached(
+            "SELECT id, embedding FROM memory WHERE user_id = $1 AND embedding_model = $2 AND embedding IS NOT NULL",
+        )
+        .await?;
+    let rows = client.query(&statement, &[&sql_id(user_id), &model]).await?;
+    Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
+}
+
+/// Up to `limit` memories of any user that have no embedding from `model`, oldest first.
+pub async fn unembedded_memories(pool: &Pool, model: &str, limit: usize) -> Result<Vec<Memory>> {
+    let rows = pool
+        .get()
+        .await?
+        .query(
+            &format!(
+                "SELECT {MEMORY_COLUMNS} FROM memory
+                 WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM $1 ORDER BY id LIMIT $2"
+            ),
+            &[&model, &i64::try_from(limit)?],
+        )
+        .await?;
+    Ok(rows.iter().map(Memory::from_row).collect())
+}
+
+/// Stores one embedding per memory and returns how many were stored.
+///
+/// Memories whose key or content changed since they were read are skipped, so their stale text is never kept.
+pub async fn store_embeddings(pool: &Pool, model: &str, memories: &[Memory], embeddings: &[Vec<f32>]) -> Result<u64> {
+    let client = pool.get().await?;
+    let store = client
+        .prepare_cached(
+            "UPDATE memory SET embedding = $1, embedding_model = $2 WHERE id = $3 AND key = $4 AND content = $5",
+        )
+        .await?;
+    let mut stored = 0;
+    for (memory, embedding) in memories.iter().zip(embeddings) {
+        stored += client.execute(&store, &[embedding, &model, &memory.id, &memory.key, &memory.content]).await?;
+    }
+    Ok(stored)
 }
 
 /// Returns the owner of the deleted memory, or `None` when it doesn't exist.
@@ -291,7 +345,24 @@ mod tests {
             memories.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
             ["builds better bots", "hates cilantro"]
         );
+
+        let model = "embedder";
+        let pending = unembedded_memories(&pool, model, 10).await.unwrap();
+        assert_eq!(pending, memories);
+        assert_eq!(store_embeddings(&pool, model, &pending, &[vec![1.0, 0.0], vec![0.0, 1.0]]).await.unwrap(), 2);
+        assert_eq!(unembedded_memories(&pool, model, 10).await.unwrap(), []);
+        assert_eq!(unembedded_memories(&pool, "other", 10).await.unwrap().len(), 2, "a new model re-embeds all");
+        let embedded = memory_embeddings(&pool, 1, model).await.unwrap();
+        assert!(embedded.contains(&(memories[0].id, vec![1.0, 0.0])) && embedded.len() == 2);
+        upsert_memories(&pool, 1, &[("work", "builds better bots")]).await.unwrap();
+        assert_eq!(unembedded_memories(&pool, model, 10).await.unwrap(), [], "an identical upsert keeps the embedding");
+        upsert_memories(&pool, 1, &[("work", "builds the best bots")]).await.unwrap();
+        assert_eq!(unembedded_memories(&pool, model, 10).await.unwrap()[0].content, "builds the best bots");
+        assert_eq!(memory_embeddings(&pool, 1, model).await.unwrap().len(), 1);
+        assert_eq!(store_embeddings(&pool, model, &memories[..1], &[vec![1.0, 0.0]]).await.unwrap(), 0, "stale text");
+
         assert_eq!(update_memory(&pool, memories[1].id, "food", "loves cilantro").await.unwrap(), Some(1));
+        assert_eq!(memory_embeddings(&pool, 1, model).await.unwrap(), [], "an edit drops the embedding");
         assert_eq!(memory(&pool, memories[1].id).await.unwrap().unwrap().content, "loves cilantro");
         assert_eq!(users_over_memory_limit(&pool, 1).await.unwrap(), [1]);
         assert_eq!(delete_memory(&pool, memories[1].id).await.unwrap(), Some(1));

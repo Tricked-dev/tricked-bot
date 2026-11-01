@@ -25,7 +25,8 @@ nix run                # or: docker compose up
 ## Tech
 
 * [twilight](https://github.com/twilight-rs/twilight) for Discord, PostgreSQL for storage
-* OpenRouter for chat models, and a separate decision model for memory recall and reply gating
+* OpenRouter for chat models and memory embeddings (`OPENROUTER_EMBEDDING_MODEL`), and a separate decision model
+  for memory recall and reply gating
 
 ## License
 
