@@ -3,20 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}{{ title }}{% endblock %} - Memory Manager</title>
+    <meta name="color-scheme" content="dark">
+    <title>{% block title %}{% endblock %} - Memory Manager</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container">
+    <header class="navbar">
+        <nav class="container" aria-label="Main">
             <a href="/" class="nav-brand">Memory Manager</a>
             <ul class="nav-links">
                 <li><a href="/">Users</a></li>
                 <li><a href="/export/prompts.json" download>Export JSON</a></li>
                 <li><a href="/export/users.csv" download>Export CSV</a></li>
             </ul>
-        </div>
-    </nav>
+        </nav>
+    </header>
 
     <main class="container">
         {% block content %}{% endblock %}

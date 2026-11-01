@@ -1,0 +1,20 @@
+{% macro memory_form(key, content, submit, user_id) %}
+<form method="post" class="form">
+    <div class="form-group">
+        <label for="key">Memory Key</label>
+        <input type="text" id="key" name="key" value="{{ key }}" required placeholder="e.g., favorite_color, job, hobby" class="key-input" aria-describedby="key-help">
+        <p class="form-help" id="key-help">A short identifier for this memory (must be unique for this user)</p>
+    </div>
+
+    <div class="form-group">
+        <label for="content">Memory Content</label>
+        <textarea id="content" name="content" rows="8" required placeholder="Enter the memory content..." aria-describedby="content-help">{{ content }}</textarea>
+        <p class="form-help" id="content-help">The actual information to remember about this user</p>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary">{{ submit }}</button>
+        <a href="/user/{{ user_id }}/memories" class="btn">Cancel</a>
+    </div>
+</form>
+{% endmacro %}

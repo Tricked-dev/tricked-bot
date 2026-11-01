@@ -1,0 +1,564 @@
+//! Running AI replies: one in-flight reply per author and channel, streamed into a Discord message.
+
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    pin::pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+
+use color_eyre::{Result, eyre::eyre};
+use futures_util::{Stream, StreamExt};
+use tokio::task::AbortHandle;
+use twilight_http::Client as HttpClient;
+use twilight_model::id::{
+    Id,
+    marker::{ChannelMarker, MessageMarker, UserMarker},
+};
+
+use super::{AiRequest, gif, output, predictions, prompt, recall, refusal};
+use crate::{bot::Bot, db};
+
+/// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
+/// An edit to the text being answered also counts as a restart.
+const MAX_RESTARTS: u8 = 2;
+/// How often a streaming reply is edited with newly generated text.
+const EDIT_INTERVAL: Duration = Duration::from_millis(1500);
+/// How long the model may take to finish a reply.
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Prefix of the messages that stand in for a reply that failed.
+const AI_ERROR: &str = "AI Error";
+
+#[derive(Debug, Default)]
+struct PostedState {
+    id: Option<Id<MessageMarker>>,
+    cancelled: bool,
+}
+
+type PostedSlot = Mutex<PostedState>;
+type ReplyKey = (Id<ChannelMarker>, Id<UserMarker>);
+
+#[derive(Debug)]
+struct InFlight {
+    message_id: Id<MessageMarker>,
+    /// The text being answered, so an edit that only resolves link previews leaves the reply alone.
+    message: String,
+    generation: u64,
+    restarts: u8,
+    abort: AbortHandle,
+    posted: Arc<PostedSlot>,
+}
+
+/// Unfinished replies, keyed by channel and author.
+#[derive(Debug, Default)]
+pub struct ReplyTasks {
+    tasks: Mutex<Tasks>,
+    generation: AtomicU64,
+}
+
+#[derive(Debug, Default)]
+struct Tasks {
+    in_flight: HashMap<ReplyKey, InFlight>,
+    /// Finished text with ancillary work still running. New messages leave it alone; source deletion cancels it.
+    finishing: HashMap<u64, (ReplyKey, InFlight)>,
+}
+
+impl InFlight {
+    /// Whether `req` replaces this reply: it answers a newer message, or this message after its text was edited.
+    fn replaced_by(&self, req: &AiRequest) -> bool {
+        let edited = self.message_id == req.message_id && self.message != req.message;
+        (self.message_id < req.message_id || edited) && self.restarts < MAX_RESTARTS
+    }
+}
+
+impl ReplyTasks {
+    fn complete(&self, key: ReplyKey, generation: u64) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
+            let entry = tasks.in_flight.remove(&key).unwrap();
+            tasks.finishing.insert(generation, (key, entry));
+        }
+    }
+
+    fn finish(&self, key: ReplyKey, generation: u64) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.in_flight.get(&key).is_some_and(|entry| entry.generation == generation) {
+            tasks.in_flight.remove(&key);
+        }
+        tasks.finishing.remove(&generation);
+    }
+}
+
+/// Aborts an unfinished reply and deletes whatever part of it was already posted, returning that part.
+fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) -> Option<Id<MessageMarker>> {
+    let posted = {
+        let mut state = entry.posted.lock().unwrap();
+        state.cancelled = true;
+        state.id.take()
+    };
+    entry.abort.abort();
+    if let Some(posted) = posted {
+        let bot = Arc::clone(bot);
+        tokio::spawn(async move {
+            let _ = bot.http.delete_message(channel, posted).await;
+        });
+    }
+    posted
+}
+
+/// Cancels the unfinished replies to any of the `deleted` messages in `channel`. Returns the partial replies that are
+/// being deleted along with them.
+pub fn cancel_answering(
+    bot: &Arc<Bot>,
+    channel: Id<ChannelMarker>,
+    deleted: &[Id<MessageMarker>],
+) -> Vec<Id<MessageMarker>> {
+    let mut tasks = bot.replies.tasks.lock().unwrap();
+    let mut posted = Vec::new();
+    let mut keep = |&(entry_channel, _): &ReplyKey, entry: &InFlight| {
+        if entry_channel != channel || !deleted.contains(&entry.message_id) {
+            return true;
+        }
+        posted.extend(cancel(bot, entry, channel));
+        tracing::info!(target: "decider", kind = "cancel", deleted = %entry.message_id);
+        false
+    };
+    tasks.in_flight.retain(|key, entry| keep(key, entry));
+    tasks.finishing.retain(|_, (key, entry)| keep(key, entry));
+    posted
+}
+
+/// Answers `req`, replacing the author's unfinished reply to an older message, or to the same message before its text
+/// was edited. Without an unfinished reply, one only starts when `start_new` is set. Returns whether a reply to `req`
+/// started.
+///
+/// Events are handled concurrently, so an older message can arrive here after a newer one. Snowflakes are
+/// chronological, which makes "newer" a plain ID comparison.
+pub fn submit(bot: &Arc<Bot>, req: &AiRequest, start_new: bool) -> bool {
+    let key = (req.channel_id, req.user_id);
+    let mut tasks = bot.replies.tasks.lock().unwrap();
+    let in_flight = &mut tasks.in_flight;
+    // The gateway updates the cache in order, before dispatching concurrent handlers. Validate while holding the
+    // reply lock so an edit/delete handler either prevents this start or cancels the newly registered task.
+    if !is_current(bot, req) {
+        return false;
+    }
+    let restarts = match in_flight.entry(key) {
+        Entry::Vacant(_) if start_new => 0,
+        Entry::Occupied(entry) if entry.get().replaced_by(req) => {
+            let superseded = entry.remove();
+            cancel(bot, &superseded, req.channel_id);
+            let restarts = superseded.restarts + 1;
+            tracing::info!(target: "decider", kind = "restart", superseded = %superseded.message_id, restarts);
+            restarts
+        }
+        _ => return false,
+    };
+    let generation = bot.replies.generation.fetch_add(1, Ordering::Relaxed);
+    let posted = Arc::default();
+    let abort = tokio::spawn(run(Arc::clone(bot), req.clone(), Arc::clone(&posted), generation)).abort_handle();
+    let entry =
+        InFlight { message_id: req.message_id, message: req.message.clone(), generation, restarts, abort, posted };
+    in_flight.insert(key, entry);
+    true
+}
+
+async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation: u64) {
+    let key = (req.channel_id, req.user_id);
+    let result = reply(&bot, &req, &posted, generation).await;
+    if let Err(error) = result {
+        tracing::error!(target: "decider", kind = "reply", msg_id = %req.message_id, "AI reply failed: {error}");
+        post(
+            &bot.http,
+            req.channel_id,
+            req.message_id,
+            Some(format!("{AI_ERROR}: reply or memory recall unavailable.")),
+            Vec::new(),
+            &posted,
+        )
+        .await;
+    }
+    bot.replies.finish(key, generation);
+}
+
+/// A missing or edited cached source must never trigger work from an old decision snapshot.
+pub fn is_current(bot: &Bot, req: &AiRequest) -> bool {
+    bot.cache.message(req.message_id).is_some_and(|message| message.content() == req.message)
+}
+
+async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, generation: u64) -> Result<()> {
+    let ai = bot.ai.as_ref().ok_or_else(|| eyre!("OpenRouter API key not configured"))?;
+    // Memory recall waits on the decider, so the profile lookup and image downloads run alongside it.
+    let user = async {
+        db::ensure_user(&bot.db, req.user_id.get(), &req.user_name).await?;
+        db::user(&bot.db, req.user_id.get()).await
+    };
+    let (memories, user, turn) = tokio::try_join!(recall::select(bot, req), user, prompt::user_turn(bot, req))?;
+    let request =
+        prompt::build_request(&bot.config, req, user.as_ref(), &memories, turn, &bot.config.openrouter_model)?;
+    let deltas = ai.stream(&request, REPLY_TIMEOUT).await?;
+    let streamed = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted_slot).await;
+    // New messages leave completed text alone, but deleting its source still cancels GIF lookup and side effects.
+    bot.replies.complete((req.channel_id, req.user_id), generation);
+    let Some(Streamed { posted, raw }) = streamed else {
+        return Ok(());
+    };
+    let directives = output::directives(&raw);
+    let posted_id = posted.as_ref().map(|(id, _)| *id);
+    let gif = async {
+        if let Some(query) = &directives.gif {
+            attach_gif(bot, req, posted_id, query, posted_slot).await;
+        }
+    };
+    let prediction = async {
+        if let Some(prediction) = &directives.prediction {
+            predictions::store(bot, req, prediction).await;
+        }
+    };
+    tokio::join!(gif, prediction);
+    if let Some(posted) = posted {
+        refusal::check_and_replace(bot, req, user.as_ref(), &memories, posted).await;
+    }
+    Ok(())
+}
+
+/// Adds the GIF found for `query` to the posted reply, or posts it as the reply when the model sent only the GIF.
+async fn attach_gif(
+    bot: &Bot,
+    req: &AiRequest,
+    posted: Option<Id<MessageMarker>>,
+    query: &str,
+    slot: &Arc<PostedSlot>,
+) {
+    if bot.config.disable_gifs {
+        return;
+    }
+    let url = match gif::find(&bot.web, bot.config.klipy_api_key.as_deref(), query).await {
+        Ok(Some(url)) => url,
+        Ok(None) => {
+            tracing::info!(target: "gifs", msg_id = %req.message_id, query, "No GIF found");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(target: "gifs", msg_id = %req.message_id, query, "GIF search failed: {error}");
+            return;
+        }
+    };
+    let embeds = [gif::embed(url)];
+    let sent = if let Some(id) = posted {
+        bot.http.update_message(req.channel_id, id).embeds(Some(&embeds)).await.map(drop)
+    } else {
+        post(&bot.http, req.channel_id, req.message_id, None, embeds.to_vec(), slot).await;
+        return;
+    };
+    if let Err(error) = sent {
+        tracing::warn!(target: "gifs", msg_id = %req.message_id, "Posting GIF failed: {error}");
+    }
+}
+
+/// A reply stream that ran to the end.
+pub struct Streamed {
+    /// The posted message and the last text Discord accepted, or `None` when nothing presentable came.
+    pub posted: Option<(Id<MessageMarker>, String)>,
+    /// Everything the model sent, directives included.
+    pub raw: String,
+}
+
+/// Posts the reply as soon as it has presentable text, then edits it at most every [`EDIT_INTERVAL`] and once more at
+/// the end. A stream error replaces the text with the error.
+///
+/// Returns `None` when the stream failed or the reply couldn't be posted.
+async fn stream_to_discord(
+    http: &Arc<HttpClient>,
+    deltas: impl Stream<Item = Result<String>>,
+    channel_id: Id<ChannelMarker>,
+    reply_to: Id<MessageMarker>,
+    posted_slot: &Arc<PostedSlot>,
+) -> Option<Streamed> {
+    let mut deltas = pin!(deltas);
+    let mut raw = String::new();
+    let mut failure = None;
+    let mut changed = false;
+    let mut message_id = None;
+    let mut last_sent = String::new();
+    let mut tick = tokio::time::interval(EDIT_INTERVAL);
+    loop {
+        let (finished, edit_due) = tokio::select! {
+            next = deltas.next() => match next {
+                Some(Ok(delta)) => {
+                    raw.push_str(&delta);
+                    changed = true;
+                    (false, false)
+                }
+                Some(Err(error)) => {
+                    tracing::error!("AI stream failed: {error}");
+                    failure = Some(output::discord_text(&format!("{AI_ERROR}: {error}")));
+                    changed = true;
+                    (true, false)
+                }
+                None => (true, false),
+            },
+            _ = tick.tick() => (false, true),
+        };
+        // Cleaning up the text is linear in its length, so it only happens when the result is about to be sent.
+        if changed && (finished || edit_due || message_id.is_none()) {
+            changed = false;
+            let text = failure.clone().or_else(|| output::presentable(&raw)).unwrap_or_default();
+            if !text.trim().is_empty() && text != last_sent {
+                if let Some(id) = message_id {
+                    match http.update_message(channel_id, id).content(Some(&text)).await {
+                        Ok(_) => last_sent = text,
+                        Err(error) => {
+                            tracing::warn!("AI message update failed: {error}");
+                            // Retry on the next tick or the final flush, even if no more text arrives.
+                            changed = true;
+                        }
+                    }
+                } else {
+                    let id = post(http, channel_id, reply_to, Some(text.clone()), Vec::new(), posted_slot).await?;
+                    message_id = Some(id);
+                    last_sent = text;
+                }
+            }
+        }
+        if finished {
+            return failure.is_none().then(|| Streamed { posted: message_id.map(|id| (id, last_sent)), raw });
+        }
+    }
+}
+
+/// Finish a Discord POST even if its caller is aborted. Register the ID and cancellation under one lock, deleting
+/// a late result when cancellation won the race. Covers text, GIF-only replies and error messages.
+async fn post(
+    http: &Arc<HttpClient>,
+    channel_id: Id<ChannelMarker>,
+    reply_to: Id<MessageMarker>,
+    text: Option<String>,
+    embeds: Vec<twilight_model::channel::message::Embed>,
+    slot: &Arc<PostedSlot>,
+) -> Option<Id<MessageMarker>> {
+    let (http, slot) = (Arc::clone(http), Arc::clone(slot));
+    tokio::spawn(async move {
+        if slot.lock().unwrap().cancelled {
+            return None;
+        }
+        let mut request = http.create_message(channel_id).reply(reply_to).embeds(&embeds);
+        if let Some(text) = &text {
+            request = request.content(text);
+        }
+        let response = request.await.inspect_err(|error| tracing::warn!("AI initial message failed: {error}")).ok()?;
+        let message = response
+            .model()
+            .await
+            .inspect_err(|error| tracing::warn!("AI posted message decode failed: {error}"))
+            .ok()?;
+        let cancelled = {
+            let mut state = slot.lock().unwrap();
+            if state.cancelled {
+                true
+            } else {
+                state.id = Some(message.id);
+                false
+            }
+        };
+        if cancelled {
+            if let Err(error) = http.delete_message(channel_id, message.id).await {
+                tracing::warn!(%error, msg_id = %message.id, "Deleting cancelled late reply failed");
+            }
+            None
+        } else {
+            Some(message.id)
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot::tests::{message, test_bot};
+    use axum::{Json, Router, extract::State, http::Method, http::StatusCode, routing::any};
+    use futures_util::stream;
+    use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn stale_edited_and_deleted_requests_never_start_a_reply() {
+        use twilight_gateway::Event;
+        use twilight_model::gateway::payload::incoming::{MessageCreate, MessageDelete};
+        let bot = Arc::new(test_bot());
+        let original = message(10, 2, "alice", "old text");
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(original.clone()))));
+        let req = bot.snapshot(&original);
+        let edited = message(10, 2, "alice", "edited text");
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(edited))));
+        assert!(!submit(&bot, &req, true), "a delayed check must not answer the old text");
+        bot.cache.update(&Event::MessageDelete(MessageDelete {
+            channel_id: Id::new(1),
+            guild_id: None,
+            id: Id::new(10),
+        }));
+        assert!(!submit(&bot, &req, true), "a delayed check must not answer a deleted message");
+    }
+
+    #[tokio::test]
+    async fn cancelling_while_discord_accepts_a_post_deletes_the_late_message() {
+        let accepted = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let deleted = Arc::new(tokio::sync::Notify::new());
+        let (a, r, d) = (Arc::clone(&accepted), Arc::clone(&release), Arc::clone(&deleted));
+        let app = Router::new().fallback(any(move |method: Method| {
+            let (a, r, d) = (Arc::clone(&a), Arc::clone(&r), Arc::clone(&d));
+            async move {
+                if method == Method::DELETE {
+                    d.notify_one();
+                    return (StatusCode::NO_CONTENT, Json(json!(null)));
+                }
+                a.notify_one();
+                r.notified().await;
+                (StatusCode::OK, Json(serde_json::to_value(message(42, 3, "bot", "hi")).unwrap()))
+            }
+        }));
+        let address = crate::test_util::serve(app).await;
+        let mut bot = test_bot();
+        bot.http = HttpClient::builder()
+            .token("test-token".into())
+            .proxy(address.to_string(), true)
+            .ratelimiter(None)
+            .build()
+            .into();
+        let bot = Arc::new(bot);
+        let posted = Arc::default();
+        let (task_bot, task_posted) = (Arc::clone(&bot), Arc::clone(&posted));
+        let task = tokio::spawn(async move {
+            stream_to_discord(&task_bot.http, stream::iter(deltas(&["hi"])), Id::new(1), Id::new(10), &task_posted)
+                .await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), accepted.notified()).await.unwrap();
+        let entry = InFlight { abort: task.abort_handle(), posted, ..in_flight(10, "hello", 0) };
+        cancel(&bot, &entry, Id::new(1));
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), deleted.notified())
+            .await
+            .expect("a POST that finishes after cancellation must be deleted");
+    }
+
+    type Seen = Arc<tokio::sync::Mutex<Vec<String>>>;
+
+    async fn mock_discord(
+        State(seen): State<Seen>,
+        method: Method,
+        Json(body): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
+        let content = body["content"].as_str().unwrap().to_owned();
+        seen.lock().await.push(content.clone());
+        if method == Method::PATCH && content.ends_with("failure") {
+            return (StatusCode::BAD_REQUEST, Json(json!({"code": 50035, "message": "invalid"})));
+        }
+        (
+            StatusCode::OK,
+            Json(json!({
+                "id": "42", "channel_id": "1", "content": content, "timestamp": "2026-09-26T00:00:00.000000+00:00",
+                "author": {"id": "3", "username": "bot", "discriminator": "0001", "avatar": null},
+                "tts": false, "mention_everyone": false, "mentions": [], "mention_roles": [], "attachments": [],
+                "embeds": [], "pinned": false, "type": 0
+            })),
+        )
+    }
+
+    async fn run_stream(deltas: Vec<Result<String>>) -> (Option<Streamed>, Vec<String>) {
+        let seen = Seen::default();
+        let app = Router::new().fallback(any(mock_discord)).with_state(Arc::clone(&seen));
+        let address = crate::test_util::serve(app).await;
+        let http = Arc::new(
+            HttpClient::builder()
+                .token("test-token".to_owned())
+                .proxy(address.to_string(), true)
+                .ratelimiter(None)
+                .build(),
+        );
+        let result = stream_to_discord(&http, stream::iter(deltas), Id::new(1), Id::new(2), &Arc::default()).await;
+        let requests = seen.lock().await.clone();
+        (result, requests)
+    }
+
+    fn deltas(texts: &[&str]) -> Vec<Result<String>> {
+        texts.iter().map(|text| Ok((*text).to_owned())).collect()
+    }
+
+    fn in_flight(message_id: u64, message: &str, restarts: u8) -> InFlight {
+        InFlight {
+            message_id: Id::new(message_id),
+            message: message.to_owned(),
+            generation: 0,
+            restarts,
+            abort: tokio::spawn(async {}).abort_handle(),
+            posted: Arc::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_text_allows_new_replies_but_source_deletion_cancels_ancillary_work() {
+        use twilight_gateway::Event;
+        use twilight_model::gateway::payload::incoming::MessageCreate;
+        let bot = Arc::new(test_bot());
+        let key = (Id::new(1), Id::new(2));
+        let entry = InFlight { generation: 9, ..in_flight(10, "old", 0) };
+        let slot = Arc::clone(&entry.posted);
+        bot.replies.tasks.lock().unwrap().in_flight.insert(key, entry);
+        bot.replies.complete(key, 9);
+        assert!(bot.replies.tasks.lock().unwrap().in_flight.is_empty());
+        let newer = message(20, 2, "alice", "new");
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(newer.clone()))));
+        assert!(submit(&bot, &bot.snapshot(&newer), true), "completed text must allow an independent reply");
+        cancel_answering(&bot, Id::new(1), &[Id::new(10)]);
+        assert!(slot.lock().unwrap().cancelled, "source deletion cancels the old GIF/fallback work");
+        bot.replies.finish(key, 9);
+        assert_eq!(bot.replies.tasks.lock().unwrap().in_flight[&key].message_id, Id::new(20));
+        cancel_answering(&bot, Id::new(1), &[Id::new(20)]);
+    }
+
+    #[tokio::test]
+    async fn newer_messages_and_text_edits_replace_a_reply() {
+        let bot = test_bot();
+        let entry = in_flight(10, "hello", 0);
+        assert!(entry.replaced_by(&bot.snapshot(&message(11, 2, "alice", "more"))));
+        assert!(entry.replaced_by(&bot.snapshot(&message(10, 2, "alice", "hello there"))));
+        assert!(!entry.replaced_by(&bot.snapshot(&message(10, 2, "alice", "hello"))), "only a link preview resolved");
+        assert!(!entry.replaced_by(&bot.snapshot(&message(9, 2, "alice", "older"))));
+        assert!(!in_flight(10, "hello", MAX_RESTARTS).replaced_by(&bot.snapshot(&message(10, 2, "alice", "edited"))));
+    }
+
+    #[tokio::test]
+    async fn completed_short_stream_is_posted_presentably() {
+        let (result, requests) = run_stream(deltas(&["The Trickster: Hi."])).await;
+        assert_eq!(result.unwrap().posted.unwrap().1, "hi");
+        assert_eq!(requests, ["hi"]);
+    }
+
+    #[tokio::test]
+    async fn completed_stream_flushes_final_text() {
+        let (result, requests) = run_stream(deltas(&["Hi", " there"])).await;
+        assert_eq!(result.unwrap().posted.unwrap().1, "hi there");
+        assert_eq!(requests, ["hi", "hi there"]);
+    }
+
+    #[tokio::test]
+    async fn failed_final_edit_returns_last_successfully_posted_text() {
+        let (result, _) = run_stream(deltas(&["Hi", " final failure"])).await;
+        assert_eq!(result.unwrap().posted.unwrap().1, "hi");
+    }
+
+    #[tokio::test]
+    async fn stream_error_replaces_the_reply_and_reports_no_reply() {
+        let mut stream = deltas(&["Hi"]);
+        stream.push(Err(eyre!("overloaded")));
+        let (result, requests) = run_stream(stream).await;
+        assert!(result.is_none());
+        assert_eq!(requests, ["hi", "AI Error: overloaded"]);
+    }
+}

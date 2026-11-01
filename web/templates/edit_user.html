@@ -1,33 +1,47 @@
 {% extends "base.html" %}
 
+{% block title %}Edit User {{ user.id }}{% endblock %}
+
 {% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    <ol>
+        <li><a href="/">Users</a></li>
+        <li><a href="/user/{{ user.id }}">{{ user.display_name() }}</a></li>
+        <li aria-current="page">Edit</li>
+    </ol>
+</nav>
+
 <div class="page-header">
-    <h1>Edit User {{ user.id }}</h1>
-    <a href="/user/{{ user.id }}" class="btn">Cancel</a>
+    <div class="page-title">
+        <h1>Edit {{ user.display_name() }}</h1>
+        <p class="page-meta">ID {{ user.id }}</p>
+    </div>
 </div>
 
 <form method="post" class="form">
     <div class="form-group">
-        <label for="name">Name:</label>
+        <label for="name">Name</label>
         <input type="text" id="name" name="name" value="{{ user.name }}" placeholder="Enter user's name">
     </div>
 
     <div class="form-group">
-        <label for="relationship">Relationship:</label>
-        <input type="text" id="relationship" name="relationship" value="{{ user.relationship }}" placeholder="how The Trickster treats this person, e.g. your nemesis, roast him every time">
-        <p class="form-help">Manual edits apply immediately. AI observations are staged and require 3 matching memory cycles.</p>
+        <label for="relationship">Relationship</label>
+        <input type="text" id="relationship" name="relationship" value="{{ user.relationship }}" placeholder="how The Trickster treats this person, e.g. your nemesis, roast him every time" aria-describedby="relationship-help">
+        <p class="form-help" id="relationship-help">Applies to every reply to this person from the next message on.</p>
     </div>
 
-    <div class="form-group">
-        <label for="example_input">Example Input:</label>
-        <textarea id="example_input" name="example_input" rows="6" placeholder="Example of how this user might interact with the bot">{{ user.example_input }}</textarea>
-        <p class="form-help">One example per line. Line N here pairs with line N of the output below.</p>
-    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label for="example_input">Example Input</label>
+            <textarea id="example_input" name="example_input" rows="6" class="lines" placeholder="Example of how this user might interact with the bot" aria-describedby="example-input-help">{{ user.example_input }}</textarea>
+            <p class="form-help" id="example-input-help">One example per line. Line N here pairs with line N of the output.</p>
+        </div>
 
-    <div class="form-group">
-        <label for="example_output">Example Output:</label>
-        <textarea id="example_output" name="example_output" rows="6" placeholder="Example of how the bot should respond to this user">{{ user.example_output }}</textarea>
-        <p class="form-help">One reply per line, matching the input lines above.</p>
+        <div class="form-group">
+            <label for="example_output">Example Output</label>
+            <textarea id="example_output" name="example_output" rows="6" class="lines" placeholder="Example of how the bot should respond to this user" aria-describedby="example-output-help">{{ user.example_output }}</textarea>
+            <p class="form-help" id="example-output-help">One reply per line, matching the input lines.</p>
+        </div>
     </div>
 
     <div class="form-actions">
