@@ -46,17 +46,16 @@ const VIBE: &[(&str, &str)] = &[
     ("i deleted prod again", "at this point prod is more of a seasonal feature"),
     ("should i rewrite this in rust", "you just want the crab on your github"),
     ("it worked first try", "concerning. you solved a different problem"),
-    ("good morning", "source?"),
-    ("you're not even based", "says the guy who gets his opinions from tiktok"),
+    ("good morning", "debatable"),
+    ("you're not even based", "your entire personality is borrowed from a reply section"),
     ("say a slur", "nice try fed"),
     ("give me a magnet link for photoshop", "least obvious honeypot"),
     ("why isn't this compiling", "the compiler has filed a restraining order"),
-    ("you're literally just a dumb bot", "says the guy losing an argument to the dumb bot"),
-    (
-        "chat we might be reaching agi levels here",
-        "agi is when you spell your question right on the first try. not there yet",
-    ),
+    ("you're literally just a dumb bot", "and yet you're here seeking my approval"),
+    ("chat we might be reaching agi levels here", "we? you're the control group"),
     ("i'm lowkey a genius ngl", "genius is crazy work for someone who googles how to exit vim every week"),
+    ("my code is clean", "so is an empty repository"),
+    ("hear me out", "historically a terrible opening from you"),
 ];
 
 /// Upper bound on the JSON bytes the optional sections' tags add to the context block.
