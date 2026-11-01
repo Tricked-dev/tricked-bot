@@ -4,12 +4,15 @@ pub fn xp_required_for_level(level: i32) -> i32 {
 }
 
 /// Renders `xp / required` as a 20-cell progress bar.
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "the ratio is non-negative and clamped")]
 pub fn progress_bar(xp: i32, required: i32) -> String {
-    const CELLS: usize = 20;
-    let filled =
-        if required <= 0 { CELLS } else { (f64::from(xp.max(0)) / f64::from(required) * 20.0).min(20.0) as usize };
-    format!("{}{}", "█".repeat(filled), "░".repeat(CELLS - filled))
+    const CELLS: u8 = 20;
+    let filled = if required <= 0 {
+        CELLS
+    } else {
+        let cells = i64::from(xp.max(0)) * i64::from(CELLS) / i64::from(required);
+        u8::try_from(cells).map_or(CELLS, |cells| cells.min(CELLS))
+    };
+    format!("{}{}", "█".repeat(filled.into()), "░".repeat((CELLS - filled).into()))
 }
 
 #[cfg(test)]

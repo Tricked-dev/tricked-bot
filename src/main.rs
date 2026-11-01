@@ -6,12 +6,16 @@ mod currency;
 mod db;
 mod decider;
 mod events;
+mod ffmpeg;
 mod levels;
 mod messages;
 mod pfp;
 mod qalc;
 mod quiz;
 mod ratewaifu;
+#[cfg(test)]
+mod test_util;
+mod time;
 mod web;
 mod zalgo;
 

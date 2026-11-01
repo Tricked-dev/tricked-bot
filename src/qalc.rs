@@ -18,22 +18,35 @@ pub async fn update_rates() {
     }
 }
 
+/// The reply to a calculation request: the result, or what went wrong.
+pub async fn answer(expr: &str) -> String {
+    match eval(expr).await {
+        Ok(output) if output.is_empty() => "No result returned from calculation".to_owned(),
+        Ok(output) => output,
+        Err(error) => format!("Error: {error}"),
+    }
+}
+
+fn timed_out() -> String {
+    format!("Calculation timed out ({}s limit)", TIMEOUT_MS / 1000)
+}
+
 /// Evaluates `expr` tersely without interactive prompts.
-pub async fn eval(expr: &str) -> Result<String, String> {
+async fn eval(expr: &str) -> Result<String, String> {
     let output = Command::new("qalc")
         .args(["-t", "-m", &TIMEOUT_MS.to_string(), "-s", "update exchange rates 0", expr])
         .kill_on_drop(true)
         .output();
     let output = tokio::time::timeout(Duration::from_millis(TIMEOUT_MS + 1000), output)
         .await
-        .map_err(|_| "Calculation timed out (2s limit)".to_owned())?
+        .map_err(|_| timed_out())?
         .map_err(|error| error.to_string())?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     if stderr.contains("timed out") || stderr.contains("aborted") {
-        Err("Calculation timed out (2s limit)".into())
+        Err(timed_out())
     } else {
         Err(stderr.trim().to_owned())
     }

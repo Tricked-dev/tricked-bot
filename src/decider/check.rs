@@ -31,9 +31,10 @@ fn decide_reply(
     ReplyDecision { wants, responding, fire }
 }
 
+/// Asks whether the message is worth remembering, and with `ask_reply` whether the bot should answer it unprompted.
 pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
-    let Some(decider) = bot.decider.clone() else { return };
     tokio::spawn(async move {
+        let Some(decider) = &bot.decider else { return };
         let cfg = &bot.config;
         let mut qs = HashMap::from([("durable".to_owned(), questions::durable(&req.user_name))]);
         if ask_reply {
@@ -43,7 +44,7 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
         let started = std::time::Instant::now();
         let state = questions::state(&req.context, &req.user_name, &req.message);
         let timeout = Duration::from_millis(cfg.decider_check_timeout_ms);
-        let scores = match decider.noul(&state, qs, false, timeout).await {
+        let scores = match decider.noul(&state, qs, timeout).await {
             Ok(scores) => scores,
             Err(error) => {
                 tracing::warn!(target: "decider", kind = "check", channel = %req.channel_id, msg_id = %req.message_id, "skipped: {error}");
@@ -67,11 +68,11 @@ pub fn spawn(bot: Arc<Bot>, req: AiRequest, ask_reply: bool) {
             user = %req.user_id, durable, reply = reply.unwrap_or(-1.0), followup = followup.unwrap_or(-1.0),
             wants, responding, fire, bot_in_context, mode = ?cfg.decider_reply_mode,
             latency_ms = started.elapsed().as_millis());
-        if durable >= cfg.decider_durable_threshold {
-            tokio::spawn(crate::ai::memory::write_for_author(Arc::clone(&bot), req.clone()));
-        }
         if fire {
-            crate::ai::reply::spawn(&bot, AiRequest { ask_durable: false, ..req });
+            crate::ai::reply::submit(&bot, &req, true);
+        }
+        if durable >= cfg.decider_durable_threshold {
+            crate::ai::memory::write_for_author(Arc::clone(&bot), req).await;
         }
     });
 }

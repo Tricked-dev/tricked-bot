@@ -1,10 +1,6 @@
 //! Daily profile picture from a random image posted in a channel.
 
-use std::{
-    io::Write,
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use color_eyre::{
@@ -13,13 +9,12 @@ use color_eyre::{
 };
 use rand::seq::SliceRandom;
 use reqwest::StatusCode;
-use tokio::process::Command;
 use twilight_model::id::{
     Id,
     marker::{ChannelMarker, MessageMarker},
 };
 
-use crate::bot::Bot;
+use crate::{ai::media::image_extension, bot::Bot, ffmpeg, time::unix_now};
 
 const DAY: Duration = Duration::from_hours(24);
 /// Attachments in old messages expire, so a few candidates are tried before giving up.
@@ -34,17 +29,14 @@ struct Image {
 
 impl Image {
     fn is_gif(&self) -> bool {
-        self.url.contains("tenor.com")
-            || std::path::Path::new(&self.url)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
+        self.url.contains("tenor.com") || image_extension(&self.url) == Some("gif")
     }
 }
 
 /// Discord CDN, Tenor, or anything ending in an image extension.
 fn is_image_url(url: &str) -> bool {
     ["cdn.discordapp.com", "media.discordapp.net", "tenor.com"].iter().any(|host| url.contains(host))
-        || [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|extension| url.ends_with(extension))
+        || image_extension(url).is_some()
 }
 
 async fn channel_images(bot: &Bot, channel: Id<ChannelMarker>) -> Result<Vec<Image>> {
@@ -95,24 +87,14 @@ async fn download(bot: &Bot, channel: Id<ChannelMarker>, image: &Image) -> Resul
 }
 
 /// Center-crops to a square with ffmpeg, keeping GIFs animated and turning everything else into PNG.
-async fn crop_to_square(image: &[u8], gif: bool) -> Result<Vec<u8>> {
-    let mut input = tempfile::NamedTempFile::new()?;
-    input.write_all(image)?;
-    let output_format: &[&str] =
-        if gif { &["-f", "gif"] } else { &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png"] };
-    let output = Command::new("ffmpeg")
-        .kill_on_drop(true)
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
-        .arg(input.path())
-        .args(["-vf", r"crop=min(iw\,ih):min(iw\,ih):(iw-min(iw\,ih))/2:(ih-min(iw\,ih))/2"])
-        .args(output_format)
-        .arg("pipe:1")
-        .output()
-        .await?;
-    if !output.status.success() || output.stdout.is_empty() {
-        bail!("ffmpeg failed to crop image: {}", String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(output.stdout)
+async fn crop_to_square(image: Vec<u8>, gif: bool) -> Result<Vec<u8>> {
+    const CROP: &str = r"crop=min(iw\,ih):min(iw\,ih):(iw-min(iw\,ih))/2:(ih-min(iw\,ih))/2";
+    let output: &[&str] = if gif {
+        &["-vf", CROP, "-f", "gif"]
+    } else {
+        &["-vf", CROP, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png"]
+    };
+    ffmpeg::run(image, &[], output).await
 }
 
 /// Updates the bot's avatar with a random image from the channel.
@@ -132,7 +114,7 @@ pub async fn update(bot: &Bot, channel: Id<ChannelMarker>) -> Result<()> {
             }
         };
         let gif = image.is_gif();
-        let cropped = crop_to_square(&bytes, gif).await?;
+        let cropped = crop_to_square(bytes, gif).await?;
         let mime = if gif { "image/gif" } else { "image/png" };
         let avatar = format!("data:{mime};base64,{}", STANDARD.encode(cropped));
         bot.http.update_current_user().avatar(Some(&avatar)).await?;
@@ -154,8 +136,7 @@ pub fn spawn_daily(bot: Arc<Bot>) {
         {
             tracing::error!("Failed to update profile picture on startup: {error:?}");
         }
-        let since_midnight =
-            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs() % DAY.as_secs();
+        let since_midnight = unix_now().as_secs() % DAY.as_secs();
         let first = tokio::time::Instant::now() + DAY - Duration::from_secs(since_midnight);
         let mut interval = tokio::time::interval_at(first, DAY);
         loop {
@@ -177,5 +158,6 @@ mod tests {
         assert!(is_image_url("https://tenor.com/view/cat-123"));
         assert!(is_image_url("https://example.com/a.webp"));
         assert!(!is_image_url("https://example.com/page"));
+        assert!(is_image_url("https://example.com/a.PNG?size=large"));
     }
 }

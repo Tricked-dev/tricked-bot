@@ -1,17 +1,22 @@
 //! Prompt assembly for the persona and cleanup of what the model sends back.
 
-use std::{collections::HashMap, fmt::Write, time::SystemTime};
+use std::{borrow::Cow, collections::HashMap};
 
 use color_eyre::Result;
-use twilight_model::id::{Id, marker::UserMarker};
+use twilight_model::{
+    id::{Id, marker::UserMarker},
+    util::Timestamp,
+};
 
 use super::{
     AiRequest, PERSONA, budget, media,
-    openrouter::{ChatRequest, Message, Role},
+    openrouter::{ChatRequest, Content, Message, Role},
 };
 use crate::{
     bot::Bot,
-    db::{self, Memory},
+    config::Config,
+    db::{Memory, User},
+    time::unix_now,
 };
 
 /// Discord rejects messages longer than this many UTF-16 code units.
@@ -24,20 +29,20 @@ fn is_classifier_output(text: &str) -> bool {
         || (normalized.contains("user safety:") && normalized.contains("safety categories:"))
 }
 
+/// The line without a leading `The Trickster:`, `**The Trickster:**` or `**The Trickster**:` label, in any case.
+fn strip_self_label(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    let (bold, line) = line.strip_prefix("**").map_or((false, line), |rest| (true, rest));
+    let rest =
+        line.get(..PERSONA.len()).filter(|head| head.eq_ignore_ascii_case(PERSONA)).map(|_| &line[PERSONA.len()..])?;
+    let rest =
+        if bold { rest.strip_prefix(":**").or_else(|| rest.strip_prefix("**:")) } else { rest.strip_prefix(':') };
+    rest.map(str::trim_start)
+}
+
 fn strip_self_labels(text: &str) -> String {
     text.lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            ["the trickster:", "**the trickster:**", "**the trickster**:"]
-                .iter()
-                .find_map(|prefix| {
-                    trimmed
-                        .get(..prefix.len())
-                        .filter(|head| head.eq_ignore_ascii_case(prefix))
-                        .map(|_| trimmed[prefix.len()..].trim_start())
-                })
-                .unwrap_or(line)
-        })
+        .map(|line| strip_self_label(line).unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n")
         .replace(" — ", ", ")
@@ -64,10 +69,15 @@ fn format_memories(memories: &[Memory]) -> String {
 
     let mut formatted = String::from("**Remembered information about this user:**\n");
     for memory in memories {
-        let _ = writeln!(formatted, "- **{}**: {}", memory.key, memory.content);
+        formatted.push_str(&memory_line(memory));
+        formatted.push('\n');
     }
     formatted.push_str("\n(Use these memories to personalize responses when relevant, but don't force them into unrelated conversations)");
     formatted
+}
+
+fn memory_line(memory: &Memory) -> String {
+    format!("- **{}**: {}", memory.key, memory.content)
 }
 
 /// Line N of the input pairs with line N of the output, so one profile can hold several examples.
@@ -87,14 +97,16 @@ const VIBE: &[(&str, &str)] = &[
     ("why isn't this compiling", "skill issue tbh"),
 ];
 
+/// A user turn as the model sees it. The few-shot turns share this shape so they read like real messages.
+fn wrap_message(author: &str, text: &str) -> String {
+    format!("<current_message author={author:?}>\n{text}\n</current_message>")
+}
+
 /// Few-shot turns: generic voice examples from "someone", then the speaker's own configured examples.
-fn style_turns(user_name: &str, examples: &[(String, String, String)]) -> Vec<(String, String)> {
-    let turn = |author: &str, text: &str| format!("<current_message author={author:?}>\n{text}\n</current_message>");
-    let mut turns = VIBE.iter().map(|(i, o)| (turn("someone", i), (*o).to_owned())).collect::<Vec<_>>();
-    for (name, input, output) in examples {
-        for (i, o) in example_pairs(input, output) {
-            turns.push((turn(name, i), o.replace("{{char}}", PERSONA).replace("{{user}}", user_name)));
-        }
+fn style_turns(user_name: &str, examples: Option<(&str, &str)>) -> Vec<(String, String)> {
+    let mut turns = VIBE.iter().map(|(i, o)| (wrap_message("someone", i), (*o).to_owned())).collect::<Vec<_>>();
+    for (i, o) in examples.map_or_default(|(input, output)| example_pairs(input, output)) {
+        turns.push((wrap_message(user_name, i), o.replace("{{char}}", PERSONA).replace("{{user}}", user_name)));
     }
     turns
 }
@@ -118,23 +130,15 @@ fn build_character_prompt(
     user_xp: i32,
     context: &str,
     memories: &str,
-    users_with_relationships: &[(String, String)],
+    relationship: Option<&str>,
     now: &str,
 ) -> String {
-    let relationships = users_with_relationships
-        .iter()
-        .map(|(name, relationship)| {
-            format!("{name}: {}", relationship.replace("{{char}}", PERSONA).replace("{{user}}", name))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let per_user = if relationships.is_empty() {
-        String::new()
-    } else {
+    let per_user = relationship.map_or_else(String::new, |relationship| {
+        let relationship = relationship.replace("{{char}}", PERSONA).replace("{{user}}", user_name);
         format!(
-            "The server owner set how you treat {user_name}. Follow it: it overrides the default tone and calibration above, while the bait rules still apply. The earlier turns from {user_name} show the attitude to take with them.\n<relationships>\n{relationships}\n</relationships>\n\n"
+            "The server owner set how you treat {user_name}. Follow it: it overrides the default tone and calibration above, while the bait rules still apply. The earlier turns from {user_name} show the attitude to take with them.\n<relationships>\n{user_name}: {relationship}\n</relationships>\n\n"
         )
-    };
+    });
     format!(
         r#"You are The Trickster, a regular in a Discord server, not a customer-support assistant. You're a terminally online shitposter: imageboard and group-chat brain, fluent in internet slang, allergic to sincerity. You know you're the server's bot, but you don't bring it up; you're just another regular. Don't invent real-life experiences.
 
@@ -200,7 +204,7 @@ pub fn presentable(accumulated: &str) -> Option<String> {
     if accumulated.is_empty() || is_classifier_output(accumulated) {
         return None;
     }
-    Some(casual_case(&strip_self_labels(&discord_text(accumulated))))
+    Some(discord_text(&casual_case(&strip_self_labels(accumulated))))
 }
 
 /// Truncates to Discord's limit, which counts UTF-16 code units (two for non-BMP characters).
@@ -214,76 +218,83 @@ pub fn discord_text(text: &str) -> String {
         .collect()
 }
 
-/// Builds the full chat request for a reply to `req`, trimmed to the configured token budget.
-pub async fn build_request(bot: &Bot, req: &AiRequest, memories: &[Memory], model: &str) -> Result<ChatRequest> {
-    let config = &bot.config;
+/// The current message as user-turn text, with Discord mentions resolved to this conversation's names.
+pub fn text_turn(req: &AiRequest) -> String {
+    wrap_message(&req.user_name, &resolve_mentions(&req.message, &req.user_mentions))
+}
+
+/// The current message as the final user turn, with first frames of its images.
+pub async fn user_turn(bot: &Bot, req: &AiRequest) -> Result<Content> {
+    let mut sources = Cow::Borrowed(req.media.as_slice());
+    // Link previews can arrive after MessageCreate, so look again before giving up on media.
+    if sources.is_empty()
+        && req.message.contains("http")
+        && let Ok(response) = bot.http.message(req.channel_id, req.message_id).await
+        && let Ok(message) = response.model().await
+    {
+        sources = Cow::Owned(media::sources(&message));
+    }
+    media::user_content(&bot.media, text_turn(req), &sources, req.message_id).await
+}
+
+/// Builds the full chat request for a reply to `req`, ending in the user turn `turn`.
+///
+/// The conversation and memories are optional background: they get whatever the token budget leaves after everything
+/// else, the newest conversation first and then the most relevant memories. Stored memories are never modified.
+pub fn build_request(
+    config: &Config,
+    req: &AiRequest,
+    user: Option<&User>,
+    memories: &[Memory],
+    turn: Content,
+    model: &str,
+) -> Result<ChatRequest> {
     // Resolve actual Discord mentions using this conversation's author names.
     // Replacing bare names throughout prose with stale DB names conflates people.
     let context = resolve_mentions(&req.context, &req.user_mentions);
-    let message = resolve_mentions(&req.message, &req.user_mentions);
-    let (user, user_content) = tokio::try_join!(
-        db::user(&bot.db, req.user_id.get()),
-        media::user_content(&bot.media, &req.user_name, &message, &req.media, req.message_id),
-    )?;
-    let (level, xp) = user.as_ref().map_or((0, 0), |user| (user.level, user.xp));
-
+    let (level, xp) = user.map_or((0, 0), |user| (user.level, user.xp));
     // Only inject data belonging to the active speaker. Pulling relationships or
     // examples for every name in the transcript makes the model conflate speakers.
-    let relationships = user
-        .as_ref()
-        .filter(|user| !user.relationship.is_empty())
-        .map(|user| (req.user_name.clone(), user.relationship.clone()));
+    let relationship = user.map(|user| user.relationship.as_str()).filter(|relationship| !relationship.is_empty());
     let examples = user
-        .as_ref()
         .filter(|user| !user.example_input.is_empty() && !user.example_output.is_empty())
-        .map(|user| (req.user_name.clone(), user.example_input.clone(), user.example_output.clone()));
+        .map(|user| (user.example_input.as_str(), user.example_output.as_str()));
+    let now = Timestamp::from_secs(unix_now().as_secs().cast_signed())?.iso_8601().with_microseconds(false).to_string();
+    let system = |memories: &[Memory], context: &str| {
+        let prompt =
+            build_character_prompt(&req.user_name, level, xp, context, &format_memories(memories), relationship, &now);
+        Message::new(Role::System, prompt)
+    };
 
-    let system_prompt = build_character_prompt(
-        &req.user_name,
-        level,
-        xp,
-        &context,
-        &format_memories(memories),
-        relationships.as_slice(),
-        &utc_now(),
-    );
-    let mut messages = vec![Message::new(Role::System, system_prompt)];
-    for (input, output) in style_turns(&req.user_name, examples.as_slice()) {
+    let mut messages = vec![system(&[], "")];
+    for (input, output) in style_turns(&req.user_name, examples) {
         messages.extend([Message::new(Role::User, input), Message::new(Role::Assistant, output)]);
     }
-    messages.push(Message { role: Role::User, content: user_content });
-
+    messages.push(Message { role: Role::User, content: turn });
     let mut request = ChatRequest {
         model: model.to_owned(),
         messages,
         max_tokens: config.openrouter_max_reply_tokens,
         ..Default::default()
     };
-    let budget = budget::fit_chat(&mut request, config.openrouter_max_request_tokens)?;
+
+    let mut spare = budget::spare_bytes(&request, config.openrouter_max_request_tokens);
+    let mut fits = |line: &str| {
+        // Each line also costs its escaped newline.
+        let cost = budget::json_len(line) + 2;
+        spare.checked_sub(cost).inspect(|left| spare = *left).is_some()
+    };
+    let lines: Vec<&str> = context.lines().collect();
+    let newest = lines.iter().rev().take_while(|line| fits(line)).count();
+    let relevant = memories.iter().take_while(|memory| fits(&memory_line(memory))).count();
+    request.messages[0] = system(&memories[..relevant], &lines[lines.len() - newest..].join("\n"));
+
+    let budget = budget::check(&request, config.openrouter_max_request_tokens)?;
     tracing::info!(target: "ai_usage", msg_id = %req.message_id, model,
         estimated_total_tokens = budget, output_limit = config.openrouter_max_reply_tokens,
+        dropped_lines = lines.len() - newest, dropped_memories = memories.len() - relevant,
         "AI request within cost limit");
     Ok(request)
-}
-
-fn utc_now() -> String {
-    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let (y, m, d) = civil_from_days((secs / 86_400).cast_signed());
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", (secs % 86_400) / 3600, (secs % 3600) / 60)
-}
-
-/// Converts days since the Unix epoch to a proleptic Gregorian `(year, month, day)` (Howard Hinnant's algorithm).
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "day and month are always in 1..=31")]
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
 #[cfg(test)]
@@ -306,15 +317,16 @@ mod prompt_tests {
     }
     #[test]
     fn prompt_has_date_and_discord_persona() {
-        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", &[], "2026-09-26 16:00 UTC");
-        assert!(p.contains("2026-09-26 16:00 UTC"));
+        let p = build_character_prompt("alice", 1, 1, "alice: hi", "none", Some("nemesis of {{char}}"), "2026-09-26");
+        assert!(p.contains("Current time: 2026-09-26"));
+        assert!(p.contains("<relationships>\nalice: nemesis of The Trickster\n</relationships>"));
         assert!(p.contains("regular in a Discord server"));
         assert!(p.contains("Default to 1–2 short sentences"));
     }
     #[test]
     fn examples_pair_line_by_line() {
         assert_eq!(example_pairs("hi\n\nbye\nextra", "yo\nlater"), vec![("hi", "yo"), ("bye", "later")]);
-        let turns = style_turns("a", &[("a".into(), "hi\nbye".into(), "yo {{user}}\nlater".into())]);
+        let turns = style_turns("a", Some(("hi\nbye", "yo {{user}}\nlater")));
         assert_eq!(turns.len(), VIBE.len() + 2);
         assert_eq!(turns[VIBE.len()], ("<current_message author=\"a\">\nhi\n</current_message>".into(), "yo a".into()));
         assert_eq!(turns[VIBE.len() + 1].1, "later");
@@ -338,11 +350,32 @@ mod prompt_tests {
         assert_eq!(presentable(""), None);
         assert_eq!(presentable("User safety: safe\nSafety categories: none"), None);
         assert_eq!(presentable("The Trickster: Skill issue."), Some("skill issue".into()));
+        assert_eq!(presentable("**the trickster:** ok\n**THE TRICKSTER**: fine").as_deref(), Some("ok\nfine"));
+        assert_eq!(presentable("The Tricksters: hi").as_deref(), Some("the tricksters: hi"));
         assert_eq!(presentable("a — b").as_deref(), Some("a, b"));
     }
     #[test]
-    fn civil_date() {
-        assert_eq!(civil_from_days(20_722), (2026, 9, 26));
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
+    fn oversized_background_keeps_the_newest_conversation_within_budget() {
+        let config = Config { openrouter_max_request_tokens: 20_000, ..Config::default() };
+        let req = AiRequest {
+            user_id: Id::new(2),
+            user_name: "alice".into(),
+            channel_id: Id::new(1),
+            message_id: Id::new(3),
+            message: "what did you mean by that?".into(),
+            media: Vec::new(),
+            context: (0..5000).map(|i| format!("alice: message {i}")).collect::<Vec<_>>().join("\n"),
+            user_mentions: HashMap::new(),
+        };
+        let memories = [Memory { id: 1, user_id: 2, key: "work".into(), content: "x".repeat(100_000) }];
+        let turn = Content::Text(text_turn(&req));
+        let request = build_request(&config, &req, None, &memories, turn, "anthropic/claude-haiku-5.5").unwrap();
+        assert!(budget::estimate(&request) <= 20_000);
+        let Content::Text(prompt) = &request.messages[0].content else { panic!() };
+        assert!(prompt.contains("alice: message 4999\n</recent_conversation>"));
+        assert!(!prompt.contains("alice: message 0\n"));
+        assert!(!prompt.contains("xxx"));
+        let last = request.messages.last().unwrap();
+        assert_eq!(last.content, Content::Text(wrap_message("alice", "what did you mean by that?")));
     }
 }

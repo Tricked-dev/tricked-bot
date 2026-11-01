@@ -1,9 +1,6 @@
 //! What the bot does with an ordinary guild message, short of the AI deciding to reply.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 
 use color_eyre::Result;
 use rand::{
@@ -11,16 +8,17 @@ use rand::{
     seq::{IndexedRandom, IteratorRandom, SliceRandom},
 };
 use serde::Deserialize;
-use twilight_model::{channel::Message, http::attachment::Attachment};
+use twilight_model::{
+    channel::Message,
+    http::attachment::Attachment,
+    id::{Id, marker::GuildMarker},
+};
 
 use crate::{
     ai::{self, AiRequest},
     bot::Bot,
     db, qalc, quiz, ratewaifu, zalgo,
 };
-
-/// Minimum time between two channel topic changes.
-const TOPIC_COOLDOWN: Duration = Duration::from_secs(150);
 
 /// What to send back in response to a message.
 #[derive(Debug, Default, PartialEq)]
@@ -84,28 +82,16 @@ fn responder(content: &str) -> Option<Response> {
     })
 }
 
-/// The outcome of handling a message.
-pub struct Handled {
-    pub response: Response,
-    /// Whether an AI reply was started, which makes the background reply check redundant.
-    pub ai_started: bool,
-}
-
-impl From<Response> for Handled {
-    fn from(response: Response) -> Self {
-        Self { response, ai_started: false }
-    }
-}
-
-pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest) -> Result<Handled> {
+/// Runs the first of the bot's gags that applies to `msg`. A `direct` message gets an AI reply if no canned one fits.
+pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest, direct: bool) -> Result<Response> {
     if let Some(response) = responder(&msg.content) {
-        return Ok(response.into());
+        return Ok(response);
     }
     if let Some(response) = quiz::answer(bot, msg).await {
-        return Ok(response.into());
+        return Ok(response);
     }
     if let Some(response) = quiz::maybe_start(bot, msg).await {
-        return Ok(response.into());
+        return Ok(response);
     }
 
     // Some extra XP for every attachment.
@@ -113,66 +99,53 @@ pub async fn handle(bot: &Arc<Bot>, msg: &Message, req: &AiRequest) -> Result<Ha
     if let Some(level) = db::award_xp(&bot.db, msg.author.id.get(), &msg.author.name, xp, false).await? {
         tokio::time::sleep(Duration::from_millis(random_range(3000..8000))).await;
         let congrats = format!("Congrats <@{}>! You are now level {level}!", msg.author.id);
-        return Ok(Response::text(congrats).reply().mention_author().into());
+        return Ok(Response::text(congrats).reply().mention_author());
     }
 
     if let Some(candidate) = ratewaifu::parse_command(&msg.content) {
-        return Ok(rate_waifu(bot, candidate).await.reply().into());
+        return Ok(rate_waifu(bot, candidate).await.reply());
     }
 
     let lower = msg.content.to_lowercase();
+    // One cooldown covers every channel. Hitting it claims the cooldown before the request, so a concurrent message
+    // can't change a topic too.
     if bot.config.rename_channels.contains(&msg.channel_id.get())
-        && bot.last_topic_change.lock().unwrap().elapsed() > TOPIC_COOLDOWN
         && random_ratio(1, 10)
+        && bot.topic_limit.hit(0).is_none()
     {
         if lower.contains("uwu") || lower.contains("owo") {
-            return Ok(Response::text("No furry shit!!!!!").into());
-        }
-        // Claim the cooldown before the request so a concurrent message can't change a topic too.
-        if !claim_topic_change(bot) {
-            return Ok(Response::Nothing.into());
+            return Ok(Response::text("No furry shit!!!!!"));
         }
         bot.http.update_channel(msg.channel_id).topic(&msg.content).await?;
         tracing::info!("Channel topic changed");
-        return Ok(Response::Nothing.into());
+        return Ok(Response::Nothing);
     }
     if let Some(response) = dad_joke(&lower, &msg.content) {
-        return Ok(response.into());
+        return Ok(response);
     }
-    if bot.ai.is_some() && ai::is_direct(msg, bot.id) {
-        ai::reply::spawn(bot, req.clone());
-        return Ok(Handled { response: Response::Nothing, ai_started: true });
+    if direct && bot.ai.is_some() {
+        ai::reply::submit(bot, req, true);
+        return Ok(Response::Nothing);
     }
     if random_ratio(1, 75) {
-        return Ok(Response::text(zalgo::zalgify(&msg.content)).reply().into());
+        return Ok(Response::text(zalgo::zalgify(&msg.content)).reply());
     }
     if random_ratio(1, 500) {
         steal_nickname(bot, msg).await?;
-        return Ok(Response::Nothing.into());
+        return Ok(Response::Nothing);
     }
     if random_ratio(1, 55) {
         let mut words: Vec<_> = msg.content.split(' ').collect();
         words.shuffle(&mut rand::rng());
-        return Ok(Response::text(words.join(" ")).reply().into());
+        return Ok(Response::text(words.join(" ")).reply());
     }
     if !bot.config.shit_reddits.is_empty() && random_ratio(1, 80) {
-        return Ok(reddit_image(bot).await?.map_or(Response::Nothing, Response::text).into());
+        return Ok(reddit_image(bot).await?.map_or(Response::Nothing, Response::text));
     }
     if let Some(expr) = lower.strip_prefix("qalc ").or_else(|| lower.strip_prefix("calc ")) {
-        let text = qalc::eval(expr).await.unwrap_or_else(|error| format!("Error: {error}"));
-        return Ok(Response::text(text).reply().into());
+        return Ok(Response::text(qalc::answer(expr).await).reply());
     }
-    Ok(Response::Nothing.into())
-}
-
-/// Starts the topic cooldown if it has run out. Returns whether this caller got to change the topic.
-fn claim_topic_change(bot: &Bot) -> bool {
-    let mut last = bot.last_topic_change.lock().unwrap();
-    let expired = last.elapsed() > TOPIC_COOLDOWN;
-    if expired {
-        *last = Instant::now();
-    }
-    expired
+    Ok(Response::Nothing)
 }
 
 async fn rate_waifu(bot: &Bot, candidate: &str) -> Response {
@@ -211,21 +184,17 @@ fn dad_joke(lower: &str, content: &str) -> Option<Response> {
 /// Renames the author after a random cached member of the guild.
 async fn steal_nickname(bot: &Bot, msg: &Message) -> Result<()> {
     let Some(guild) = msg.guild_id else { return Ok(()) };
-    let name = {
-        let Some(members) = bot.cache.guild_members(guild) else {
-            return Ok(());
-        };
-        let Some(&victim) = members.iter().choose(&mut rand::rng()) else {
-            return Ok(());
-        };
-        let nick = bot.cache.member(guild, victim).and_then(|member| member.nick().map(str::to_owned));
-        let Some(name) = nick.or_else(|| bot.cache.user(victim).map(|user| user.name.clone())) else {
-            return Ok(());
-        };
-        name
-    };
-    bot.http.update_guild_member(guild, msg.author.id).nick(Some(&name)).await?;
+    if let Some(name) = random_member_name(bot, guild) {
+        bot.http.update_guild_member(guild, msg.author.id).nick(Some(&name)).await?;
+    }
     Ok(())
+}
+
+/// The nickname, or else the username, of a random cached member. The cache guards drop before the caller awaits.
+fn random_member_name(bot: &Bot, guild: Id<GuildMarker>) -> Option<String> {
+    let &victim = bot.cache.guild_members(guild)?.iter().choose(&mut rand::rng())?;
+    let nick = bot.cache.member(guild, victim).and_then(|member| member.nick().map(str::to_owned));
+    nick.or_else(|| bot.cache.user(victim).map(|user| user.name.clone()))
 }
 
 #[derive(Deserialize)]

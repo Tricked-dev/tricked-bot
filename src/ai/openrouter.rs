@@ -69,7 +69,10 @@ pub struct ChatRequest {
 
 #[derive(Deserialize)]
 struct Completion {
+    #[serde(default)]
     choices: Vec<Choice>,
+    /// Set instead of `choices` when a stream fails partway.
+    error: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -167,8 +170,9 @@ impl OpenRouter {
         Ok(stream::try_unfold((body, Vec::new()), |(mut body, mut buffer)| async move {
             loop {
                 if let Some(end) = buffer.iter().position(|&byte| byte == b'\n') {
-                    let line = buffer.drain(..=end).collect::<Vec<_>>();
-                    match parse_event(&line)? {
+                    let event = parse_event(&buffer[..end]);
+                    buffer.drain(..=end);
+                    match event? {
                         Event::Delta(text) => return Ok(Some((text, (body, buffer)))),
                         Event::Done => return Ok(None),
                         Event::Skip => continue,
@@ -198,11 +202,10 @@ fn parse_event(line: &[u8]) -> Result<Event> {
     if data == "[DONE]" {
         return Ok(Event::Done);
     }
-    let chunk: Value = serde_json::from_str(data)?;
-    if let Some(error) = chunk.get("error") {
+    let chunk: Completion = serde_json::from_str(data)?;
+    if let Some(error) = chunk.error {
         bail!("OpenRouter stream error: {error}");
     }
-    let chunk: Completion = serde_json::from_value(chunk)?;
     Ok(match chunk.choices.into_iter().next().and_then(|choice| choice.message.content) {
         Some(text) if !text.is_empty() => Event::Delta(text),
         _ => Event::Skip,
@@ -217,9 +220,7 @@ mod tests {
 
     async fn serve(body: &'static str) -> OpenRouter {
         let app = Router::new().route("/chat/completions", post(move || async move { body }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let base = format!("http://{}", crate::test_util::serve(app).await);
         let config = Config { openrouter_api_key: Some("key".into()), openrouter_base_url: base, ..Config::default() };
         OpenRouter::from_config(Client::new(), &config).unwrap()
     }

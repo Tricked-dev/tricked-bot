@@ -1,4 +1,6 @@
-use std::{collections::HashMap, time::Duration};
+//! Picks the stored memories that would help answer a message.
+
+use std::{cmp::Reverse, collections::HashMap, time::Duration};
 
 use color_eyre::{Result, eyre::eyre};
 
@@ -6,152 +8,109 @@ use super::AiRequest;
 use crate::{
     bot::Bot,
     db::{self, Memory},
-    decider::{Question, questions},
+    decider::questions,
 };
 
-#[derive(Debug)]
-pub struct Recalled {
-    pub memories: Vec<Memory>,
-    pub durable: bool,
-}
+/// Most memories kept per user. With the no-memory option this fills the decider's limit of 255 choice options.
+pub const LIMIT: usize = 254;
 
-/// Most memories kept per user; also the decider's maximum number of choice options.
-pub const LIMIT: usize = 255;
-
-/// Choice probabilities compete with each other: retain at most three strong options.
-/// The old independent-noul threshold does not apply to this distribution. A memory also has to beat a uniform split
-/// over all `options` the decider chose between, the no-memory option included.
+/// Picks up to three memories from the decider's distribution over memory keys and the `none` option.
+///
+/// Choice probabilities compete with each other, so a memory has to beat the no-memory option, a uniform split over
+/// all options, and a quarter of the strongest memory.
 #[expect(clippy::cast_precision_loss, reason = "the decider accepts at most 255 options")]
-pub fn pick(memories: &[Memory], scores: &HashMap<String, f32>, options: usize) -> Vec<Memory> {
+pub fn pick(memories: Vec<Memory>, probabilities: &HashMap<String, f32>, none: &str) -> Vec<Memory> {
+    let none = probabilities.get(none).copied().unwrap_or(0.0);
+    let uniform = 1.0 / probabilities.len().max(1) as f32;
     let mut ranked: Vec<_> = memories
-        .iter()
-        .filter_map(|m| {
-            scores.get(&questions::memory_id(m)).copied().filter(|p| p.is_finite() && *p > 0.0).map(|p| (m, p))
+        .into_iter()
+        .filter_map(|memory| {
+            let p = probabilities.get(&memory.key).copied()?;
+            (p > none && p >= uniform).then_some((memory, p))
         })
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
-    let top = ranked.first().map_or(0.0, |(_, p)| *p);
-    let floor = (top * 0.25).max(1.0 / options.max(1) as f32);
-    ranked.into_iter().filter(|(_, p)| *p >= floor).take(3).map(|(m, _)| m.clone()).collect()
+    let floor = ranked.first().map_or(0.0, |(_, top)| top * 0.25);
+    ranked.into_iter().take_while(|(_, p)| *p >= floor).take(3).map(|(memory, _)| memory).collect()
 }
 
-fn choice_options(memories: &[Memory]) -> (HashMap<String, String>, Option<String>) {
+/// Every memory key as a choice option, plus a no-memory option under a name no key uses.
+fn choice_options(memories: &[Memory]) -> (HashMap<String, String>, String) {
     let mut options: HashMap<_, _> = memories.iter().map(|m| (m.key.clone(), String::new())).collect();
-    let none = (options.len() < LIMIT).then(|| {
-        let mut name = "NONE".to_owned();
-        while options.contains_key(&name) {
-            name.push('_');
-        }
-        options.insert(name.clone(), "No stored memory is needed".into());
-        name
-    });
+    let mut none = "NONE".to_owned();
+    while options.contains_key(&none) {
+        none.push('_');
+    }
+    options.insert(none.clone(), "No stored memory is needed".into());
     (options, none)
 }
 
 /// One ranking over memory names. Full content is used only in the final reply prompt.
-pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Recalled> {
+pub async fn select(bot: &Bot, req: &AiRequest) -> Result<Vec<Memory>> {
     let mut memories = db::memories(&bot.db, req.user_id.get()).await?;
-    let total = memories.len();
-    if memories.is_empty() && !req.ask_durable {
-        return Ok(Recalled { memories, durable: false });
+    if memories.is_empty() {
+        return Ok(memories);
     }
+    let candidates = memories.len();
     // The background worker trims overflow. Keep requests valid while it is running.
-    memories.sort_by_key(|m| std::cmp::Reverse(m.id));
+    memories.sort_by_key(|m| Reverse(m.id));
     memories.truncate(LIMIT);
-    let state = questions::state(&req.context, &req.user_name, &req.message);
-    let timeout = Duration::from_millis(bot.config.decider_recall_timeout_ms);
+    let ranked = memories.len();
+    let decider =
+        bot.recall_decider.as_ref().or(bot.decider.as_ref()).ok_or_else(|| eyre!("decider not configured"))?;
+    let (options, none) = choice_options(&memories);
     let started = std::time::Instant::now();
-    let decider = bot.decider.as_ref().ok_or_else(|| eyre!("decider not configured"))?;
-    let ranker = bot.recall_decider.as_ref().unwrap_or(decider);
-    let durability = async {
-        if !req.ask_durable {
-            return Ok(false);
-        }
-        let question = HashMap::from([("durable".into(), questions::durable(&req.user_name))]);
-        let flags = decider.noul(&state, question, false, timeout).await?;
-        Ok::<_, color_eyre::Report>(flags["durable"] >= bot.config.decider_durable_threshold)
-    };
-    let ranking = async {
-        if memories.is_empty() {
-            return Ok(Vec::new());
-        }
-        let (options, none) = choice_options(&memories);
-        let option_count = options.len();
-        let mut flags = HashMap::new();
-        if none.is_none() {
-            flags.insert(
-                "relevant".into(),
-                Question::noul(
-                    "Would stored personal history help answer this message? Exclude greetings, thanks and general \
-                     questions with enough context already provided.",
-                    "personal history helps",
-                    "no personal history needed",
-                ),
-            );
-        }
-        let result = ranker
-            .choice(
-                &state,
-                "Which stored memory name would help answer the last message? Choose the no-memory option if no \
-                 memory would help.",
-                options,
-                flags,
-                timeout,
-            )
-            .await?;
-        let none_weight = none.and_then(|name| result.probabilities.get(&name).copied()).unwrap_or(0.0);
-        let relevant = result.flags.get("relevant").copied().unwrap_or(1.0) >= 0.15;
-        let scores = memories
-            .iter()
-            .map(|m| {
-                let p = result.probabilities[&m.key];
-                (questions::memory_id(m), if relevant && p > none_weight { p } else { 0.0 })
-            })
-            .collect();
-        Ok::<_, color_eyre::Report>(pick(&memories, &scores, option_count))
-    };
-    let (chosen, durable) = tokio::try_join!(ranking, durability)?;
+    let probabilities = decider
+        .choice(
+            &questions::state(&req.context, &req.user_name, &req.message),
+            "Which stored memory name would help answer the last message? Choose the no-memory option if no memory \
+             would help.",
+            options,
+            Duration::from_millis(bot.config.decider_recall_timeout_ms),
+        )
+        .await?;
+    let chosen = pick(memories, &probabilities, &none);
     tracing::info!(target: "decider", kind = "recall", user = %req.user_id, msg_id = %req.message_id,
-        candidates = total, ranked = memories.len(), selected = chosen.len(), durable,
-        latency_ms = started.elapsed().as_millis());
-    Ok(Recalled { memories: chosen, durable })
+        candidates, ranked, selected = chosen.len(), latency_ms = started.elapsed().as_millis());
+    Ok(chosen)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn mem(id: i64) -> Memory {
         Memory { id, user_id: 1, key: format!("key{id}"), content: "fact".into() }
     }
+
+    fn weights<const N: usize>(weights: [(&str, f32); N]) -> HashMap<String, f32> {
+        weights.into_iter().map(|(key, p)| (key.to_owned(), p)).collect()
+    }
+
     #[test]
-    fn name_options_preserve_255_cap_and_allow_abstention_below_it() {
-        let all: Vec<_> = (0..255).map(mem).collect();
+    fn options_always_include_an_unused_no_memory_name() {
+        let all: Vec<_> = (0..254).map(mem).collect();
         let (options, none) = choice_options(&all);
         assert_eq!(options.len(), 255);
-        assert!(none.is_none());
-        assert!(options.values().all(String::is_empty));
-        let (options, none) = choice_options(&all[..254]);
-        assert_eq!(options.len(), 255);
-        assert!(none.is_some());
+        assert_eq!(none, "NONE");
+        assert!(all.iter().all(|m| options[&m.key].is_empty()));
         let collision = Memory { key: "NONE".into(), ..mem(0) };
         let (options, none) = choice_options(&[collision]);
-        assert_eq!(none.as_deref(), Some("NONE_"));
+        assert_eq!(none, "NONE_");
         assert_eq!(options.len(), 2);
     }
+
     #[test]
-    fn choice_weights_rank_multiple_memories_without_old_half_threshold() {
-        let ms = vec![mem(1), mem(2), mem(3), mem(4)];
-        let scores = HashMap::from([("m1".into(), 0.05), ("m2".into(), 0.45), ("m3".into(), 0.3), ("m4".into(), 0.2)]);
-        assert_eq!(pick(&ms, &scores, 4).iter().map(|m| m.id).collect::<Vec<_>>(), vec![2, 3]);
+    fn keeps_strong_memories_above_the_uniform_split() {
+        let memories = vec![mem(1), mem(2), mem(3), mem(4)];
+        let p = weights([("key1", 0.05), ("key2", 0.45), ("key3", 0.3), ("key4", 0.15), ("NONE", 0.05)]);
+        assert_eq!(pick(memories, &p, "NONE").iter().map(|m| m.id).collect::<Vec<_>>(), [2, 3]);
     }
+
     #[test]
     fn a_single_memory_competes_with_the_no_memory_option() {
-        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), 0.99)]), 2), [mem(1)]);
-        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), 0.4)]), 2), [] as [db::Memory; 0]);
-    }
-    #[test]
-    fn absent_invalid_and_none_options_do_not_become_memories() {
-        assert_eq!(pick(&[mem(1)], &HashMap::from([("none".into(), 1.0)]), 2), [] as [db::Memory; 0]);
-        assert_eq!(pick(&[mem(1)], &HashMap::from([("m1".into(), f32::NAN)]), 2), [] as [db::Memory; 0]);
+        assert_eq!(pick(vec![mem(1)], &weights([("key1", 0.99), ("NONE", 0.01)]), "NONE"), [mem(1)]);
+        assert_eq!(pick(vec![mem(1)], &weights([("key1", 0.4), ("NONE", 0.6)]), "NONE"), []);
+        assert_eq!(pick(vec![mem(1)], &weights([("NONE", 1.0)]), "NONE"), []);
     }
 }

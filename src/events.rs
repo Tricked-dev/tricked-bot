@@ -56,10 +56,9 @@ async fn direct_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     }
     let req = bot.snapshot(msg);
     if bot.ai.is_some() {
-        ai::reply::spawn(bot, req);
-    } else {
-        check::spawn(Arc::clone(bot), req, false);
+        ai::reply::submit(bot, &req, true);
     }
+    check::spawn(Arc::clone(bot), req, false);
     Ok(())
 }
 
@@ -87,15 +86,14 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
         tracing::info!(target: "decider", kind = "count", channel = %msg.channel_id, msg_id = %msg.id);
     }
     let req = bot.snapshot(msg);
-    let restarted = ai::reply::restart_pending(bot, &req);
-    let ask_reply = !direct && bot.ai.is_some() && bot.config.decider_reply_mode != ReplyMode::Off;
-    let handled = messages::handle(bot, msg, &req).await;
+    // A newer message from someone still waiting on a reply restarts it, whether or not it pings the bot.
+    let restarted = ai::reply::submit(bot, &req, false);
+    let response = messages::handle(bot, msg, &req, direct).await;
     // Dispatch before sending a responder result, so even failed sends retain the durable check.
-    if !restarted && !handled.as_ref().is_ok_and(|handled| handled.ai_started) {
-        let answered = handled.as_ref().map_or(true, |handled| handled.response != Response::Nothing);
-        check::spawn(Arc::clone(bot), req, ask_reply && !answered);
-    }
-    send(bot, msg, handled?.response).await
+    let answered = restarted || direct || response.as_ref().map_or(true, |response| *response != Response::Nothing);
+    let ask_reply = !answered && bot.ai.is_some() && bot.config.decider_reply_mode != ReplyMode::Off;
+    check::spawn(Arc::clone(bot), req, ask_reply);
+    send(bot, msg, response?).await
 }
 
 async fn send(bot: &Bot, msg: &Message, response: Response) -> Result<()> {
@@ -129,10 +127,18 @@ pub struct TypingIndicator {
 
 async fn typing_start(bot: &Bot, event: &TypingStart) -> Result<()> {
     let Some(member) = &event.member else { return Ok(()) };
-    if !rand::random_ratio(1, 100) || bot.typing.lock().unwrap().last_typer == Some(event.user_id) {
+    if !rand::random_ratio(1, 100) {
         return Ok(());
     }
-    let previous = bot.typing.lock().unwrap().posted.get(&event.channel_id).copied();
+    // Claim the announcement before awaiting, so concurrent typing events can't both post one.
+    let previous = {
+        let mut typing = bot.typing.lock().unwrap();
+        if typing.last_typer == Some(event.user_id) {
+            return Ok(());
+        }
+        typing.last_typer = Some(event.user_id);
+        typing.posted.remove(&event.channel_id)
+    };
     let announce = format!("{} is typing", member.user.name);
     let (posted, ()) = tokio::join!(bot.http.create_message(event.channel_id).content(&announce), async {
         if let Some(previous) = previous {
@@ -140,9 +146,7 @@ async fn typing_start(bot: &Bot, event: &TypingStart) -> Result<()> {
         }
     });
     let posted = posted?.model().await?;
-    let mut typing = bot.typing.lock().unwrap();
-    typing.posted.insert(event.channel_id, posted.id);
-    typing.last_typer = Some(event.user_id);
+    bot.typing.lock().unwrap().posted.insert(event.channel_id, posted.id);
     Ok(())
 }
 

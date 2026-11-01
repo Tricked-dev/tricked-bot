@@ -2,17 +2,22 @@
 
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use twilight_model::id::{Id, marker::MessageMarker};
 
-use super::{AiRequest, prompt, reply};
-use crate::{bot::Bot, db::Memory, decider::questions};
+use super::{AiRequest, openrouter::Content, prompt, reply::REPLY_TIMEOUT};
+use crate::{
+    bot::Bot,
+    db::{Memory, User},
+    decider::questions,
+};
 
-fn is_refusal(p: f32, threshold: f32) -> bool {
-    p.is_finite() && p >= threshold
-}
-
-pub async fn check_and_replace(bot: &Bot, req: &AiRequest, memories: &[Memory], posted: (Id<MessageMarker>, String)) {
+pub async fn check_and_replace(
+    bot: &Bot,
+    req: &AiRequest,
+    user: Option<&User>,
+    memories: &[Memory],
+    (message_id, text): (Id<MessageMarker>, String),
+) {
     let (Some(decider), Some(ai)) = (&bot.decider, &bot.ai) else {
         return;
     };
@@ -20,15 +25,10 @@ pub async fn check_and_replace(bot: &Bot, req: &AiRequest, memories: &[Memory], 
     let Some(fallback_model) = cfg.openrouter_fallback_model.as_deref().filter(|model| !model.trim().is_empty()) else {
         return;
     };
-    let (message_id, text) = posted;
-    if text.starts_with("AI Error") {
-        return;
-    }
     let p = match decider
         .noul(
             &questions::reply_state(&req.message, &text),
             [("refusal".into(), questions::refusal())].into(),
-            false,
             Duration::from_millis(cfg.decider_check_timeout_ms),
         )
         .await
@@ -39,7 +39,7 @@ pub async fn check_and_replace(bot: &Bot, req: &AiRequest, memories: &[Memory], 
             return;
         }
     };
-    let replace = is_refusal(p, cfg.decider_refusal_threshold);
+    let replace = p >= cfg.decider_refusal_threshold;
     tracing::info!(target: "decider", kind = "refusal", msg_id = %req.message_id, p, replace);
     if !replace {
         return;
@@ -55,33 +55,20 @@ pub async fn check_and_replace(bot: &Bot, req: &AiRequest, memories: &[Memory], 
         media: Vec::new(),
         ..req.clone()
     };
+    let turn = Content::Text(prompt::text_turn(&rewrite));
     let rewritten = async {
-        let request = prompt::build_request(bot, &rewrite, memories, fallback_model).await?;
-        let snapshots = reply::generate(ai, &request).await?;
-        Ok::<_, color_eyre::Report>(snapshots.fold(String::new(), |_, text| std::future::ready(text)).await)
+        let request = prompt::build_request(cfg, &rewrite, user, memories, turn, fallback_model)?;
+        ai.complete(&request, REPLY_TIMEOUT).await
     };
-    let last = match rewritten.await {
-        Ok(text) if !text.trim().is_empty() && !text.starts_with("AI Error") => text,
+    let replacement = match rewritten.await.map(|text| prompt::presentable(&text)) {
+        Ok(Some(text)) if !text.trim().is_empty() => text,
         Ok(_) => return,
         Err(error) => {
             tracing::warn!(msg_id = %req.message_id, "Refusal style rewrite failed: {error}");
             return;
         }
     };
-    let replacement = prompt::discord_text(&last);
     if let Err(error) = bot.http.update_message(req.channel_id, message_id).content(Some(&replacement)).await {
         tracing::warn!(msg_id = %req.message_id, "Refusal style edit failed: {error}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn needs_a_finite_score_at_the_threshold() {
-        assert!(is_refusal(0.9, 0.9));
-        assert!(!is_refusal(0.5, 0.9));
-        assert!(!is_refusal(f32::NAN, 0.9));
     }
 }

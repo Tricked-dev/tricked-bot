@@ -3,7 +3,7 @@
 use std::{
     io::Cursor,
     ops::Range,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use color_eyre::{Result, eyre::eyre};
@@ -23,6 +23,7 @@ use crate::{
     bot::Bot,
     db,
     messages::Response,
+    time::unix_now,
 };
 
 /// Each message has a 1 in this many chance of starting each kind of quiz.
@@ -159,8 +160,7 @@ pub async fn answer(bot: &Bot, msg: &Message) -> Option<Response> {
 }
 
 async fn time_out(bot: &Bot, guild: Id<GuildMarker>, user: Id<UserMarker>) {
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-    let Ok(until) = Timestamp::from_secs(now.as_secs().cast_signed() + 60) else {
+    let Ok(until) = Timestamp::from_secs(unix_now().as_secs().cast_signed() + 60) else {
         return;
     };
     if let Err(error) = bot.http.update_guild_member(guild, user).communication_disabled_until(Some(until)).await {

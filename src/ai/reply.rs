@@ -1,8 +1,7 @@
 //! Running AI replies: one in-flight reply per author and channel, streamed into a Discord message.
 
 use std::{
-    collections::HashMap,
-    future::ready,
+    collections::{HashMap, hash_map::Entry},
     pin::pin,
     sync::{
         Arc, Mutex,
@@ -20,19 +19,19 @@ use twilight_model::id::{
     marker::{ChannelMarker, MessageMarker, UserMarker},
 };
 
-use super::{
-    AiRequest, memory,
-    openrouter::{ChatRequest, OpenRouter},
-    prompt, recall, refusal,
-};
-use crate::bot::Bot;
+use super::{AiRequest, prompt, recall, refusal};
+use crate::{bot::Bot, db};
 
 /// A newer message from the same person replaces their unfinished reply, at most this many times per chain.
 const MAX_RESTARTS: u8 = 2;
 /// How often a streaming reply is edited with newly generated text.
 const EDIT_INTERVAL: Duration = Duration::from_millis(1500);
+/// How long the model may take to finish a reply.
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Prefix of the messages that stand in for a reply that failed.
+const AI_ERROR: &str = "AI Error";
 
-type PostedSlot = Arc<Mutex<Option<Id<MessageMarker>>>>;
+type PostedSlot = Mutex<Option<Id<MessageMarker>>>;
 type ReplyKey = (Id<ChannelMarker>, Id<UserMarker>);
 
 #[derive(Debug)]
@@ -41,7 +40,7 @@ struct InFlight {
     generation: u64,
     restarts: u8,
     abort: AbortHandle,
-    posted: PostedSlot,
+    posted: Arc<PostedSlot>,
 }
 
 /// Unfinished replies, keyed by channel and author.
@@ -72,169 +71,143 @@ fn cancel(bot: &Arc<Bot>, entry: &InFlight, channel: Id<ChannelMarker>) {
     tracing::info!(target: "decider", kind = "restart", superseded = %entry.message_id, restarts = entry.restarts + 1);
 }
 
-/// Restart the author's unfinished reply with their newer message. Returns whether it did.
+/// Answers `req`, replacing the author's unfinished reply to an older message. Without an unfinished reply, one only
+/// starts when `start_new` is set. Returns whether a reply to `req` started.
 ///
 /// Events are handled concurrently, so an older message can arrive here after a newer one. Snowflakes are
 /// chronological, which makes "newer" a plain ID comparison.
-pub fn restart_pending(bot: &Arc<Bot>, req: &AiRequest) -> bool {
+pub fn submit(bot: &Arc<Bot>, req: &AiRequest, start_new: bool) -> bool {
     let key = (req.channel_id, req.user_id);
     let mut in_flight = bot.replies.in_flight.lock().unwrap();
-    let restarts = match in_flight.get(&key) {
-        Some(entry) if entry.message_id < req.message_id && entry.restarts < MAX_RESTARTS => entry.restarts + 1,
+    let restarts = match in_flight.entry(key) {
+        Entry::Vacant(_) if start_new => 0,
+        Entry::Occupied(entry) if entry.get().message_id < req.message_id && entry.get().restarts < MAX_RESTARTS => {
+            let superseded = entry.remove();
+            cancel(bot, &superseded, req.channel_id);
+            superseded.restarts + 1
+        }
         _ => return false,
     };
-    cancel(bot, &in_flight.remove(&key).unwrap(), req.channel_id);
-    start(bot, &mut in_flight, req.clone(), restarts);
+    let generation = bot.replies.generation.fetch_add(1, Ordering::Relaxed);
+    let posted = Arc::default();
+    let abort = tokio::spawn(run(Arc::clone(bot), req.clone(), Arc::clone(&posted), generation)).abort_handle();
+    in_flight.insert(key, InFlight { message_id: req.message_id, generation, restarts, abort, posted });
     true
 }
 
-pub fn spawn(bot: &Arc<Bot>, req: AiRequest) {
+async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation: u64) {
     let key = (req.channel_id, req.user_id);
-    let mut in_flight = bot.replies.in_flight.lock().unwrap();
-    let restarts = match in_flight.get(&key) {
-        None => 0,
-        // Already answering this message or a newer one.
-        Some(entry) if entry.message_id >= req.message_id => return,
-        Some(entry) if entry.restarts < MAX_RESTARTS => {
-            let restarts = entry.restarts + 1;
-            cancel(bot, &in_flight.remove(&key).unwrap(), req.channel_id);
-            restarts
-        }
-        Some(_) => MAX_RESTARTS,
-    };
-    start(bot, &mut in_flight, req, restarts);
-}
-
-fn start(bot: &Arc<Bot>, in_flight: &mut HashMap<ReplyKey, InFlight>, req: AiRequest, restarts: u8) {
-    let key = (req.channel_id, req.user_id);
-    let generation = bot.replies.generation.fetch_add(1, Ordering::Relaxed);
-    let posted = PostedSlot::default();
-    let message_id = req.message_id;
-    let abort = tokio::spawn(run(Arc::clone(bot), req, Arc::clone(&posted), generation)).abort_handle();
-    in_flight.insert(key, InFlight { message_id, generation, restarts, abort, posted });
-}
-
-async fn run(bot: Arc<Bot>, mut req: AiRequest, posted_slot: PostedSlot, generation: u64) {
-    let key = (req.channel_id, req.user_id);
-    let result = async {
-        crate::db::ensure_user(&bot.db, req.user_id.get(), &req.user_name).await?;
-        let recalled = recall::select(&bot, &req).await?;
-        if recalled.durable {
-            tokio::spawn(memory::write_for_author(Arc::clone(&bot), req.clone()));
-        }
-        // Link previews can arrive after MessageCreate, so look again before giving up on media.
-        if req.media.is_empty()
-            && req.message.contains("http")
-            && let Ok(response) = bot.http.message(req.channel_id, req.message_id).await
-            && let Ok(message) = response.model().await
-        {
-            req.media = super::media::sources(&message);
-        }
-        let ai = bot.ai.as_ref().ok_or_else(|| eyre!("OpenRouter API key not configured"))?;
-        let request = prompt::build_request(&bot, &req, &recalled.memories, &bot.config.openrouter_model).await?;
-        let text = generate(ai, &request).await?;
-        let posted = stream_to_discord(&bot.http, text, req.channel_id, req.message_id, Some(&posted_slot)).await;
-        // A complete reply stays; newer messages no longer cancel it.
-        bot.replies.finish(key, generation);
-        if let Some(posted) = posted {
-            refusal::check_and_replace(&bot, &req, &recalled.memories, posted).await;
-        }
-        Ok::<_, color_eyre::Report>(())
-    }
-    .await;
+    let result = reply(&bot, &req, &posted, generation).await;
     bot.replies.finish(key, generation);
     if let Err(error) = result {
         tracing::error!(target: "decider", kind = "reply", msg_id = %req.message_id, "AI reply failed: {error}");
         let _ = bot
             .http
             .create_message(req.channel_id)
-            .content("AI Error: reply or memory recall unavailable.")
+            .content(&format!("{AI_ERROR}: reply or memory recall unavailable."))
             .reply(req.message_id)
             .await;
     }
 }
 
-/// Streams the reply as successive snapshots of the presentable text. A stream error replaces the text with the
-/// error and ends the stream.
-pub async fn generate(ai: &OpenRouter, request: &ChatRequest) -> Result<impl Stream<Item = String> + use<>> {
-    let deltas = ai.stream(request, Duration::from_secs(120)).await?;
-    Ok(deltas
-        .scan((String::new(), false), |(text, failed), delta| {
-            ready((!*failed).then(|| match delta {
-                Ok(delta) => {
-                    text.push_str(&delta);
-                    prompt::presentable(text)
-                }
-                Err(error) => {
-                    tracing::error!("AI stream failed: {error}");
-                    *failed = true;
-                    Some(format!("AI Error: {error}"))
-                }
-            }))
-        })
-        .filter_map(ready))
+async fn reply(bot: &Bot, req: &AiRequest, posted: &PostedSlot, generation: u64) -> Result<()> {
+    let ai = bot.ai.as_ref().ok_or_else(|| eyre!("OpenRouter API key not configured"))?;
+    // Memory recall waits on the decider, so the profile lookup and image downloads run alongside it.
+    let user = async {
+        db::ensure_user(&bot.db, req.user_id.get(), &req.user_name).await?;
+        db::user(&bot.db, req.user_id.get()).await
+    };
+    let (memories, user, turn) = tokio::try_join!(recall::select(bot, req), user, prompt::user_turn(bot, req))?;
+    let request =
+        prompt::build_request(&bot.config, req, user.as_ref(), &memories, turn, &bot.config.openrouter_model)?;
+    let deltas = ai.stream(&request, REPLY_TIMEOUT).await?;
+    let posted = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted).await;
+    // A complete reply stays; newer messages no longer cancel it.
+    bot.replies.finish((req.channel_id, req.user_id), generation);
+    if let Some(posted) = posted {
+        refusal::check_and_replace(bot, req, user.as_ref(), &memories, posted).await;
+    }
+    Ok(())
 }
 
-/// Posts the first text immediately, then edits it at most every [`EDIT_INTERVAL`] and once more at the end.
-/// Returns the posted message and the last text Discord accepted.
+/// Posts the reply as soon as it has presentable text, then edits it at most every [`EDIT_INTERVAL`] and once more at
+/// the end. A stream error replaces the text with the error.
+///
+/// Returns the posted message and the last text Discord accepted, or `None` when nothing was posted or the stream
+/// failed.
 pub async fn stream_to_discord(
     http: &HttpClient,
-    snapshots: impl Stream<Item = String>,
+    deltas: impl Stream<Item = Result<String>>,
     channel_id: Id<ChannelMarker>,
     reply_to: Id<MessageMarker>,
-    posted_slot: Option<&Mutex<Option<Id<MessageMarker>>>>,
+    posted_slot: &PostedSlot,
 ) -> Option<(Id<MessageMarker>, String)> {
-    let mut snapshots = pin!(snapshots);
+    let mut deltas = pin!(deltas);
+    let mut raw = String::new();
+    let mut failure = None;
+    let mut changed = false;
     let mut message_id = None;
     let mut last_sent = String::new();
-    let mut pending = String::new();
     let mut tick = tokio::time::interval(EDIT_INTERVAL);
     loop {
         let (finished, edit_due) = tokio::select! {
-            next = snapshots.next() => match next {
-                Some(text) => {
-                    pending = text;
+            next = deltas.next() => match next {
+                Some(Ok(delta)) => {
+                    raw.push_str(&delta);
+                    changed = true;
                     (false, false)
+                }
+                Some(Err(error)) => {
+                    tracing::error!("AI stream failed: {error}");
+                    failure = Some(prompt::discord_text(&format!("{AI_ERROR}: {error}")));
+                    changed = true;
+                    (true, false)
                 }
                 None => (true, false),
             },
             _ = tick.tick() => (false, true),
         };
-        let text = prompt::discord_text(&pending);
-        if !text.trim().is_empty() && text != last_sent {
-            match message_id {
-                Some(id) if finished || edit_due => {
+        // Cleaning up the text is linear in its length, so it only happens when the result is about to be sent.
+        if changed && (finished || edit_due || message_id.is_none()) {
+            changed = false;
+            let text = failure.clone().or_else(|| prompt::presentable(&raw)).unwrap_or_default();
+            if !text.trim().is_empty() && text != last_sent {
+                if let Some(id) = message_id {
                     match http.update_message(channel_id, id).content(Some(&text)).await {
                         Ok(_) => last_sent = text,
                         Err(error) => tracing::warn!("AI message update failed: {error}"),
                     }
-                }
-                Some(_) => {}
-                None => {
-                    let response = http
-                        .create_message(channel_id)
-                        .content(&text)
-                        .reply(reply_to)
-                        .await
-                        .inspect_err(|error| tracing::warn!("AI initial message failed: {error}"))
-                        .ok()?;
-                    let message = response
-                        .model()
-                        .await
-                        .inspect_err(|error| tracing::warn!("AI posted message decode failed: {error}"))
-                        .ok()?;
-                    message_id = Some(message.id);
-                    if let Some(slot) = posted_slot {
-                        *slot.lock().unwrap() = Some(message.id);
-                    }
+                } else {
+                    let id = post(http, channel_id, reply_to, &text).await?;
+                    message_id = Some(id);
+                    *posted_slot.lock().unwrap() = Some(id);
                     last_sent = text;
                 }
             }
         }
         if finished {
-            return message_id.map(|id| (id, last_sent));
+            return message_id.filter(|_| failure.is_none()).map(|id| (id, last_sent));
         }
     }
+}
+
+/// Posts `text` as a reply to `reply_to`, returning the new message.
+async fn post(
+    http: &HttpClient,
+    channel_id: Id<ChannelMarker>,
+    reply_to: Id<MessageMarker>,
+    text: &str,
+) -> Option<Id<MessageMarker>> {
+    let response = http
+        .create_message(channel_id)
+        .content(text)
+        .reply(reply_to)
+        .await
+        .inspect_err(|error| tracing::warn!("AI initial message failed: {error}"))
+        .ok()?;
+    let message =
+        response.model().await.inspect_err(|error| tracing::warn!("AI posted message decode failed: {error}"));
+    message.ok().map(|message| message.id)
 }
 
 #[cfg(test)]
@@ -251,14 +224,15 @@ mod tests {
         method: Method,
         Json(body): Json<Value>,
     ) -> (StatusCode, Json<Value>) {
-        seen.lock().await.push(body["content"].as_str().unwrap().to_owned());
-        if method == Method::PATCH && body["content"] == "final failure" {
+        let content = body["content"].as_str().unwrap().to_owned();
+        seen.lock().await.push(content.clone());
+        if method == Method::PATCH && content.ends_with("failure") {
             return (StatusCode::BAD_REQUEST, Json(json!({"code": 50035, "message": "invalid"})));
         }
         (
             StatusCode::OK,
             Json(json!({
-                "id": "42", "channel_id": "1", "content": body["content"], "timestamp": "2026-09-26T00:00:00.000000+00:00",
+                "id": "42", "channel_id": "1", "content": content, "timestamp": "2026-09-26T00:00:00.000000+00:00",
                 "author": {"id": "3", "username": "bot", "discriminator": "0001", "avatar": null},
                 "tts": false, "mention_everyone": false, "mentions": [], "mention_roles": [], "attachments": [],
                 "embeds": [], "pinned": false, "type": 0
@@ -266,41 +240,50 @@ mod tests {
         )
     }
 
-    async fn run_stream(chunks: &[&str]) -> (Option<(Id<MessageMarker>, String)>, Vec<String>) {
+    async fn run_stream(deltas: Vec<Result<String>>) -> (Option<(Id<MessageMarker>, String)>, Vec<String>) {
         let seen = Seen::default();
         let app = Router::new().fallback(any(mock_discord)).with_state(Arc::clone(&seen));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let address = crate::test_util::serve(app).await;
         let http = HttpClient::builder()
             .token("test-token".to_owned())
             .proxy(address.to_string(), true)
             .ratelimiter(None)
             .build();
-        let snapshots = stream::iter(chunks.iter().map(|text| (*text).to_owned()));
-        let result = stream_to_discord(&http, snapshots, Id::new(1), Id::new(2), None).await;
-        server.abort();
+        let result = stream_to_discord(&http, stream::iter(deltas), Id::new(1), Id::new(2), &Mutex::default()).await;
         let requests = seen.lock().await.clone();
         (result, requests)
     }
 
+    fn deltas(texts: &[&str]) -> Vec<Result<String>> {
+        texts.iter().map(|text| Ok((*text).to_owned())).collect()
+    }
+
     #[tokio::test]
-    async fn completed_short_stream_is_posted() {
-        let (result, requests) = run_stream(&["Hi"]).await;
-        assert_eq!(result.unwrap().1, "Hi");
-        assert_eq!(requests, ["Hi"]);
+    async fn completed_short_stream_is_posted_presentably() {
+        let (result, requests) = run_stream(deltas(&["The Trickster: Hi."])).await;
+        assert_eq!(result.unwrap().1, "hi");
+        assert_eq!(requests, ["hi"]);
     }
 
     #[tokio::test]
     async fn completed_stream_flushes_final_text() {
-        let (result, requests) = run_stream(&["Hi", "Final reply"]).await;
-        assert_eq!(result.unwrap().1, "Final reply");
-        assert_eq!(requests.last().unwrap(), "Final reply");
+        let (result, requests) = run_stream(deltas(&["Hi", " there"])).await;
+        assert_eq!(result.unwrap().1, "hi there");
+        assert_eq!(requests, ["hi", "hi there"]);
     }
 
     #[tokio::test]
     async fn failed_final_edit_returns_last_successfully_posted_text() {
-        let (result, _) = run_stream(&["Hi", "final failure"]).await;
-        assert_eq!(result.unwrap().1, "Hi");
+        let (result, _) = run_stream(deltas(&["Hi", " final failure"])).await;
+        assert_eq!(result.unwrap().1, "hi");
+    }
+
+    #[tokio::test]
+    async fn stream_error_replaces_the_reply_and_reports_no_reply() {
+        let mut stream = deltas(&["Hi"]);
+        stream.push(Err(eyre!("overloaded")));
+        let (result, requests) = run_stream(stream).await;
+        assert!(result.is_none());
+        assert_eq!(requests, ["hi", "AI Error: overloaded"]);
     }
 }

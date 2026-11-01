@@ -1,178 +1,120 @@
-use color_eyre::{Result, eyre::eyre};
-use serde_json::Value;
+//! Token estimates that keep each AI request under its cost target.
 
-use super::openrouter::{ChatRequest, Content, Role};
+use std::io;
+
+use color_eyre::{Result, eyre::bail};
+
+use super::openrouter::{ChatRequest, Content, Part};
 
 // Estimate text at three UTF-8 bytes per token to allow for Claude's newer
 // tokenizer. The 90k default leaves 10% headroom below the 100k pricing tier.
 // Unusual content can exceed the estimate. Reserve framing and completion too.
+const BYTES_PER_TOKEN: u64 = 3;
 const FRAMING_RESERVE: u64 = 2048;
 // Claude 4.7+ caps each image at 4784 visual tokens. Our media pipeline also
 // limits images to 1600px and four images per request. Base64 is transport data,
 // not text fed to the tokenizer.
 const CLAUDE_IMAGE_RESERVE: u64 = 4800;
+const OTHER_IMAGE_RESERVE: u64 = 16_384;
 
-fn estimate(request: &Value) -> Result<u64> {
-    let output =
-        request["max_tokens"].as_u64().ok_or_else(|| eyre!("AI request needs an explicit output-token limit"))?;
-    let claude = request["model"].as_str().is_some_and(|m| m.starts_with("anthropic/"));
-    let mut text_request = request.clone();
-    let mut image_tokens: u64 = 0;
-    for message in text_request["messages"].as_array_mut().ok_or_else(|| eyre!("AI request needs messages"))? {
-        if let Some(parts) = message["content"].as_array_mut() {
-            for part in parts {
-                match part["type"].as_str() {
-                    Some("text") => {}
-                    Some("image_url") => {
-                        image_tokens = image_tokens.saturating_add(if claude { CLAUDE_IMAGE_RESERVE } else { 16_384 });
-                        part["image_url"]["url"] = Value::String(String::new());
-                    }
-                    _ => return Err(eyre!("AI budget cannot safely count this media type")),
-                }
-            }
-        }
+/// An `io::Write` that only counts, so measuring serialized size allocates nothing.
+#[derive(Default)]
+struct ByteCount(u64);
+
+impl io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len() as u64;
+        Ok(buf.len())
     }
-    let total = (serde_json::to_vec(&text_request)?.len() as u64)
-        .div_ceil(3)
-        .saturating_add(image_tokens)
-        .saturating_add(FRAMING_RESERVE)
-        .saturating_add(output);
-    Ok(total)
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
-pub fn check(request: &Value, max_total: u32) -> Result<u64> {
-    let total = estimate(request)?;
+fn serialized_len(value: &impl serde::Serialize) -> u64 {
+    let mut count = ByteCount::default();
+    // Writing to a counter can't fail, and neither can serializing strings and plain structs.
+    serde_json::to_writer(&mut count, value).expect("request serializes");
+    count.0
+}
+
+/// Length of `text` inside a JSON string, escapes included.
+pub fn json_len(text: &str) -> u64 {
+    serialized_len(&text) - 2
+}
+
+/// Estimated prompt and output tokens of `request`. Images count as their visual token cost, not their base64 size.
+pub fn estimate(request: &ChatRequest) -> u64 {
+    let images: Vec<&str> = request
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            Content::Parts(parts) => Some(parts),
+            Content::Text(_) => None,
+        })
+        .flatten()
+        .filter_map(|part| match part {
+            Part::ImageUrl { image_url } => Some(image_url.url.as_str()),
+            Part::Text { .. } => None,
+        })
+        .collect();
+    let reserve = if request.model.starts_with("anthropic/") { CLAUDE_IMAGE_RESERVE } else { OTHER_IMAGE_RESERVE };
+    let text = serialized_len(request) - images.iter().map(|url| json_len(url)).sum::<u64>();
+    text.div_ceil(BYTES_PER_TOKEN) + reserve * images.len() as u64 + FRAMING_RESERVE + u64::from(request.max_tokens)
+}
+
+/// Bytes of JSON text that can still be added to `request` without exceeding `max_total` tokens.
+pub fn spare_bytes(request: &ChatRequest, max_total: u32) -> u64 {
+    u64::from(max_total).saturating_sub(estimate(request)) * BYTES_PER_TOKEN
+}
+
+/// The estimate for `request`, or an error when it exceeds `max_total` tokens.
+pub fn check(request: &ChatRequest, max_total: u32) -> Result<u64> {
+    let total = estimate(request);
     if total > u64::from(max_total) {
-        return Err(eyre!(
-            "AI request exceeds cost target: estimated prompt + output budget {total} exceeds {max_total}"
-        ));
+        bail!("AI request exceeds cost target: estimated prompt + output budget {total} exceeds {max_total}");
     }
     Ok(total)
-}
-
-/// Trim optional background before the newest conversation. The persona and
-/// current user message stay intact; stored memories are never modified.
-pub fn fit_chat(request: &mut ChatRequest, max_total: u32) -> Result<u64> {
-    loop {
-        let value = serde_json::to_value(&*request)?;
-        let total = estimate(&value)?;
-        if total <= u64::from(max_total) {
-            return Ok(total);
-        }
-        let excess = usize::try_from(total - u64::from(max_total)).unwrap_or(usize::MAX).saturating_mul(3);
-        let mut trimmed = false;
-        for message in &mut request.messages {
-            if message.role != Role::System {
-                continue;
-            }
-            let Content::Text(prompt) = &mut message.content else {
-                continue;
-            };
-            for tag in ["memories", "past_exchanges", "relationships", "recent_conversation"] {
-                let open = format!("<{tag}>");
-                let close = format!("</{tag}>");
-                let Some(start) = prompt.find(&open).map(|p| p + open.len()) else {
-                    continue;
-                };
-                let Some(end) = prompt[start..].find(&close).map(|p| p + start) else {
-                    continue;
-                };
-                if start == end {
-                    continue;
-                }
-                let content = &prompt[start..end];
-                if tag == "recent_conversation" {
-                    // Remove complete oldest transcript lines where possible.
-                    let cut = content.ceil_char_boundary(excess.min(content.len()));
-                    let cut = content[cut..].find('\n').map_or(cut, |n| cut + n + 1);
-                    prompt.replace_range(start..start + cut, "");
-                } else {
-                    let keep = content.floor_char_boundary(content.len().saturating_sub(excess));
-                    prompt.replace_range(start + keep..end, "");
-                }
-                trimmed = true;
-                break;
-            }
-            if trimmed {
-                break;
-            }
-        }
-        if !trimmed {
-            // Normal Discord messages and the fixed persona fit comfortably;
-            // retain a final check for malformed or externally oversized inputs.
-            return check(&value, max_total);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::ai::openrouter::{ImageUrl, Message, Role};
+
+    fn request(system: String, user: Content) -> ChatRequest {
+        ChatRequest {
+            model: "anthropic/claude-haiku-5.5".into(),
+            messages: vec![Message::new(Role::System, system), Message { role: Role::User, content: user }],
+            max_tokens: 1024,
+            ..Default::default()
+        }
+    }
+
+    fn image(base64: &str) -> Part {
+        Part::ImageUrl { image_url: ImageUrl { url: format!("data:image/png;base64,{base64}") } }
+    }
 
     #[test]
-    fn counts_all_prompt_sections_and_reserves_the_completion() {
-        let request = json!({"model":"anthropic/claude-haiku-5.5", "max_tokens":1024,
-            "messages":[{"role":"system","content":"x".repeat(261_000)},
-                        {"role":"user","content":"こんにちは🙂".repeat(100)}]});
+    fn counts_all_text_and_reserves_the_completion() {
+        let mut request = request("x".repeat(240_000), Content::Text("こんにちは🙂".repeat(100)));
+        let total = check(&request, 90_000).unwrap();
+        assert!(check(&request, u32::try_from(total).unwrap() - 1).is_err());
+        assert_eq!(spare_bytes(&request, u32::try_from(total).unwrap() + 10), 30);
+        request.max_tokens = 10_000;
         assert!(check(&request, 90_000).is_err());
-        let mut reduced = request;
-        reduced["messages"][0]["content"] = json!("x".repeat(240_000));
-        let upper = u32::try_from(check(&reduced, 90_000).unwrap()).unwrap();
-        assert!(check(&reduced, upper - 1).is_err());
-        assert!(check(&reduced, upper).is_ok());
-        reduced["max_tokens"] = json!(10_000);
-        assert!(check(&reduced, 90_000).is_err());
+        assert_eq!(json_len("a\"\n"), 5);
     }
 
     #[test]
     fn images_count_as_visual_tokens_and_can_push_a_request_over_budget() {
-        let mut request = json!({"model":"anthropic/claude-haiku-5.5", "max_tokens":1024,
-            "messages":[{"role":"system","content":"x".repeat(240_000)},
-                {"role":"user","content":[{"type":"text","text":"describe these"},
-                    {"type":"image_url","image_url":{"url":"data:image/png;base64,".to_owned()+&"a".repeat(1_000_000)}}]}]});
-        assert!(check(&request, 90_000).is_ok());
-        request["messages"][1]["content"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"type":"image_url","image_url":{"url":"data:image/png;base64,test"}}));
-        assert!(check(&request, 90_000).is_err());
-    }
-
-    #[test]
-    fn unbounded_output_and_unknown_media_fail_closed() {
-        assert!(check(&json!({"messages":[]}), 90_000).is_err());
-        assert!(check(&json!({"max_tokens":1024,"messages":[{"content":[{"type":"file_url"}]}]}), 90_000).is_err());
-    }
-
-    #[test]
-    fn oversized_chat_keeps_persona_current_message_and_newest_context() {
-        use super::super::openrouter::Message;
-        let mut request = ChatRequest {
-            model: "anthropic/claude-haiku-5.5".into(),
-            max_tokens: 1024,
-            messages: vec![
-                Message::new(
-                    Role::System,
-                    format!(
-                        "PERSONA\n<memories>{}</memories>\n<recent_conversation>{}\nThe Trickster: newest reply</recent_conversation>\nREPLY IN CHARACTER",
-                        "🙂".repeat(40_000),
-                        "old message\n".repeat(10_000)
-                    ),
-                ),
-                Message::new(Role::User, "what did you mean by that?"),
-            ],
-            ..Default::default()
-        };
-        let before = serde_json::to_value(&request).unwrap();
-        assert!(check(&before, 90_000).is_err());
-        assert!(fit_chat(&mut request, 90_000).unwrap() <= 90_000);
-        let Content::Text(prompt) = &request.messages[0].content else { panic!() };
-        assert!(prompt.starts_with("PERSONA"));
-        assert!(prompt.ends_with("REPLY IN CHARACTER"));
-        assert!(prompt.contains("The Trickster: newest reply"));
-        assert_eq!(request.messages[1].content, Content::Text("what did you mean by that?".into()));
-        assert!(check(&serde_json::to_value(&request).unwrap(), 90_000).is_ok());
-        assert_eq!(before["messages"][0]["content"].as_str().unwrap().matches("🙂").count(), 40_000);
+        let text = Part::Text { text: "describe these".into() };
+        let one = request("x".repeat(240_000), Content::Parts(vec![text.clone(), image(&"a".repeat(1_000_000))]));
+        assert!(check(&one, 90_000).is_ok());
+        let two = request("x".repeat(240_000), Content::Parts(vec![text, image(&"a".repeat(1_000_000)), image("b")]));
+        // The second image's base64 is free; only its JSON framing counts as text.
+        assert!((CLAUDE_IMAGE_RESERVE..CLAUDE_IMAGE_RESERVE + 20).contains(&(estimate(&two) - estimate(&one))));
+        assert!(check(&two, 90_000).is_err());
     }
 }

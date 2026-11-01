@@ -137,12 +137,7 @@ async fn run(bot: &Bot, interaction: &Interaction, name: &str, input: CommandInp
         }
         "qalc" => {
             let Qalc { expression } = Qalc::from_interaction(input)?;
-            Ok(match qalc::eval(&expression).await {
-                Ok(output) if output.is_empty() => "No result returned from calculation".to_owned(),
-                Ok(output) => output,
-                Err(error) => format!("Error: {error}"),
-            }
-            .into())
+            Ok(qalc::answer(&expression).await.into())
         }
         "translate" => translate(bot, Translate::from_interaction(input)?).await.map(Reply::from),
         _ => Err(eyre!("unknown command {name}")),

@@ -42,7 +42,6 @@ pub struct AiRequest {
     pub context: String,
     /// Display names for Discord mentions in this conversation.
     pub user_mentions: HashMap<String, Id<UserMarker>>,
-    pub ask_durable: bool,
 }
 
 /// Whether the message pings or replies to the bot.
@@ -101,7 +100,6 @@ impl Bot {
             media: media::sources(msg),
             context: rows.join("\n"),
             user_mentions,
-            ask_durable: true,
         }
     }
 }

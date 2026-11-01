@@ -46,7 +46,8 @@ pub struct Bot {
     pub replies: ReplyTasks,
     pub memory_locks: AuthorLocks,
     pub quizzes: Mutex<HashMap<Id<ChannelMarker>, PendingQuiz>>,
-    pub last_topic_change: Mutex<Instant>,
+    /// Minimum time between two channel topic changes.
+    pub topic_limit: RateLimit,
     pub typing: Mutex<TypingIndicator>,
     pub currency: RwLock<CurrencyRates>,
 }
@@ -88,7 +89,7 @@ impl Bot {
             replies: ReplyTasks::default(),
             memory_locks: AuthorLocks::default(),
             quizzes: Mutex::default(),
-            last_topic_change: Mutex::new(Instant::now()),
+            topic_limit: RateLimit::new(Duration::from_secs(150), 1),
             typing: Mutex::default(),
             currency: RwLock::default(),
             config,
