@@ -16,7 +16,7 @@ use crate::{
     ai::{memory::AuthorLocks, openrouter::OpenRouter, reply::ReplyTasks},
     config::Config,
     currency::CurrencyRates,
-    decider::{Decider, reply_gate::ReplyGate},
+    decider::{Decider, cooldown::Cooldown, reply_gate::ReplyGate},
     events::TypingIndicator,
     quiz::PendingQuiz,
 };
@@ -43,6 +43,10 @@ pub struct Bot {
     pub channel_limit: RateLimit,
     pub dm_limit: RateLimit,
     pub reply_gate: Mutex<ReplyGate>,
+    /// When each channel last got a Community Note.
+    pub note_cooldown: Mutex<Cooldown>,
+    /// When each channel last got a ruling or poll.
+    pub ruling_cooldown: Mutex<Cooldown>,
     pub replies: ReplyTasks,
     pub memory_locks: AuthorLocks,
     pub quizzes: Mutex<HashMap<Id<ChannelMarker>, PendingQuiz>>,
@@ -86,6 +90,8 @@ impl Bot {
             channel_limit: RateLimit::new(Duration::from_secs(60), 120),
             dm_limit: RateLimit::new(Duration::from_secs(3600), 30),
             reply_gate: Mutex::default(),
+            note_cooldown: Mutex::default(),
+            ruling_cooldown: Mutex::default(),
             replies: ReplyTasks::default(),
             memory_locks: AuthorLocks::default(),
             quizzes: Mutex::default(),

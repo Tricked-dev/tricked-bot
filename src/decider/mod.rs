@@ -1,6 +1,7 @@
 //! Client for the decision model ("Jev"), which answers yes/no and multiple-choice questions about a conversation.
 
 pub mod check;
+pub mod cooldown;
 pub mod questions;
 pub mod reply_gate;
 

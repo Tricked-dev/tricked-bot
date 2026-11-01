@@ -94,6 +94,18 @@ pub struct Config {
     /// Minimum guild messages between two unprompted replies in one channel.
     #[arg(long, env, default_value = "15")]
     pub decider_reply_cooldown: u32,
+    /// Confidence that a message confidently states something false before a Community Note is drafted.
+    #[arg(long, env, default_value = "0.9")]
+    pub decider_wrong_claim_threshold: f32,
+    /// Confidence that people are arguing before a ruling or poll is drafted.
+    #[arg(long, env, default_value = "0.85")]
+    pub decider_argument_threshold: f32,
+    /// Minimum seconds between two Community Notes in one channel.
+    #[arg(long, env, default_value = "1800")]
+    pub decider_note_cooldown_secs: u64,
+    /// Minimum seconds between two rulings or polls in one channel.
+    #[arg(long, env, default_value = "3600")]
+    pub decider_ruling_cooldown_secs: u64,
     #[arg(long, env, default_value = "0.9")]
     pub decider_refusal_threshold: f32,
 }
