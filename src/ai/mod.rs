@@ -17,10 +17,10 @@ pub mod reply;
 pub mod timing;
 pub mod voice;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 
 use twilight_model::{
-    channel::Message,
+    channel::{Message, message::Embed},
     id::{
         Id,
         marker::{ChannelMarker, MessageMarker, UserMarker},
@@ -77,6 +77,28 @@ fn transcript_line(name: &str, content: &str) -> String {
 }
 
 impl Bot {
+    /// Text visible to the models, including voice transcripts and Discord embed metadata.
+    fn message_content(&self, id: Id<MessageMarker>, content: &str, embeds: &[Embed]) -> String {
+        let mut text = self.voice.content(id.get(), content);
+        for embed in embeds {
+            let mut parts = Vec::new();
+            parts.extend(embed.author.as_ref().map(|author| author.name.as_str()));
+            parts.extend(embed.title.as_deref());
+            parts.extend(embed.url.as_deref());
+            parts.extend(embed.description.as_deref());
+            for field in &embed.fields {
+                parts.push(&field.name);
+                parts.push(&field.value);
+            }
+            parts.extend(embed.footer.as_ref().map(|footer| footer.text.as_str()));
+            parts.retain(|part| !part.trim().is_empty());
+            if !parts.is_empty() {
+                let _ = write!(text, "\n[embed]\n{}", parts.join("\n"));
+            }
+        }
+        text.chars().take(MESSAGE_CHARS).collect()
+    }
+
     /// The last [`CONTEXT_MESSAGES`] cached messages in `channel` before `before`, as transcript lines, recording the
     /// names of their authors in `mentions`.
     pub fn transcript(
@@ -104,7 +126,7 @@ impl Bot {
                 } else {
                     author.to_string()
                 };
-                transcript_line(&name, &self.voice.content(message.id().get(), message.content()))
+                transcript_line(&name, &self.message_content(message.id(), message.content(), message.embeds()))
             })
             .collect()
     }
@@ -121,14 +143,14 @@ impl Bot {
                 user_mentions.insert(reference.author.name.clone(), reference.author.id);
                 &reference.author.name
             };
-            transcript_line(name, &self.voice.content(reference.id.get(), &reference.content))
+            transcript_line(name, &self.message_content(reference.id, &reference.content, &reference.embeds))
         });
         AiRequest {
             user_id: msg.author.id,
             user_name: msg.author.name.clone(),
             channel_id: msg.channel_id,
             message_id: msg.id,
-            message: self.voice.content(msg.id.get(), &msg.content).chars().take(MESSAGE_CHARS).collect(),
+            message: self.message_content(msg.id, &msg.content, &msg.embeds),
             source_text: msg.content.clone(),
             media: media::sources(msg),
             conversation,
@@ -158,6 +180,59 @@ pub mod tests {
             reply_target: None,
             user_mentions: HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn embeds_are_read_in_current_referenced_and_cached_messages() {
+        let bot = test_bot();
+        let embed: Embed = serde_json::from_value(serde_json::json!({
+            "type": "rich", "author": {"name": "News author"},
+            "title": "Link title", "url": "https://example.com/story",
+            "description": "Story summary", "fields": [{"name": "Score", "value": "42"}],
+            "footer": {"text": "Source footer"}
+        }))
+        .unwrap();
+        let mut previous = message(40, 2, "alice", "");
+        previous.embeds.push(embed.clone());
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(previous.clone()))));
+        let mut current = message(42, 2, "alice", "Thoughts?");
+        current.embeds.push(embed);
+        current.referenced_message = Some(Box::new(previous));
+        let req = bot.snapshot(&current);
+        for text in [req.message.as_str(), req.reply_target.as_deref().unwrap(), &req.conversation[0]] {
+            for expected in [
+                "[embed]",
+                "News author",
+                "Link title",
+                "https://example.com/story",
+                "Story summary",
+                "Score",
+                "42",
+                "Source footer",
+            ] {
+                assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+            }
+        }
+        assert_eq!(req.source_text, "Thoughts?");
+    }
+
+    #[tokio::test]
+    async fn embed_text_keeps_voice_transcripts_and_character_limits() {
+        let bot = test_bot();
+        let mut current = message(42, 2, "alice", "caption");
+        bot.voice.remember(current.id.get(), "spoken words".into());
+        let plain = bot.snapshot(&current).message;
+        current.embeds.push(serde_json::from_value(serde_json::json!({"type": "image"})).unwrap());
+        assert_eq!(bot.snapshot(&current).message, plain, "empty metadata adds no marker");
+        current.embeds.push(
+            serde_json::from_value(serde_json::json!({
+                "type": "rich", "description": "🦊".repeat(MESSAGE_CHARS)
+            }))
+            .unwrap(),
+        );
+        let text = bot.snapshot(&current).message;
+        assert!(text.starts_with("caption\n[voice transcript] spoken words\n[embed]\n"));
+        assert_eq!(text.chars().count(), MESSAGE_CHARS);
     }
 
     #[tokio::test]

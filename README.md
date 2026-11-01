@@ -5,7 +5,7 @@ A simple discord bot made for my [discord](https://discord.gg/mY8zTARu4g)
 ## Features
 
 * The Trickster: an AI regular that replies when pinged (and, optionally, when it has something to add), with
-  per-user memories and image understanding. It can attach reaction GIFs (anime reactions from nekos.best with no
+  per-user memories, image understanding, and embed text from messages, replies, and recent history. It can attach reaction GIFs (anime reactions from nekos.best with no
   key, or any GIF search with `KLIPY_API_KEY`; `DISABLE_GIFS` turns them off) and comes back to gloat about its
   predictions once they're due
 * Incoming recorded voice messages are transcribed once and saved; the Trickster can add a separate spoken punchline
