@@ -1,4 +1,7 @@
+use std::{collections::HashMap, str::FromStr};
+
 use clap::Parser;
+use serde::Deserialize;
 
 pub const DEFAULT_FOLLOWUP_THRESHOLD: f32 = 0.6;
 
@@ -9,6 +12,50 @@ pub enum ReplyMode {
     Off,
     /// Reply when the score clears the threshold and the channel cooldown.
     Live,
+}
+
+/// Sparse per-channel overrides, parsed once at startup rather than on each message.
+#[derive(Clone, Debug, Default)]
+pub struct ChannelOverrides(HashMap<u64, InterjectionOverrides>);
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InterjectionOverrides {
+    wrong_claim_threshold: Option<f32>,
+    argument_threshold: Option<f32>,
+    poll_threshold: Option<f32>,
+    note_cooldown_secs: Option<u64>,
+    ruling_cooldown_secs: Option<u64>,
+}
+
+impl FromStr for ChannelOverrides {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let entries: HashMap<u64, InterjectionOverrides> = serde_json::from_str(value).map_err(|e| e.to_string())?;
+        for (channel, policy) in &entries {
+            if *channel == 0 {
+                return Err("channel IDs must be nonzero".into());
+            }
+            for threshold in
+                [policy.wrong_claim_threshold, policy.argument_threshold, policy.poll_threshold].into_iter().flatten()
+            {
+                if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                    return Err(format!("channel {channel}: thresholds must be between 0 and 1"));
+                }
+            }
+        }
+        Ok(Self(entries))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct InterjectionSettings {
+    pub wrong_claim_threshold: f32,
+    pub argument_threshold: f32,
+    pub poll_threshold: f32,
+    pub note_cooldown_secs: u64,
+    pub ruling_cooldown_secs: u64,
 }
 
 #[derive(Parser, Clone, Debug, Default)]
@@ -87,7 +134,7 @@ pub struct Config {
     /// Shared with mail-triage/sure through jev.env.
     #[arg(long, env = "JEV_API_KEY")]
     pub decider_api_key: Option<String>,
-    #[arg(long, env, default_value = "5000")]
+    #[arg(long, env, default_value = "15000")]
     pub decider_check_timeout_ms: u64,
     #[arg(long, env, default_value = "120000")]
     pub decider_recall_timeout_ms: u64,
@@ -109,6 +156,12 @@ pub struct Config {
     /// Confidence that people are arguing before a ruling or poll is drafted.
     #[arg(long, env, default_value = "0.85")]
     pub decider_argument_threshold: f32,
+    /// Confidence that the room has a useful choice to vote on, even without an argument.
+    #[arg(long, env, default_value = "0.85")]
+    pub decider_poll_threshold: f32,
+    /// JSON object keyed by channel ID, with optional thresholds and note/ruling cooldown seconds.
+    #[arg(long, env, default_value = "{}")]
+    pub decider_channel_overrides: ChannelOverrides,
     /// Minimum seconds between two Community Notes in one channel.
     #[arg(long, env, default_value = "1800")]
     pub decider_note_cooldown_secs: u64,
@@ -117,6 +170,19 @@ pub struct Config {
     pub decider_ruling_cooldown_secs: u64,
     #[arg(long, env, default_value = "0.9")]
     pub decider_refusal_threshold: f32,
+}
+
+impl Config {
+    pub fn interjections(&self, channel: u64) -> InterjectionSettings {
+        let policy = self.decider_channel_overrides.0.get(&channel).cloned().unwrap_or_default();
+        InterjectionSettings {
+            wrong_claim_threshold: policy.wrong_claim_threshold.unwrap_or(self.decider_wrong_claim_threshold),
+            argument_threshold: policy.argument_threshold.unwrap_or(self.decider_argument_threshold),
+            poll_threshold: policy.poll_threshold.unwrap_or(self.decider_poll_threshold),
+            note_cooldown_secs: policy.note_cooldown_secs.unwrap_or(self.decider_note_cooldown_secs),
+            ruling_cooldown_secs: policy.ruling_cooldown_secs.unwrap_or(self.decider_ruling_cooldown_secs),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -128,5 +194,32 @@ mod tests {
         let cfg = Config::parse_from(["bot", "--token", "t", "--discord", "1", "--rename-channels", "1,2"]);
         assert_eq!(cfg.rename_channels, [1, 2]);
         assert_eq!(cfg.decider_reply_mode, ReplyMode::Off);
+    }
+    #[test]
+    fn channel_overrides_are_validated_and_inherit_unspecified_settings() {
+        let cfg = Config::parse_from([
+            "bot",
+            "--token",
+            "t",
+            "--discord",
+            "1",
+            "--decider-channel-overrides",
+            r#"{"123":{"poll_threshold":0.7,"note_cooldown_secs":60}}"#,
+        ]);
+        let custom = cfg.interjections(123);
+        assert_eq!(custom.poll_threshold, 0.7);
+        assert_eq!(custom.note_cooldown_secs, 60);
+        assert_eq!(custom.argument_threshold, 0.85);
+        assert_eq!(cfg.interjections(456).poll_threshold, 0.85);
+        assert_eq!(cfg.interjections(456).note_cooldown_secs, 1800);
+        for invalid in [
+            r#"{"0":{}}"#,
+            r#"{"1":{"poll_threshold":1.1}}"#,
+            r#"{"1":{"poll_threshold":-0.1}}"#,
+            r#"{"1":{"poll_threshold":null,"typo":1}}"#,
+            r#"{"1":{"note_cooldown_secs":-1}}"#,
+        ] {
+            assert!(invalid.parse::<ChannelOverrides>().is_err(), "{invalid}");
+        }
     }
 }

@@ -48,6 +48,41 @@ nix run                # or: docker compose up
 
 Reply diagnostics use `ai_timing` records keyed by `msg_id`: responder work, memory database access and shortlist, recall, profile/media preparation, stream headers, first content delta, first Discord post, and completion. `latency_ms` measures that stage; `source_age_ms` measures time since the source message was created (so edits of old messages have an older source age). Parallel stages overlap. `decider_timing` separates queue wait from service request time.
 
+## Unprompted posts
+
+`DECIDER_REPLY_MODE=live` enables spontaneous replies, Community Notes and argument settlements; the default is
+`off`. Ordinary unanswered guild messages are checked. Direct pings, replies already being handled and DMs do not
+also trigger an unprompted Note or ruling.
+
+Community Notes require a confidently false, checkable factual claim (`DECIDER_WRONG_CLAIM_THRESHOLD=0.9`).
+Rulings require a sustained disagreement between people (`DECIDER_ARGUMENT_THRESHOLD=0.85`); the drafting model
+chooses a factual ruling, an opinion poll, or no post. A separate poll check (`DECIDER_POLL_THRESHOLD=0.85`) also
+recognizes open preferences and group decisions, such as "miku or teto?" or "minecraft or terraria tonight?",
+without requiring an argument. Drafting can still decline jokes, settled topics or unsuitable questions.
+
+Global defaults can be overridden per channel. Cooldowns are tracked separately for each channel and post kind:
+`DECIDER_NOTE_COOLDOWN_SECS=1800` and `DECIDER_RULING_COOLDOWN_SECS=3600` (rulings and polls share a cooldown).
+Drafting reserves the slot against concurrent attempts; declined, failed or cancelled drafts release it. Successful
+posts start the full cooldown at delivery. Logs distinguish selection (`kind="check"`, `interjection=Some(...)`)
+from delivery (`kind="note" posted=true/false`, `kind="ruling"` or `kind="poll"` with `action="ruling"/"poll"/"none"`)
+and failures. A declined interjection falls back to an ordinary reply only when the original reply scores warrant
+one. A fresh source check before delivery prevents drafts from answering an edited or deleted message.
+
+Set `DECIDER_CHANNEL_OVERRIDES` to a JSON object keyed by channel ID. Missing fields inherit the global defaults;
+unknown fields, invalid channel IDs and thresholds outside 0–1 fail startup. For example:
+
+```sh
+DECIDER_CHANNEL_OVERRIDES='{"748957504666599507":{"poll_threshold":0.8,"note_cooldown_secs":1800,"ruling_cooldown_secs":3600}}'
+```
+
+Supported fields are `wrong_claim_threshold`, `argument_threshold`, `poll_threshold`, `note_cooldown_secs` and
+`ruling_cooldown_secs`. Rulings and all polls share the latter cooldown, preventing consecutive judge/vote posts.
+The default `DECIDER_CHECK_TIMEOUT_MS` is 15000, including queue time and all check questions.
+
+Reaction GIFs are chosen during normal replies. Scheduled follow-ups only exist after a reply emits a hidden
+`[predict <wait>: <claim>]` directive; they are deliberately rare. An empty prediction queue means nothing has been
+scheduled, rather than that the follow-up worker is disabled.
+
 ## Tech
 
 * [twilight](https://github.com/twilight-rs/twilight) for Discord, PostgreSQL for storage

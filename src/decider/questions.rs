@@ -82,6 +82,19 @@ pub fn argument() -> Question {
     )
 }
 
+pub fn poll() -> Question {
+    Question::noul(
+        "Would a short poll help the room choose between clear alternatives raised in the last message or recent \
+         conversation? An open question about preferences, a group decision, or an unresolved opinion disagreement \
+         can qualify; an argument is NOT required. For example, 'miku or teto, who is better?' or 'which game should \
+         we play tonight, minecraft or terraria?' can be put to a vote. Answer false for factual questions with a \
+         correct answer, private exchanges, jokes with no real choice, bare links, acknowledgements, serious personal \
+         matters, or topics the room has already settled. Do not invent a topic just to post a poll.",
+        "yes: an open choice that the room could usefully vote on",
+        "no: no useful unresolved choice for a poll",
+    )
+}
+
 pub fn durable(author: &str) -> Question {
     Question::noul(
         format!(

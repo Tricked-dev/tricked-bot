@@ -27,6 +27,7 @@ use crate::{bot::Bot, decider::questions};
 const NOTE_SYSTEM: &str = include_str!("prompts/community_note.md");
 /// Instructions for settling an argument. Static, so providers can cache them.
 const RULING_SYSTEM: &str = include_str!("prompts/ruling.md");
+const POLL_SYSTEM: &str = include_str!("prompts/poll.md");
 
 const NOTE_TITLE: &str = "Readers added context they thought people might want to know";
 const NOTE_FOOTER: &str = "Do you find this helpful?";
@@ -198,12 +199,18 @@ async fn ask<T: DeserializeOwned>(bot: &Bot, request: &ChatRequest) -> Result<T>
 }
 
 /// Replies to `req` with a Community Note, unless the model decides the claim isn't actually wrong.
-pub async fn note(bot: &Bot, req: &AiRequest) {
+pub async fn note(bot: &Bot, req: &AiRequest) -> bool {
     match post_note(bot, req).await {
-        Ok(posted) => tracing::info!(target: "decider", kind = "note", channel = %req.channel_id,
-            msg_id = %req.message_id, posted),
-        Err(error) => tracing::warn!(target: "decider", kind = "note", channel = %req.channel_id,
-            msg_id = %req.message_id, "failed: {error}"),
+        Ok(posted) => {
+            tracing::info!(target: "decider", kind = "note", channel = %req.channel_id,
+                msg_id = %req.message_id, posted);
+            posted
+        }
+        Err(error) => {
+            tracing::warn!(target: "decider", kind = "note", channel = %req.channel_id,
+                msg_id = %req.message_id, "failed: {error}");
+            false
+        }
     }
 }
 
@@ -212,6 +219,9 @@ async fn post_note(bot: &Bot, req: &AiRequest) -> Result<bool> {
     // Accuracy matters most here, so the model gets to think and the room to do it.
     let request = request(bot, NOTE_SYSTEM, input(questions::recent(req), req), 4096, "medium");
     let Some(text) = note_text(&ask(bot, &request).await?) else { return Ok(false) };
+    if !super::reply::is_current(bot, req) {
+        return Ok(false);
+    }
     bot.http
         .create_message(req.channel_id)
         .embeds(&[note_embed(text)])
@@ -222,19 +232,48 @@ async fn post_note(bot: &Bot, req: &AiRequest) -> Result<bool> {
 }
 
 /// Settles the argument `req` is part of with a ruling or a poll, unless the model sees no argument to settle.
-pub async fn ruling(bot: &Arc<Bot>, req: &AiRequest) {
-    match post_ruling(bot, req).await {
-        Ok(action) => tracing::info!(target: "decider", kind = "ruling", channel = %req.channel_id,
-            msg_id = %req.message_id, action),
-        Err(error) => tracing::warn!(target: "decider", kind = "ruling", channel = %req.channel_id,
-            msg_id = %req.message_id, "failed: {error}"),
+pub async fn ruling(bot: &Arc<Bot>, req: &AiRequest) -> bool {
+    match post_settlement(bot, req, false).await {
+        Ok(action) => {
+            tracing::info!(target: "decider", kind = "ruling", channel = %req.channel_id,
+                msg_id = %req.message_id, action);
+            action != "none"
+        }
+        Err(error) => {
+            tracing::warn!(target: "decider", kind = "ruling", channel = %req.channel_id,
+                msg_id = %req.message_id, "failed: {error}");
+            false
+        }
+    }
+}
+
+/// Puts an open choice to the room without requiring an argument.
+pub async fn start_poll(bot: &Arc<Bot>, req: &AiRequest) -> bool {
+    match post_settlement(bot, req, true).await {
+        Ok(action) => {
+            tracing::info!(target: "decider", kind = "poll", channel = %req.channel_id,
+                msg_id = %req.message_id, action);
+            action == "poll"
+        }
+        Err(error) => {
+            tracing::warn!(target: "decider", kind = "poll", channel = %req.channel_id,
+                msg_id = %req.message_id, "failed: {error}");
+            false
+        }
     }
 }
 
 /// Returns what was posted: `ruling`, `poll` or `none`.
-async fn post_ruling(bot: &Arc<Bot>, req: &AiRequest) -> Result<&'static str> {
-    let request = request(bot, RULING_SYSTEM, input(&req.conversation, req), 2048, "low");
+async fn post_settlement(bot: &Arc<Bot>, req: &AiRequest, only_poll: bool) -> Result<&'static str> {
+    let system = if only_poll { POLL_SYSTEM } else { RULING_SYSTEM };
+    let request = request(bot, system, input(&req.conversation, req), 2048, "low");
     let Some(settlement) = settlement(ask(bot, &request).await?) else { return Ok("none") };
+    if only_poll && !matches!(settlement, Settlement::Poll(_)) {
+        return Ok("none");
+    }
+    if !super::reply::is_current(bot, req) {
+        return Ok("none");
+    }
     let mentions = AllowedMentions::default();
     let message = bot.http.create_message(req.channel_id).reply(req.message_id).allowed_mentions(Some(&mentions));
     match settlement {
