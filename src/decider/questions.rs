@@ -53,6 +53,28 @@ pub fn followup() -> Question {
     )
 }
 
+pub fn wrong_claim() -> Question {
+    Question::noul(
+        "Does the last message confidently state something as fact that is clearly and verifiably false: a wrong \
+         date, number, definition, scientific or historical fact? Answer false for jokes, sarcasm, hyperbole, bits, \
+         opinions, predictions, personal experiences, questions, hedged guesses, and anything that is disputed or \
+         that you are not sure is wrong.",
+        "yes: a confident, checkable claim that is actually false",
+        "no: true, unverifiable, opinion, joke, or unsure",
+    )
+}
+
+pub fn argument() -> Question {
+    Question::noul(
+        "Across the recent conversation and the last message, are two or more people having a sustained back-and-forth \
+         disagreement, each pushing their own position over several messages? Answer false for one-off \
+         disagreements, friendly banter or roasting with no real dispute, people agreeing, a single person ranting, \
+         or a conversation with The Trickster, the bot.",
+        "yes: an ongoing argument between people",
+        "no: no real ongoing dispute",
+    )
+}
+
 pub fn durable(author: &str) -> Question {
     Question::noul(
         format!(

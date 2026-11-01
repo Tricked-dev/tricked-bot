@@ -63,7 +63,7 @@ const VIBE: &[(&str, &str)] = &[
 const SECTION_TAGS: usize = 256;
 
 /// Tags the prompt itself uses. Untrusted text can't open or close them.
-/// Covers the memory extractor's input too.
+/// Covers the memory extractor's and interjections' input too.
 const TAGS: &[&str] = &[
     "context",
     "relationship",
@@ -75,6 +75,9 @@ const TAGS: &[&str] = &[
     "message",
     "conversation",
     "existing_memories",
+    "chat_log",
+    "replied_to",
+    "latest",
 ];
 
 /// `text` with the prompt's own tags turned harmless so a message can't fake or escape its section, or `None` when it

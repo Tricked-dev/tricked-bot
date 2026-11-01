@@ -4,6 +4,7 @@ pub mod budget;
 pub mod cleanup;
 pub mod embeddings;
 pub mod gif;
+pub mod interject;
 pub mod media;
 pub mod memory;
 pub mod openrouter;
