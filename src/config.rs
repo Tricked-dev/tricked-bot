@@ -71,6 +71,9 @@ pub struct Config {
     /// Channels whose topic is occasionally replaced with a recent message.
     #[arg(long, env, value_delimiter = ',')]
     pub rename_channels: Vec<u64>,
+    /// Other bots whose server messages are handled like a member's, within [`crate::bot::BOT_LIMIT`].
+    #[arg(long, env, value_delimiter = ',')]
+    pub allowed_bots: Vec<u64>,
     #[arg(short, long, env, default_value = "I am tricked bot!")]
     pub status: String,
     #[arg(long, env)]
@@ -193,6 +196,7 @@ mod tests {
     fn lists_are_comma_separated_and_optional() {
         let cfg = Config::parse_from(["bot", "--token", "t", "--discord", "1", "--rename-channels", "1,2"]);
         assert_eq!(cfg.rename_channels, [1, 2]);
+        assert_eq!(cfg.allowed_bots, Vec::<u64>::new());
         assert_eq!(cfg.decider_reply_mode, ReplyMode::Off);
     }
     #[test]

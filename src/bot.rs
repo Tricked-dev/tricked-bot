@@ -42,6 +42,7 @@ pub struct Bot {
     pub user_limit: RateLimit,
     pub channel_limit: RateLimit,
     pub dm_limit: RateLimit,
+    pub allowed_bot_limit: RateLimit,
     pub reply_gate: Mutex<ReplyGate>,
     /// When each channel last got a Community Note.
     pub note_cooldown: Mutex<Cooldown>,
@@ -90,6 +91,7 @@ impl Bot {
             user_limit: RateLimit::new(Duration::from_secs(30), 10),
             channel_limit: RateLimit::new(Duration::from_secs(60), 120),
             dm_limit: RateLimit::new(Duration::from_secs(3600), 30),
+            allowed_bot_limit: RateLimit::new(BOT_LIMIT.0, BOT_LIMIT.1),
             reply_gate: Mutex::default(),
             note_cooldown: Mutex::default(),
             ruling_cooldown: Mutex::default(),
@@ -106,6 +108,9 @@ impl Bot {
 }
 
 /// Fixed-window rate limiter: each key may be hit `limit` times per `window`.
+/// Messages handled per allowed bot per window, so two bots can't keep each other talking.
+pub const BOT_LIMIT: (Duration, u32) = (Duration::from_secs(600), 10);
+
 #[derive(Debug)]
 pub struct RateLimit {
     window: Duration,

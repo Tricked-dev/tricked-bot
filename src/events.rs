@@ -32,6 +32,7 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
             Some(_) => guild_message(&bot, &msg.0).await,
             None => direct_message(&bot, &msg.0).await,
         },
+        Event::MessageCreate(msg) if allowed_bot(&bot, &msg) => guild_message(&bot, &msg.0).await,
         Event::MessageUpdate(msg) if !msg.author.bot => message_edit(&bot, &msg).await,
         Event::MessageDelete(deleted) => messages_deleted(&bot, deleted.channel_id, &[deleted.id]).await,
         Event::MessageDeleteBulk(deleted) => messages_deleted(&bot, deleted.channel_id, &deleted.ids).await,
@@ -45,6 +46,19 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
     if let Err(error) = result {
         tracing::error!("Error handling event: {error:?}");
     }
+}
+
+/// Whether a message from another bot is handled: a server message from an allowed bot, within its rate limit.
+fn allowed_bot(bot: &Bot, msg: &Message) -> bool {
+    let author = msg.author.id;
+    if author == bot.id || msg.guild_id.is_none() || !bot.config.allowed_bots.contains(&author.get()) {
+        return false;
+    }
+    let wait = bot.allowed_bot_limit.hit(author.get());
+    if let Some(wait) = wait {
+        tracing::info!(user = %author, "Allowed bot limit reached, {} seconds remaining", wait.as_secs());
+    }
+    wait.is_none()
 }
 
 async fn direct_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
@@ -220,6 +234,27 @@ fn logged_content(content: &str, attachments: &[Attachment], embeds: &[Embed]) -
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn only_allowed_bots_in_servers_are_handled_up_to_their_limit() {
+        let mut bot = crate::bot::tests::test_bot();
+        bot.config.allowed_bots = vec![7, 3];
+        let from = |author: u64| {
+            let mut msg = crate::bot::tests::message(1, author, "other_bot", "hi");
+            msg.author.bot = true;
+            msg.guild_id = Some(Id::new(1));
+            msg
+        };
+        assert!(!super::allowed_bot(&bot, &from(8)), "not on the list");
+        assert!(!super::allowed_bot(&bot, &from(3)), "never itself");
+        let mut dm = from(7);
+        dm.guild_id = None;
+        assert!(!super::allowed_bot(&bot, &dm), "no DMs");
+        for _ in 0..crate::bot::BOT_LIMIT.1 {
+            assert!(super::allowed_bot(&bot, &from(7)));
+        }
+        assert!(!super::allowed_bot(&bot, &from(7)), "over the limit");
+    }
+
     use super::*;
     use crate::bot::tests::{message, test_bot};
     use twilight_model::{
