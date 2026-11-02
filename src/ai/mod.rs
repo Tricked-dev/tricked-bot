@@ -50,8 +50,11 @@ pub struct AiRequest {
     pub media: Vec<media::MediaSource>,
     /// Earlier channel messages as `name: text` lines, oldest first.
     pub conversation: Vec<String>,
+    /// The ID of each `conversation` line, for when it was sent. Lines past its end have no known time.
+    pub conversation_ids: Vec<Id<MessageMarker>>,
     /// The message this one replies to, as a `name: text` line.
     pub reply_target: Option<String>,
+    pub reply_target_id: Option<Id<MessageMarker>>,
     /// Display names for Discord mentions in this conversation.
     pub user_mentions: HashMap<String, Id<UserMarker>>,
 }
@@ -99,16 +102,16 @@ impl Bot {
         text.chars().take(MESSAGE_CHARS).collect()
     }
 
-    /// The last [`CONTEXT_MESSAGES`] cached messages in `channel` before `before`, as transcript lines, recording the
-    /// names of their authors in `mentions`.
+    /// The last [`CONTEXT_MESSAGES`] cached messages in `channel` before `before`, as their IDs and transcript lines,
+    /// recording the names of their authors in `mentions`.
     pub fn transcript(
         &self,
         channel: Id<ChannelMarker>,
         before: Id<MessageMarker>,
         mentions: &mut HashMap<String, Id<UserMarker>>,
-    ) -> Vec<String> {
+    ) -> (Vec<Id<MessageMarker>>, Vec<String>) {
         let Some(ids) = self.cache.channel_messages(channel) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let mut earlier: Vec<_> = ids.iter().copied().filter(|id| *id < before).collect();
         earlier.sort_unstable();
@@ -126,14 +129,16 @@ impl Bot {
                 } else {
                     author.to_string()
                 };
-                transcript_line(&name, &self.message_content(message.id(), message.content(), message.embeds()))
+                let line =
+                    transcript_line(&name, &self.message_content(message.id(), message.content(), message.embeds()));
+                (message.id(), line)
             })
-            .collect()
+            .unzip()
     }
 
     pub fn snapshot(&self, msg: &Message) -> AiRequest {
         let mut user_mentions = HashMap::from([(msg.author.name.clone(), msg.author.id)]);
-        let conversation = self.transcript(msg.channel_id, msg.id, &mut user_mentions);
+        let (conversation_ids, conversation) = self.transcript(msg.channel_id, msg.id, &mut user_mentions);
         // A reply can target an older message outside the cached transcript. Keep
         // its identity and content explicit even when newer channel messages exist.
         let reply_target = msg.referenced_message.as_ref().map(|reference| {
@@ -154,7 +159,9 @@ impl Bot {
             source_text: msg.content.clone(),
             media: media::sources(msg),
             conversation,
+            conversation_ids,
             reply_target,
+            reply_target_id: msg.referenced_message.as_ref().map(|reference| reference.id),
             user_mentions,
         }
     }
@@ -177,7 +184,9 @@ pub mod tests {
             source_text: message.into(),
             media: Vec::new(),
             conversation: Vec::new(),
+            conversation_ids: Vec::new(),
             reply_target: None,
+            reply_target_id: None,
             user_mentions: HashMap::new(),
         }
     }
@@ -244,6 +253,8 @@ pub mod tests {
         let req = bot.snapshot(&current);
         assert_eq!(req.reply_target.as_deref(), Some("The Trickster: Level: 37, position: 12"));
         assert_eq!(req.conversation, ["alice: old bird topic"]);
+        assert_eq!(req.conversation_ids, [Id::new(40)]);
+        assert_eq!(req.reply_target_id, Some(Id::new(20)));
     }
 
     #[test]

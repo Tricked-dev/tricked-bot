@@ -8,7 +8,10 @@ use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
 use color_eyre::Result;
 use twilight_model::{
-    id::{Id, marker::UserMarker},
+    id::{
+        Id,
+        marker::{MessageMarker, UserMarker},
+    },
     util::Timestamp,
 };
 
@@ -157,6 +160,51 @@ fn example_pairs<'a>(input: &'a str, output: &'a str) -> impl Iterator<Item = (&
 /// Replaces the `{{char}}` and `{{user}}` placeholders that profiles may contain.
 fn fill_placeholders(text: &str, user_name: &str) -> String {
     text.replace("{{char}}", PERSONA).replace("{{user}}", user_name)
+}
+
+/// Discord's epoch in Unix milliseconds. A snowflake's bits above 22 count milliseconds since it.
+const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+/// Lines closer together than this read as one stretch of conversation, so only the gaps between stretches get a time.
+const GAP_MINUTES: u64 = 10;
+
+/// When the message `id` was sent, in Unix milliseconds.
+fn sent_ms(id: Id<MessageMarker>) -> u64 {
+    (id.get() >> 22) + DISCORD_EPOCH_MS
+}
+
+/// Whole minutes between when the message `id` was sent and `now_ms`.
+fn minutes_ago(id: Id<MessageMarker>, now_ms: u64) -> u64 {
+    now_ms.saturating_sub(sent_ms(id)) / 60_000
+}
+
+/// A compact age: `25m`, `3h` or `2d`.
+fn short_age(minutes: u64) -> String {
+    match minutes {
+        ..60 => format!("{minutes}m"),
+        60..1440 => format!("{}h", minutes / 60),
+        _ => format!("{}d", minutes / 1440),
+    }
+}
+
+/// Prefixes transcript lines with their age, as `(3h) alice: text`, where a stretch of conversation starts after a
+/// gap, and on the last line, so the time since it shows. Recent, continuous chat stays unlabeled to save tokens.
+fn label_ages<'a>(lines: Vec<Cow<'a, str>>, ids: &[Id<MessageMarker>], now_ms: u64) -> Vec<Cow<'a, str>> {
+    let last = lines.len().saturating_sub(1);
+    let mut previous = None;
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let Some(minutes) = ids.get(i).map(|id| minutes_ago(*id, now_ms)) else { return line };
+            let after_gap = previous.is_none_or(|before: u64| before.saturating_sub(minutes) >= GAP_MINUTES);
+            previous = Some(minutes);
+            if minutes >= GAP_MINUTES && (after_gap || i == last) {
+                Cow::Owned(format!("({}) {line}", short_age(minutes)))
+            } else {
+                line
+            }
+        })
+        .collect()
 }
 
 /// Appends an example exchange to `messages`.
@@ -311,8 +359,14 @@ pub fn build_request(
     }
 
     let names = req.mention_names();
-    let conversation: Vec<_> = req.conversation.iter().map(|line| sanitize(line, &names)).collect();
-    let reply_target = req.reply_target.as_deref().map(|target| sanitize(target, &names));
+    // Ages count back from the message being answered, or the newest line when that's older (a prediction follow-up).
+    let now_ms = req.conversation_ids.iter().chain([&req.message_id]).map(|id| sent_ms(*id)).max().unwrap_or_default();
+    let conversation =
+        label_ages(req.conversation.iter().map(|line| sanitize(line, &names)).collect(), &req.conversation_ids, now_ms);
+    let reply_target = req.reply_target.as_deref().map(|target| {
+        let target = sanitize(target, &names);
+        label_ages(vec![target], req.reply_target_id.as_slice(), now_ms).swap_remove(0)
+    });
     let relationship = user.map_or_default(|user| {
         let relationship = fill_placeholders(&user.relationship, &req.user_name);
         defang(&relationship).unwrap_or(relationship)
@@ -367,6 +421,22 @@ pub fn build_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ages_mark_gaps_and_an_old_last_line_only() {
+        let at = |minutes: u64| Id::new(((minutes * 60_000) << 22) | 1);
+        let now = 600 * 60_000 + DISCORD_EPOCH_MS;
+        let lines = ["a: old", "b: same stretch", "c: back later", "d: right after"].map(Cow::Borrowed).to_vec();
+        let ids = [at(600 - 180), at(600 - 178), at(600 - 30), at(600 - 29)];
+        assert_eq!(
+            label_ages(lines, &ids, now),
+            ["(3h) a: old", "b: same stretch", "(30m) c: back later", "(29m) d: right after"]
+        );
+        let live = ["a: hi", "b: yo"].map(Cow::Borrowed).to_vec();
+        assert_eq!(label_ages(live, &[at(598), at(599)], now), ["a: hi", "b: yo"]);
+        assert_eq!(label_ages(vec![Cow::Borrowed("a: x")], &[], now), ["a: x"]);
+        assert_eq!(short_age(2 * 1440 + 5), "2d");
+    }
 
     fn request(message: &str, conversation: Vec<String>) -> AiRequest {
         AiRequest { conversation, ..crate::ai::tests::request(message) }

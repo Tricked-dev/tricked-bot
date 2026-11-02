@@ -67,7 +67,7 @@ async fn follow_up(bot: &Bot, prediction: &Prediction) -> Result<()> {
     let message_id = Id::new_checked(prediction.message_id.cast_unsigned()).ok_or_else(|| eyre!("invalid message"))?;
     let user = db::user(&bot.db, user_id.get()).await?.ok_or_else(|| eyre!("predicted user is gone"))?;
     let mut user_mentions = HashMap::from([(user.name.clone(), user_id)]);
-    let conversation = bot.transcript(channel_id, Id::new(u64::MAX), &mut user_mentions);
+    let (conversation_ids, conversation) = bot.transcript(channel_id, Id::new(u64::MAX), &mut user_mentions);
     let req = AiRequest {
         user_id,
         user_name: user.name.clone(),
@@ -77,7 +77,9 @@ async fn follow_up(bot: &Bot, prediction: &Prediction) -> Result<()> {
         source_text: String::new(),
         media: Vec::new(),
         conversation,
+        conversation_ids,
         reply_target: None,
+        reply_target_id: None,
         user_mentions,
     };
     let turn = Content::Text(prompt::text_turn(&req));
