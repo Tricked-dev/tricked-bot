@@ -206,7 +206,7 @@ async fn run(bot: Arc<Bot>, req: AiRequest, posted: Arc<PostedSlot>, generation:
         post(
             &bot.http,
             req.channel_id,
-            Some(req.message_id),
+            req.reply_ref(),
             Some(format!("{AI_ERROR}: reply or memory recall unavailable.")),
             &posted,
         )
@@ -235,7 +235,8 @@ async fn reply(bot: &Bot, req: &AiRequest, posted_slot: &Arc<PostedSlot>, genera
     let request =
         prompt::build_request(&bot.config, req, user.as_ref(), &memories, turn, &bot.config.openrouter_model)?;
     let deltas = timing::measure(req.message_id, "stream_headers", ai.stream(&request, REPLY_TIMEOUT)).await?;
-    let streamed = stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, posted_slot).await;
+    let streamed =
+        stream_to_discord(&bot.http, deltas, req.channel_id, req.message_id, req.reply_ref(), posted_slot).await;
     // New messages leave completed text alone, but deleting its source still cancels GIF lookup and side effects.
     bot.replies.complete((req.channel_id, req.user_id), generation);
     let Some(Streamed { posted, raw }) = streamed else {
@@ -282,7 +283,7 @@ async fn attach_gif(bot: &Bot, req: &AiRequest, query: &str, text_posted: bool, 
             return;
         }
     };
-    post_gif(&bot.http, req.channel_id, req.message_id, text_posted, url, slot).await;
+    post_gif(&bot.http, req.channel_id, req.reply_ref(), text_posted, url, slot).await;
 }
 
 async fn attach_voice(bot: &Bot, req: &AiRequest, text: &str, slot: &Arc<PostedSlot>) {
@@ -294,13 +295,13 @@ async fn attach_voice(bot: &Bot, req: &AiRequest, text: &str, slot: &Arc<PostedS
         Err(error) => {
             tracing::warn!(target: "voice", msg_id = %req.message_id, %error, "Voice synthesis failed");
             if slot.lock().unwrap().ids.is_empty() {
-                post(&bot.http, req.channel_id, Some(req.message_id), Some(output::discord_text(text)), slot).await;
+                post(&bot.http, req.channel_id, req.reply_ref(), Some(output::discord_text(text)), slot).await;
             }
             return;
         }
     };
     let spoken = clip.text.clone();
-    let reply_to = slot.lock().unwrap().ids.is_empty().then_some(req.message_id);
+    let reply_to = req.reply_ref().filter(|_| slot.lock().unwrap().ids.is_empty());
     if let Some(id) = post_inner(&bot.http, req.channel_id, reply_to, None, Some(clip), slot).await {
         bot.voice.remember(id.get(), spoken.clone());
         if let Err(error) =
@@ -312,7 +313,7 @@ async fn attach_voice(bot: &Bot, req: &AiRequest, text: &str, slot: &Arc<PostedS
     } else {
         let empty = slot.lock().unwrap().ids.is_empty();
         if empty {
-            post(&bot.http, req.channel_id, Some(req.message_id), Some(output::discord_text(text)), slot).await;
+            post(&bot.http, req.channel_id, req.reply_ref(), Some(output::discord_text(text)), slot).await;
         }
     }
 }
@@ -321,12 +322,12 @@ async fn attach_voice(bot: &Bot, req: &AiRequest, text: &str, slot: &Arc<PostedS
 async fn post_gif(
     http: &Arc<HttpClient>,
     channel: Id<ChannelMarker>,
-    source: Id<MessageMarker>,
+    reply_to: Option<Id<MessageMarker>>,
     text_posted: bool,
     url: String,
     slot: &Arc<PostedSlot>,
 ) -> Option<Id<MessageMarker>> {
-    post(http, channel, (!text_posted).then_some(source), Some(url), slot).await
+    post(http, channel, reply_to.filter(|_| !text_posted), Some(url), slot).await
 }
 
 /// A reply stream that ran to the end.
@@ -345,7 +346,8 @@ async fn stream_to_discord(
     http: &Arc<HttpClient>,
     deltas: impl Stream<Item = Result<String>>,
     channel_id: Id<ChannelMarker>,
-    reply_to: Id<MessageMarker>,
+    source: Id<MessageMarker>,
+    reply_to: Option<Id<MessageMarker>>,
     posted_slot: &Arc<PostedSlot>,
 ) -> Option<Streamed> {
     let mut deltas = pin!(deltas);
@@ -362,7 +364,7 @@ async fn stream_to_discord(
             next = deltas.next() => match next {
                 Some(Ok(delta)) => {
                     if first_delta && !delta.is_empty() {
-                        timing::record(reply_to, "first_delta", started);
+                        timing::record(source, "first_delta", started);
                         first_delta = false;
                     }
                     raw.push_str(&delta);
@@ -394,8 +396,8 @@ async fn stream_to_discord(
                         }
                     }
                 } else if finished || text.split_whitespace().count() >= 2 || text.ends_with(char::is_whitespace) {
-                    let id = post(http, channel_id, Some(reply_to), Some(text.clone()), posted_slot).await?;
-                    timing::record(reply_to, "first_post", started);
+                    let id = post(http, channel_id, reply_to, Some(text.clone()), posted_slot).await?;
+                    timing::record(source, "first_post", started);
                     message_id = Some(id);
                     last_sent = text;
                 } else {
@@ -405,7 +407,7 @@ async fn stream_to_discord(
             }
         }
         if finished {
-            timing::record(reply_to, "stream_total", started);
+            timing::record(source, "stream_total", started);
             return failure.is_none().then(|| Streamed { posted: message_id.map(|id| (id, last_sent)), raw });
         }
     }
@@ -538,8 +540,15 @@ mod tests {
         let posted = Arc::default();
         let (task_bot, task_posted) = (Arc::clone(&bot), Arc::clone(&posted));
         let task = tokio::spawn(async move {
-            stream_to_discord(&task_bot.http, stream::iter(deltas(&["hi"])), Id::new(1), Id::new(10), &task_posted)
-                .await;
+            stream_to_discord(
+                &task_bot.http,
+                stream::iter(deltas(&["hi"])),
+                Id::new(1),
+                Id::new(10),
+                Some(Id::new(10)),
+                &task_posted,
+            )
+            .await;
         });
         tokio::time::timeout(Duration::from_secs(2), accepted.notified()).await.unwrap();
         let entry = InFlight { abort: task.abort_handle(), posted, ..in_flight(10, "hello", 0) };
@@ -571,7 +580,9 @@ mod tests {
         );
         let slot = Arc::default();
         post(&http, Id::new(1), Some(Id::new(10)), Some("skill issue".into()), &slot).await.unwrap();
-        post_gif(&http, Id::new(1), Id::new(10), true, "https://example.com/reaction.gif".into(), &slot).await.unwrap();
+        post_gif(&http, Id::new(1), Some(Id::new(10)), true, "https://example.com/reaction.gif".into(), &slot)
+            .await
+            .unwrap();
         let requests = seen.lock().await;
         assert_eq!(requests[0]["content"], "skill issue");
         assert_eq!(requests[1]["content"], "https://example.com/reaction.gif");
@@ -592,7 +603,7 @@ mod tests {
         assert_eq!(cancel_answering(&bot, Id::new(9), &[Id::new(10)]), Vec::<Id<MessageMarker>>::new());
         assert_eq!(cancel_answering(&bot, Id::new(1), &[Id::new(10)]), [Id::new(41), Id::new(42)]);
         assert!(bot.replies.tasks.lock().unwrap().completed.is_empty());
-        post_gif(&http, Id::new(1), Id::new(20), false, "https://example.com/solo.gif".into(), &Arc::default())
+        post_gif(&http, Id::new(1), Some(Id::new(20)), false, "https://example.com/solo.gif".into(), &Arc::default())
             .await
             .unwrap();
         let seen = seen.lock().await;
@@ -659,7 +670,9 @@ mod tests {
                 .ratelimiter(None)
                 .build(),
         );
-        let result = stream_to_discord(&http, stream::iter(deltas), Id::new(1), Id::new(2), &Arc::default()).await;
+        let result =
+            stream_to_discord(&http, stream::iter(deltas), Id::new(1), Id::new(2), Some(Id::new(2)), &Arc::default())
+                .await;
         let requests = seen.lock().await.clone();
         (result, requests)
     }

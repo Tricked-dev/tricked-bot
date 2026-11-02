@@ -91,11 +91,11 @@ fn decide_interjection(
 
 /// Whether at least two people other than the bot speak in the recent conversation, counting the message itself.
 fn several_speakers(req: &AiRequest) -> bool {
-    let speaker = format!("{PERSONA}: ");
     questions::recent(req)
         .iter()
-        .filter(|line| !line.starts_with(&speaker))
-        .filter_map(|line| line.split_once(": ").map(|(name, _)| name))
+        .filter(|line| !line.starts_with(PERSONA))
+        // Usernames have no spaces, so this drops reply tags like `alice #1→#2`.
+        .filter_map(|line| line.split_once(": ").and_then(|(name, _)| name.split([' ', '→']).next()))
         .any(|name| name != req.user_name)
 }
 

@@ -59,6 +59,7 @@ impl Scenario {
             conversation_ids: self.conversation_ids.iter().map(|text| id(text)).collect(),
             reply_target: self.reply_target.as_ref().map(|(_, line)| line.clone()),
             reply_target_id: self.reply_target.as_ref().map(|(target, _)| id(target)),
+            replyable: true,
             user_mentions: self.user_mentions.iter().map(|(name, user)| (name.clone(), id(user))).collect(),
         }
     }

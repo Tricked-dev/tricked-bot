@@ -22,7 +22,10 @@ pub mod voice;
 use std::{collections::HashMap, fmt::Write as _};
 
 use twilight_model::{
-    channel::{Message, message::Embed},
+    channel::{
+        Message,
+        message::{Embed, MessageType},
+    },
     id::{
         Id,
         marker::{ChannelMarker, MessageMarker, UserMarker},
@@ -58,11 +61,18 @@ pub struct AiRequest {
     /// The message this one replies to, as a `name: text` line.
     pub reply_target: Option<String>,
     pub reply_target_id: Option<Id<MessageMarker>>,
+    /// Whether Discord allows replying to the message; system messages like poll results can't be replied to.
+    pub replyable: bool,
     /// Display names for Discord mentions in this conversation.
     pub user_mentions: HashMap<String, Id<UserMarker>>,
 }
 
 impl AiRequest {
+    /// The message to reply to, or `None` when Discord doesn't allow it.
+    pub fn reply_ref(&self) -> Option<Id<MessageMarker>> {
+        self.replyable.then_some(self.message_id)
+    }
+
     /// Who each mentioned ID is, for resolving `<@id>` mentions.
     pub fn mention_names(&self) -> HashMap<Id<UserMarker>, &str> {
         self.user_mentions.iter().map(|(name, id)| (*id, name.as_str())).collect()
@@ -89,18 +99,17 @@ fn push_line(text: &mut String, line: &str) {
     text.push_str(line);
 }
 
-/// A poll as one line, like `[poll: game tonight? | minecraft 3, terraria 1 | 40m left]`, with counts once there are
-/// any.
+/// A poll as one line with its vote counts, like `[poll: game tonight? | minecraft 3, terraria 1 | 40m left]`.
 fn poll_text(poll: &Poll, now_ms: i64) -> String {
     let answers: Vec<_> = poll
         .answers
         .iter()
         .map(|answer| {
             let text = answer.poll_media.text.as_deref().unwrap_or_default();
-            let count = poll.results.as_ref().map(|results| {
-                results.answer_counts.iter().find(|count| count.id == answer.answer_id).map_or(0, |count| count.count)
-            });
-            count.map_or_else(|| text.to_owned(), |count| format!("{text} {count}"))
+            // Discord leaves results out until someone votes.
+            let count = poll.results.iter().flat_map(|results| &results.answer_counts);
+            let count = count.filter(|count| count.id == answer.answer_id).map(|count| count.count).sum::<u64>();
+            format!("{text} {count}")
         })
         .collect();
     let finalized = poll.results.as_ref().is_some_and(|results| results.is_finalized);
@@ -126,6 +135,14 @@ fn poll_result_text(embed: &Embed) -> Option<String> {
         (Some(winner), Some(votes)) => format!("[poll ended: {question} | winner {winner}, {votes} of {total} votes]"),
         _ => format!("[poll ended: {question} | no single winner, {total} votes]"),
     })
+}
+
+/// Whether Discord allows replying to `msg`, which it refuses for system messages.
+pub fn replyable(msg: &Message) -> bool {
+    matches!(
+        msg.kind,
+        MessageType::Regular | MessageType::Reply | MessageType::ChatInputCommand | MessageType::ContextMenuCommand
+    )
 }
 
 /// Whether `msg` is Discord's announcement that a poll ended.
@@ -180,26 +197,46 @@ impl Bot {
         let mut earlier: Vec<_> = ids.iter().copied().filter(|id| *id < before).collect();
         earlier.sort_unstable();
         let recent = &earlier[earlier.len().saturating_sub(CONTEXT_MESSAGES)..];
+        let replied_to = |id: &Id<MessageMarker>| {
+            self.cache.message(*id).and_then(|message| message.reference().and_then(|reference| reference.message_id))
+        };
+        // Replied-to lines in the window get a short tag, in order of appearance, for their replies to point at.
+        let mut tags: Vec<_> = recent.iter().filter_map(replied_to).filter(|id| recent.contains(id)).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        let tag = |id: Id<MessageMarker>| tags.iter().position(|tagged| *tagged == id).map(|index| index + 1);
         recent
             .iter()
             .filter_map(|id| self.cache.message(*id))
             .map(|message| {
-                let author = message.author();
-                let name = if author == self.id {
-                    PERSONA.to_owned()
-                } else if let Some(user) = self.cache.user(author) {
-                    mentions.insert(user.name.clone(), author);
-                    user.name.clone()
-                } else {
-                    author.to_string()
-                };
-                let line = transcript_line(
-                    &name,
-                    &self.message_content(message.id(), message.content(), message.embeds(), message.poll().as_ref()),
-                );
-                (message.id(), line)
+                let mut name = self.author_name(message.author(), mentions);
+                if let Some(tag) = tag(message.id()) {
+                    let _ = write!(name, " #{tag}");
+                }
+                if let Some(target) = replied_to(&message.id()) {
+                    if let Some(tag) = tag(target) {
+                        let _ = write!(name, "→#{tag}");
+                    } else if let Some(author) = self.cache.message(target).map(|target| target.author()) {
+                        let _ = write!(name, "→{}", self.author_name(author, mentions));
+                    }
+                }
+                let content =
+                    self.message_content(message.id(), message.content(), message.embeds(), message.poll().as_ref());
+                (message.id(), transcript_line(&name, &content))
             })
             .unzip()
+    }
+
+    /// How `author` is named in transcripts, recording their name in `mentions`.
+    fn author_name(&self, author: Id<UserMarker>, mentions: &mut HashMap<String, Id<UserMarker>>) -> String {
+        if author == self.id {
+            PERSONA.to_owned()
+        } else if let Some(user) = self.cache.user(author) {
+            mentions.insert(user.name.clone(), author);
+            user.name.clone()
+        } else {
+            author.to_string()
+        }
     }
 
     pub fn snapshot(&self, msg: &Message) -> AiRequest {
@@ -214,9 +251,12 @@ impl Bot {
                 user_mentions.insert(reference.author.name.clone(), reference.author.id);
                 &reference.author.name
             };
+            // Discord sends a replied-to poll without its votes; the cached copy has them counted.
+            let poll =
+                self.cache.message(reference.id).and_then(|cached| cached.poll()).or_else(|| reference.poll.clone());
             transcript_line(
                 name,
-                &self.message_content(reference.id, &reference.content, &reference.embeds, reference.poll.as_ref()),
+                &self.message_content(reference.id, &reference.content, &reference.embeds, poll.as_ref()),
             )
         });
         AiRequest {
@@ -231,6 +271,7 @@ impl Bot {
             conversation_ids,
             reply_target,
             reply_target_id: msg.referenced_message.as_ref().map(|reference| reference.id),
+            replyable: replyable(msg),
             user_mentions,
         }
     }
@@ -256,6 +297,7 @@ pub mod tests {
             conversation_ids: Vec::new(),
             reply_target: None,
             reply_target_id: None,
+            replyable: true,
             user_mentions: HashMap::new(),
         }
     }
@@ -343,13 +385,13 @@ pub mod tests {
         asked.poll = Some(poll.clone());
         assert_eq!(bot.snapshot(&asked).message, "[poll: game tonight? | minecraft 0, terraria 3 | closed]");
         asked.poll.as_mut().unwrap().results = None;
-        assert_eq!(bot.snapshot(&asked).message, "[poll: game tonight? | minecraft, terraria]");
+        assert_eq!(bot.snapshot(&asked).message, "[poll: game tonight? | minecraft 0, terraria 0]");
         let mut open = poll.clone();
         open.results = None;
         open.expiry = Some(twilight_model::util::Timestamp::from_secs(1_800_000_000).unwrap());
         let now_ms = 1_800_000_000_000 - 40 * 60_000;
-        assert_eq!(poll_text(&open, now_ms), "[poll: game tonight? | minecraft, terraria | 40m left]");
-        assert_eq!(poll_text(&open, 1_800_000_000_001), "[poll: game tonight? | minecraft, terraria | closed]");
+        assert_eq!(poll_text(&open, now_ms), "[poll: game tonight? | minecraft 0, terraria 0 | 40m left]");
+        assert_eq!(poll_text(&open, 1_800_000_000_001), "[poll: game tonight? | minecraft 0, terraria 0 | closed]");
 
         let mut ended = message(42, 3, "bot", "");
         let fields = |extra: &[(&str, &str)]| -> Embed {
@@ -363,6 +405,9 @@ pub mod tests {
         asked.poll = Some(poll);
         ended.referenced_message = Some(Box::new(asked));
         assert!(is_poll_result(&ended));
+        ended.kind = MessageType::Unknown(46);
+        assert!(!bot.snapshot(&ended).replyable);
+        assert!(bot.snapshot(&message(46, 2, "alice", "hi")).replyable);
         let req = bot.snapshot(&ended);
         assert_eq!(req.message, "[poll ended: game tonight? | winner terraria, 3 of 4 votes]");
         assert_eq!(
@@ -372,6 +417,50 @@ pub mod tests {
         ended.embeds = vec![fields(&[("victor_answer_votes", "2")])];
         assert_eq!(bot.snapshot(&ended).message, "[poll ended: game tonight? | no single winner, 4 votes]");
         assert!(!is_poll_result(&message(43, 2, "alice", "hi")));
+
+        // A reply to a cached poll reads the votes counted on the cache, not Discord's empty copy.
+        let mut cached = message(44, 3, "bot", "");
+        cached.poll = ended.referenced_message.as_ref().unwrap().poll.clone();
+        cached.poll.as_mut().unwrap().results = None;
+        bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(cached.clone()))));
+        bot.cache.message(cached.id).unwrap().vote(1, true);
+        let mut reply = message(45, 2, "alice", "who's winning?");
+        cached.poll.as_mut().unwrap().results =
+            Some(twilight_model::poll::PollResults { answer_counts: Vec::new(), is_finalized: false });
+        reply.referenced_message = Some(Box::new(cached));
+        assert_eq!(
+            bot.snapshot(&reply).reply_target.as_deref(),
+            Some("The Trickster: [poll: game tonight? | minecraft 1, terraria 0]")
+        );
+    }
+
+    #[tokio::test]
+    async fn replies_in_the_transcript_point_at_short_tags() {
+        let bot = test_bot();
+        let add = |id: u64, author: u64, name: &str, target: Option<u64>| {
+            let mut msg = message(id, author, name, "x");
+            if let Some(target) = target {
+                msg.kind = MessageType::Reply;
+                msg.reference =
+                    Some(serde_json::from_value(serde_json::json!({"message_id": target.to_string()})).unwrap());
+            }
+            bot.cache.update(&Event::MessageCreate(Box::new(MessageCreate(msg))));
+        };
+        add(1, 4, "bob", None);
+        for id in 2..=20 {
+            add(id, 5, "carol", None);
+        }
+        add(40, 4, "bob", None);
+        add(41, 2, "alice", None);
+        add(42, 2, "alice", Some(40));
+        add(43, 4, "bob", Some(41));
+        add(44, 4, "bob", Some(40));
+        add(45, 2, "alice", Some(1));
+        add(46, 2, "alice", Some(9_999));
+        let req = bot.snapshot(&message(47, 2, "alice", "now"));
+        let tail: Vec<_> =
+            req.conversation.iter().rev().take(7).rev().map(|line| line.trim_end_matches(": x")).collect();
+        assert_eq!(tail, ["bob #1", "alice #2", "alice→#1", "bob→#2", "bob→#1", "alice→bob", "alice"]);
     }
 
     #[test]

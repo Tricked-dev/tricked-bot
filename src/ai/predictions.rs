@@ -80,6 +80,7 @@ async fn follow_up(bot: &Bot, prediction: &Prediction) -> Result<()> {
         conversation_ids,
         reply_target: None,
         reply_target_id: None,
+        replyable: true,
         user_mentions,
     };
     let turn = Content::Text(prompt::text_turn(&req));

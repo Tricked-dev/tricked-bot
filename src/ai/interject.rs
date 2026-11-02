@@ -224,12 +224,13 @@ async fn post_note(bot: &Bot, req: &AiRequest) -> Result<bool> {
     if !super::reply::is_current(bot, req) {
         return Ok(false);
     }
-    bot.http
-        .create_message(req.channel_id)
-        .embeds(&[note_embed(text)])
-        .reply(req.message_id)
-        .allowed_mentions(Some(&AllowedMentions::default()))
-        .await?;
+    let embeds = [note_embed(text)];
+    let mentions = AllowedMentions::default();
+    let mut message = bot.http.create_message(req.channel_id).embeds(&embeds).allowed_mentions(Some(&mentions));
+    if let Some(reply_to) = req.reply_ref() {
+        message = message.reply(reply_to);
+    }
+    message.await?;
     Ok(true)
 }
 
@@ -279,14 +280,16 @@ async fn post_settlement(bot: &Arc<Bot>, req: &AiRequest, only_poll: bool) -> Re
     let posted = match settlement {
         Settlement::Ruling(text) => {
             let mentions = AllowedMentions::default();
-            let message =
-                bot.http.create_message(req.channel_id).reply(req.message_id).allowed_mentions(Some(&mentions));
-            message.content(&text).await?;
+            let mut message = bot.http.create_message(req.channel_id).content(&text).allowed_mentions(Some(&mentions));
+            if let Some(reply_to) = req.reply_ref() {
+                message = message.reply(reply_to);
+            }
+            message.await?;
             "ruling"
         }
         Settlement::Poll(poll, hours) => {
             let route = Route::CreateMessage { channel_id: req.channel_id.get() };
-            let request = Request::builder(&route).json(&poll_body(&poll, hours, req.message_id)).build()?;
+            let request = Request::builder(&route).json(&poll_body(&poll, hours, req.reply_ref())).build()?;
             bot.http.request::<EmptyBody>(request).await?;
             "poll"
         }
@@ -295,7 +298,7 @@ async fn post_settlement(bot: &Arc<Bot>, req: &AiRequest, only_poll: bool) -> Re
 }
 
 /// A create-message body for `poll`, replying to `reply_to`. Twilight's [`Poll`] can't carry the duration.
-fn poll_body(poll: &Poll, hours: u32, reply_to: Id<MessageMarker>) -> serde_json::Value {
+fn poll_body(poll: &Poll, hours: u32, reply_to: Option<Id<MessageMarker>>) -> serde_json::Value {
     let mut poll = serde_json::to_value(poll).unwrap_or_default();
     if let Some(poll) = poll.as_object_mut() {
         poll.retain(|key, _| ["question", "answers", "allow_multiselect", "layout_type"].contains(&key.as_str()));
@@ -303,7 +306,7 @@ fn poll_body(poll: &Poll, hours: u32, reply_to: Id<MessageMarker>) -> serde_json
     }
     json!({
         "poll": poll,
-        "message_reference": {"message_id": reply_to, "fail_if_not_exists": false},
+        "message_reference": reply_to.map(|id| json!({"message_id": id, "fail_if_not_exists": false})),
         "allowed_mentions": {"parse": []},
     })
 }
@@ -372,7 +375,7 @@ mod tests {
             poll.answers.iter().map(|a| (a.answer_id, a.poll_media.text.as_deref().unwrap())).collect();
         assert_eq!(answers, [(1, "alice"), (2, "Bob")]);
         assert!(!poll.allow_multiselect);
-        let body = poll_body(&poll, 6, Id::new(9));
+        let body = poll_body(&poll, 6, Some(Id::new(9)));
         assert_eq!(body["poll"]["question"], json!({"text": "who's right?"}));
         assert_eq!(body["poll"]["duration"], 6);
         assert!(body["poll"].get("expiry").is_none() && body["poll"].get("results").is_none());

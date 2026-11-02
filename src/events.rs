@@ -42,11 +42,11 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
         Event::MessageDeleteBulk(deleted) => messages_deleted(&bot, deleted.channel_id, &deleted.ids).await,
         Event::TypingStart(typing) => typing_start(&bot, &typing).await,
         Event::MessagePollVoteAdd(vote) => {
-            bot.cache.message(vote.message_id).inspect(|message| message.vote(vote.answer_id, true));
+            poll_vote(&bot, vote.message_id, vote.answer_id, true);
             Ok(())
         }
         Event::MessagePollVoteRemove(vote) => {
-            bot.cache.message(vote.message_id).inspect(|message| message.vote(vote.answer_id, false));
+            poll_vote(&bot, vote.message_id, vote.answer_id, false);
             Ok(())
         }
         Event::Ready(_) => {
@@ -125,6 +125,11 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     send(bot, msg, response?).await
 }
 
+fn poll_vote(bot: &Bot, message: Id<MessageMarker>, answer: u8, added: bool) {
+    let cached = bot.cache.message(message).inspect(|cached| cached.vote(answer, added)).is_some();
+    tracing::info!(msg_id = %message, answer, added, cached, "Poll vote");
+}
+
 /// Every ended poll gets a reaction to its result.
 async fn poll_ended(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     if bot.ai.is_none() || bot.channel_limit.hit(msg.channel_id.get()).is_some() {
@@ -184,7 +189,7 @@ async fn send(bot: &Bot, msg: &Message, response: Response) -> Result<()> {
             let mentions = AllowedMentions { users: vec![msg.author.id], ..Default::default() };
             let mut request =
                 bot.http.create_message(msg.channel_id).content(&outgoing.text).attachments(&outgoing.attachments);
-            if outgoing.reply {
+            if outgoing.reply && ai::replyable(msg) {
                 request = request.reply(msg.id);
             }
             if outgoing.mention_author {
