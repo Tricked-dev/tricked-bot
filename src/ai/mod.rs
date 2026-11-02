@@ -13,6 +13,8 @@ pub mod predictions;
 pub mod prompt;
 pub mod recall;
 pub mod refusal;
+#[cfg(test)]
+mod replay;
 pub mod reply;
 pub mod timing;
 pub mod voice;
