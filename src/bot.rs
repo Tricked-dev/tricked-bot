@@ -5,7 +5,7 @@ use std::{
 };
 
 use deadpool_postgres::Pool;
-use twilight_cache_inmemory::{DefaultInMemoryCache, ResourceType};
+use twilight_cache_inmemory::ResourceType;
 use twilight_http::Client as HttpClient;
 use twilight_model::id::{
     Id,
@@ -29,7 +29,7 @@ pub struct Bot {
     pub id: Id<UserMarker>,
     pub application_id: Id<ApplicationMarker>,
     pub http: Arc<HttpClient>,
-    pub cache: DefaultInMemoryCache,
+    pub cache: crate::cache::Cache,
     pub db: Pool,
     /// General-purpose HTTP client with a shared connection pool.
     pub web: reqwest::Client,
@@ -80,7 +80,7 @@ impl Bot {
             id,
             application_id,
             http: Arc::new(http),
-            cache: DefaultInMemoryCache::builder()
+            cache: crate::cache::Cache::builder()
                 .resource_types(ResourceType::MESSAGE | ResourceType::MEMBER | ResourceType::USER)
                 .build(),
             db,

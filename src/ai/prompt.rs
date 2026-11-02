@@ -178,7 +178,7 @@ fn minutes_ago(id: Id<MessageMarker>, now_ms: u64) -> u64 {
 }
 
 /// A compact age: `25m`, `3h` or `2d`.
-fn short_age(minutes: u64) -> String {
+pub(crate) fn short_age(minutes: u64) -> String {
     match minutes {
         ..60 => format!("{minutes}m"),
         60..1440 => format!("{}h", minutes / 60),

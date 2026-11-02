@@ -27,6 +27,7 @@ use twilight_model::{
         Id,
         marker::{ChannelMarker, MessageMarker, UserMarker},
     },
+    poll::Poll,
 };
 
 use crate::bot::Bot;
@@ -81,11 +82,72 @@ fn transcript_line(name: &str, content: &str) -> String {
     format!("{name}: {}", content.replace('\n', " "))
 }
 
+fn push_line(text: &mut String, line: &str) {
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(line);
+}
+
+/// A poll as one line, like `[poll: game tonight? | minecraft 3, terraria 1 | 40m left]`, with counts once there are
+/// any.
+fn poll_text(poll: &Poll, now_ms: i64) -> String {
+    let answers: Vec<_> = poll
+        .answers
+        .iter()
+        .map(|answer| {
+            let text = answer.poll_media.text.as_deref().unwrap_or_default();
+            let count = poll.results.as_ref().map(|results| {
+                results.answer_counts.iter().find(|count| count.id == answer.answer_id).map_or(0, |count| count.count)
+            });
+            count.map_or_else(|| text.to_owned(), |count| format!("{text} {count}"))
+        })
+        .collect();
+    let finalized = poll.results.as_ref().is_some_and(|results| results.is_finalized);
+    let left_ms = poll.expiry.map(|expiry| expiry.as_micros() / 1000 - now_ms);
+    let state = match left_ms {
+        _ if finalized => " | closed".to_owned(),
+        Some(left) if left <= 0 => " | closed".to_owned(),
+        Some(left) => format!(" | {} left", prompt::short_age(u64::try_from(left / 60_000).unwrap_or_default())),
+        None => String::new(),
+    };
+    format!("[poll: {} | {}{state}]", poll.question.text.as_deref().unwrap_or_default(), answers.join(", "))
+}
+
+/// Discord's poll result embed as one line, like `[poll ended: game tonight? | winner minecraft, 3 of 4 votes]`.
+fn poll_result_text(embed: &Embed) -> Option<String> {
+    if embed.kind != "poll_result" {
+        return None;
+    }
+    let field = |name: &str| embed.fields.iter().find(|field| field.name == name).map(|field| field.value.as_str());
+    let question = field("poll_question_text").unwrap_or_default();
+    let total = field("total_votes").unwrap_or("0");
+    Some(match (field("victor_answer_text"), field("victor_answer_votes")) {
+        (Some(winner), Some(votes)) => format!("[poll ended: {question} | winner {winner}, {votes} of {total} votes]"),
+        _ => format!("[poll ended: {question} | no single winner, {total} votes]"),
+    })
+}
+
+/// Whether `msg` is Discord's announcement that a poll ended.
+pub fn is_poll_result(msg: &Message) -> bool {
+    msg.embeds.iter().any(|embed| embed.kind == "poll_result")
+}
+
 impl Bot {
-    /// Text visible to the models, including voice transcripts and Discord embed metadata.
-    fn message_content(&self, id: Id<MessageMarker>, content: &str, embeds: &[Embed]) -> String {
+    /// Text visible to the models, including voice transcripts, polls and Discord embed metadata.
+    fn message_content(&self, id: Id<MessageMarker>, content: &str, embeds: &[Embed], poll: Option<&Poll>) -> String {
         let mut text = self.voice.content(id.get(), content);
+        if let Some(poll) = poll {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |now| i64::try_from(now.as_millis()).unwrap_or(i64::MAX));
+            push_line(&mut text, &poll_text(poll, now_ms));
+        }
         for embed in embeds {
+            if let Some(result) = poll_result_text(embed) {
+                push_line(&mut text, &result);
+                continue;
+            }
             let mut parts = Vec::new();
             parts.extend(embed.author.as_ref().map(|author| author.name.as_str()));
             parts.extend(embed.title.as_deref());
@@ -131,8 +193,10 @@ impl Bot {
                 } else {
                     author.to_string()
                 };
-                let line =
-                    transcript_line(&name, &self.message_content(message.id(), message.content(), message.embeds()));
+                let line = transcript_line(
+                    &name,
+                    &self.message_content(message.id(), message.content(), message.embeds(), message.poll().as_ref()),
+                );
                 (message.id(), line)
             })
             .unzip()
@@ -150,14 +214,17 @@ impl Bot {
                 user_mentions.insert(reference.author.name.clone(), reference.author.id);
                 &reference.author.name
             };
-            transcript_line(name, &self.message_content(reference.id, &reference.content, &reference.embeds))
+            transcript_line(
+                name,
+                &self.message_content(reference.id, &reference.content, &reference.embeds, reference.poll.as_ref()),
+            )
         });
         AiRequest {
             user_id: msg.author.id,
             user_name: msg.author.name.clone(),
             channel_id: msg.channel_id,
             message_id: msg.id,
-            message: self.message_content(msg.id, &msg.content, &msg.embeds),
+            message: self.message_content(msg.id, &msg.content, &msg.embeds, msg.poll.as_ref()),
             source_text: msg.content.clone(),
             media: media::sources(msg),
             conversation,
@@ -257,6 +324,54 @@ pub mod tests {
         assert_eq!(req.conversation, ["alice: old bird topic"]);
         assert_eq!(req.conversation_ids, [Id::new(40)]);
         assert_eq!(req.reply_target_id, Some(Id::new(20)));
+    }
+
+    #[tokio::test]
+    async fn polls_and_poll_results_read_as_text() {
+        let bot = test_bot();
+        let poll: Poll = serde_json::from_value(serde_json::json!({
+            "question": {"text": "game tonight?"},
+            "answers": [
+                {"answer_id": 1, "poll_media": {"text": "minecraft"}},
+                {"answer_id": 2, "poll_media": {"text": "terraria"}},
+            ],
+            "expiry": null, "allow_multiselect": false, "layout_type": 1,
+            "results": {"answer_counts": [{"id": 2, "count": 3, "me_voted": false}], "is_finalized": true},
+        }))
+        .unwrap();
+        let mut asked = message(40, 3, "bot", "");
+        asked.poll = Some(poll.clone());
+        assert_eq!(bot.snapshot(&asked).message, "[poll: game tonight? | minecraft 0, terraria 3 | closed]");
+        asked.poll.as_mut().unwrap().results = None;
+        assert_eq!(bot.snapshot(&asked).message, "[poll: game tonight? | minecraft, terraria]");
+        let mut open = poll.clone();
+        open.results = None;
+        open.expiry = Some(twilight_model::util::Timestamp::from_secs(1_800_000_000).unwrap());
+        let now_ms = 1_800_000_000_000 - 40 * 60_000;
+        assert_eq!(poll_text(&open, now_ms), "[poll: game tonight? | minecraft, terraria | 40m left]");
+        assert_eq!(poll_text(&open, 1_800_000_000_001), "[poll: game tonight? | minecraft, terraria | closed]");
+
+        let mut ended = message(42, 3, "bot", "");
+        let fields = |extra: &[(&str, &str)]| -> Embed {
+            let mut fields = vec![("poll_question_text", "game tonight?"), ("total_votes", "4")];
+            fields.extend_from_slice(extra);
+            let fields: Vec<_> =
+                fields.iter().map(|(name, value)| serde_json::json!({"name": name, "value": value})).collect();
+            serde_json::from_value(serde_json::json!({"type": "poll_result", "fields": fields})).unwrap()
+        };
+        ended.embeds.push(fields(&[("victor_answer_votes", "3"), ("victor_answer_text", "terraria")]));
+        asked.poll = Some(poll);
+        ended.referenced_message = Some(Box::new(asked));
+        assert!(is_poll_result(&ended));
+        let req = bot.snapshot(&ended);
+        assert_eq!(req.message, "[poll ended: game tonight? | winner terraria, 3 of 4 votes]");
+        assert_eq!(
+            req.reply_target.as_deref(),
+            Some("The Trickster: [poll: game tonight? | minecraft 0, terraria 3 | closed]")
+        );
+        ended.embeds = vec![fields(&[("victor_answer_votes", "2")])];
+        assert_eq!(bot.snapshot(&ended).message, "[poll ended: game tonight? | no single winner, 4 votes]");
+        assert!(!is_poll_result(&message(43, 2, "alice", "hi")));
     }
 
     #[test]

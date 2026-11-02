@@ -5,12 +5,10 @@ use std::{fmt::Write as _, sync::Arc, time::Duration};
 use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;
+use twilight_http::{request::Request, response::marker::EmptyBody, routing::Route};
 use twilight_model::{
     channel::message::{AllowedMentions, Embed, embed::EmbedFooter},
-    id::{
-        Id,
-        marker::{ChannelMarker, MessageMarker},
-    },
+    id::{Id, marker::MessageMarker},
     poll::{Poll, PollAnswer, PollLayoutType, PollMedia},
 };
 
@@ -40,9 +38,8 @@ const SOURCE_CHARS: usize = 200;
 const POLL_QUESTION_CHARS: usize = 300;
 const POLL_ANSWER_CHARS: usize = 55;
 const POLL_ANSWERS: usize = 10;
-/// How long a poll stays open. Discord's create request takes a duration that twilight's [`Poll`] can't carry, so the
-/// bot ends the poll itself; after a restart it runs to Discord's default of a day instead.
-const POLL_DURATION: Duration = Duration::from_secs(3600);
+/// How many hours a poll may stay open, from Discord's minimum up to a week.
+const POLL_HOURS: std::ops::RangeInclusive<u32> = 1..=168;
 /// How long the model may take to draft an interjection.
 const TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -64,6 +61,8 @@ enum Verdict {
     Poll {
         question: String,
         answers: Vec<String>,
+        #[serde(default)]
+        hours: Option<u32>,
     },
 }
 
@@ -71,7 +70,7 @@ enum Verdict {
 #[derive(Debug, PartialEq)]
 enum Settlement {
     Ruling(String),
-    Poll(Poll),
+    Poll(Poll, u32),
 }
 
 /// The data the model works on: the conversation, the message being replied to and the message itself.
@@ -176,7 +175,10 @@ fn settlement(verdict: Verdict) -> Option<Settlement> {
         Verdict::Ruling { ruling } => {
             output::presentable(ruling.trim()).filter(|text| !text.trim().is_empty()).map(Settlement::Ruling)
         }
-        Verdict::Poll { question, answers } => poll(&question, &answers).map(Settlement::Poll),
+        Verdict::Poll { question, answers, hours } => {
+            let hours = hours.unwrap_or(*POLL_HOURS.start()).clamp(*POLL_HOURS.start(), *POLL_HOURS.end());
+            poll(&question, &answers).map(|poll| Settlement::Poll(poll, hours))
+        }
     }
 }
 
@@ -268,32 +270,42 @@ async fn post_settlement(bot: &Arc<Bot>, req: &AiRequest, only_poll: bool) -> Re
     let system = if only_poll { POLL_SYSTEM } else { RULING_SYSTEM };
     let request = request(bot, system, input(&req.conversation, req), 2048, "low");
     let Some(settlement) = settlement(ask(bot, &request).await?) else { return Ok("none") };
-    if only_poll && !matches!(settlement, Settlement::Poll(_)) {
+    if only_poll && !matches!(settlement, Settlement::Poll(..)) {
         return Ok("none");
     }
     if !super::reply::is_current(bot, req) {
         return Ok("none");
     }
-    let mentions = AllowedMentions::default();
-    let message = bot.http.create_message(req.channel_id).reply(req.message_id).allowed_mentions(Some(&mentions));
-    match settlement {
+    let posted = match settlement {
         Settlement::Ruling(text) => {
+            let mentions = AllowedMentions::default();
+            let message =
+                bot.http.create_message(req.channel_id).reply(req.message_id).allowed_mentions(Some(&mentions));
             message.content(&text).await?;
-            Ok("ruling")
+            "ruling"
         }
-        Settlement::Poll(poll) => {
-            let posted = message.poll(&poll).await?.model().await?;
-            tokio::spawn(end_poll_later(Arc::clone(bot), posted.channel_id, posted.id));
-            Ok("poll")
+        Settlement::Poll(poll, hours) => {
+            let route = Route::CreateMessage { channel_id: req.channel_id.get() };
+            let request = Request::builder(&route).json(&poll_body(&poll, hours, req.message_id)).build()?;
+            bot.http.request::<EmptyBody>(request).await?;
+            "poll"
         }
-    }
+    };
+    Ok(posted)
 }
 
-async fn end_poll_later(bot: Arc<Bot>, channel: Id<ChannelMarker>, message: Id<MessageMarker>) {
-    tokio::time::sleep(POLL_DURATION).await;
-    if let Err(error) = bot.http.end_poll(channel, message).await {
-        tracing::warn!(channel = %channel, msg_id = %message, "Ending a poll failed: {error}");
+/// A create-message body for `poll`, replying to `reply_to`. Twilight's [`Poll`] can't carry the duration.
+fn poll_body(poll: &Poll, hours: u32, reply_to: Id<MessageMarker>) -> serde_json::Value {
+    let mut poll = serde_json::to_value(poll).unwrap_or_default();
+    if let Some(poll) = poll.as_object_mut() {
+        poll.retain(|key, _| ["question", "answers", "allow_multiselect", "layout_type"].contains(&key.as_str()));
+        poll.insert("duration".to_owned(), hours.into());
     }
+    json!({
+        "poll": poll,
+        "message_reference": {"message_id": reply_to, "fail_if_not_exists": false},
+        "allowed_mentions": {"parse": []},
+    })
 }
 
 #[cfg(test)]
@@ -353,13 +365,25 @@ mod tests {
     #[test]
     fn poll_verdict_becomes_a_discord_poll() {
         let verdict = parse_response(r#"{"action": "poll", "question": "Who's right?", "answers": ["alice", "Bob"]}"#);
-        let Some(Settlement::Poll(poll)) = settlement(verdict.unwrap()) else { panic!("expected a poll") };
+        let Some(Settlement::Poll(poll, hours)) = settlement(verdict.unwrap()) else { panic!("expected a poll") };
+        assert_eq!(hours, 1, "polls without hours last the minimum");
         assert_eq!(poll.question.text.as_deref(), Some("who's right?"));
         let answers: Vec<_> =
             poll.answers.iter().map(|a| (a.answer_id, a.poll_media.text.as_deref().unwrap())).collect();
         assert_eq!(answers, [(1, "alice"), (2, "Bob")]);
         assert!(!poll.allow_multiselect);
-        assert_eq!(serde_json::to_value(&poll).unwrap()["question"], json!({"text": "who's right?"}));
+        let body = poll_body(&poll, 6, Id::new(9));
+        assert_eq!(body["poll"]["question"], json!({"text": "who's right?"}));
+        assert_eq!(body["poll"]["duration"], 6);
+        assert!(body["poll"].get("expiry").is_none() && body["poll"].get("results").is_none());
+        assert_eq!(body["message_reference"]["message_id"], "9");
+        assert_eq!(body["allowed_mentions"], json!({"parse": []}));
+        for (hours, expected) in [("0", 1), ("48", 48), ("9999", 168)] {
+            let verdict =
+                parse_response(&format!(r#"{{"action":"poll","question":"q","answers":["a","b"],"hours":{hours}}}"#));
+            let Some(Settlement::Poll(_, hours)) = settlement(verdict.unwrap()) else { panic!("expected a poll") };
+            assert_eq!(hours, expected);
+        }
     }
 
     #[test]

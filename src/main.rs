@@ -1,5 +1,6 @@
 mod ai;
 mod bot;
+mod cache;
 mod commands;
 mod config;
 mod currency;
@@ -42,6 +43,7 @@ const INTENTS: Intents = Intents::GUILDS
     .union(Intents::GUILD_MEMBERS)
     .union(Intents::GUILD_MESSAGES)
     .union(Intents::GUILD_MESSAGE_TYPING)
+    .union(Intents::GUILD_MESSAGE_POLLS)
     .union(Intents::DIRECT_MESSAGES)
     .union(Intents::MESSAGE_CONTENT);
 
@@ -58,6 +60,7 @@ const EVENTS: EventTypeFlags = EventTypeFlags::READY
     .union(EventTypeFlags::MESSAGE_DELETE)
     .union(EventTypeFlags::MESSAGE_DELETE_BULK)
     .union(EventTypeFlags::MESSAGE_UPDATE)
+    .union(EventTypeFlags::MESSAGE_POLLS)
     .union(EventTypeFlags::TYPING_START);
 
 #[tokio::main]

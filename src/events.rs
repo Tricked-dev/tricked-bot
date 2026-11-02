@@ -28,6 +28,10 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
     log_message_event(&event);
     let result = match event {
         Event::InteractionCreate(interaction) => crate::commands::handle(&bot, interaction.0).await,
+        // Poll results are posted as the poll's author, which may be a bot or the Trickster itself.
+        Event::MessageCreate(msg) if msg.guild_id.is_some() && ai::is_poll_result(&msg) => {
+            poll_ended(&bot, &msg.0).await
+        }
         Event::MessageCreate(msg) if !msg.author.bot => match msg.guild_id {
             Some(_) => guild_message(&bot, &msg.0).await,
             None => direct_message(&bot, &msg.0).await,
@@ -37,6 +41,14 @@ pub async fn handle(bot: Arc<Bot>, event: Event) {
         Event::MessageDelete(deleted) => messages_deleted(&bot, deleted.channel_id, &[deleted.id]).await,
         Event::MessageDeleteBulk(deleted) => messages_deleted(&bot, deleted.channel_id, &deleted.ids).await,
         Event::TypingStart(typing) => typing_start(&bot, &typing).await,
+        Event::MessagePollVoteAdd(vote) => {
+            bot.cache.message(vote.message_id).inspect(|message| message.vote(vote.answer_id, true));
+            Ok(())
+        }
+        Event::MessagePollVoteRemove(vote) => {
+            bot.cache.message(vote.message_id).inspect(|message| message.vote(vote.answer_id, false));
+            Ok(())
+        }
         Event::Ready(_) => {
             tracing::info!("Connected");
             Ok(())
@@ -111,6 +123,16 @@ async fn guild_message(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
     let ask_reply = !answered && bot.ai.is_some() && bot.config.decider_reply_mode != ReplyMode::Off;
     check::spawn(Arc::clone(bot), req, ask_reply);
     send(bot, msg, response?).await
+}
+
+/// Every ended poll gets a reaction to its result.
+async fn poll_ended(bot: &Arc<Bot>, msg: &Message) -> Result<()> {
+    if bot.ai.is_none() || bot.channel_limit.hit(msg.channel_id.get()).is_some() {
+        return Ok(());
+    }
+    let req = ai::voice::prepare(bot, msg).await?;
+    ai::reply::submit(bot, &req, true);
+    Ok(())
 }
 
 /// Editing the text of a message that is still being answered restarts the reply. Finished replies stay as they are.
